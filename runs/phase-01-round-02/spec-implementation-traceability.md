@@ -185,9 +185,11 @@ Test evidence:
 ### Identity/content drift and immutable observations
 
 Requirement:
-An identical re-observation is acquisition-idempotent; changed source facts
-for the same ID become a new immutable observation/version and expose an
-identity-content drift metric rather than being silently merged.
+An identical re-observation is acquisition-idempotent; when source-item/detail
+facts are actually acquired in an authorized path, changed facts for the same
+ID become a new immutable observation/version and expose an identity-content
+drift metric rather than being silently merged. Historical known IDs at or
+before the committed watermark do not require detail refresh in Phase 1.
 
 Status:
 `IMPLEMENTED_AND_DEVELOPER_TESTED`
@@ -209,7 +211,10 @@ Test evidence:
 
 Notes:
 Cross-run comparison can use the optional `existing_observations` mapping;
-durable storage remains outside this source-isolated round.
+durable storage remains outside this source-isolated round. The collector does
+not proactively refresh known historical IDs solely to discover mutable facts;
+unknown IDs remain eligible even when their publication time is at/before the
+watermark.
 
 ## Fields
 
@@ -521,10 +526,15 @@ Test evidence:
 - `test_partial_run_does_not_advance_watermark` covers partial-run protection.
 - `test_seen_id_newer_than_watermark_is_eligible` covers an already-seen ID
   whose valid publication time is newer than the committed watermark.
+- `test_unknown_id_at_or_before_watermark_is_still_eligible` covers an
+  unknown ID whose valid publication time is older than the committed
+  watermark; ID membership, not age alone, controls historical suppression.
 
 Notes:
-Repeated IDs are compared before duplicate suppression; a changed observation
-is versioned and a watermark boundary is not advanced by a partial run.
+Eligible repeated IDs are compared before duplicate suppression; a changed
+observation is versioned and a watermark boundary is not advanced by a partial
+run. A known ID at/before the watermark may confirm the boundary without a
+detail request, while an unknown ID remains eligible for acquisition.
 
 ### High-watermark commit and partial runs
 

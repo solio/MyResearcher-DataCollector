@@ -108,7 +108,7 @@ def test_watermark_confirmation_returns_no_new_data_without_detail_requests() ->
 
     result = run.collect(
         "600001",
-        existing_ids={"1001"},
+        existing_ids={"1001", "1002"},
         watermark=datetime(2026, 8, 10, 10, 0, tzinfo=timezone.utc).replace(
             tzinfo=timezone.utc
         ),
@@ -290,6 +290,26 @@ def test_seen_id_newer_than_watermark_is_eligible() -> None:
 
     assert result.status is CollectionStatus.SUCCESS
     assert len(result.items) == 1
+    assert result.counters.details_requested == 1
+    assert detail1 in transport.calls
+
+
+def test_unknown_id_at_or_before_watermark_is_still_eligible() -> None:
+    page1, _, _, detail1 = urls()
+    run, transport = collector({
+        page1: response("list_page_1.html"),
+        detail1: response("detail_1001.html"),
+    })
+
+    result = run.collect(
+        "600001",
+        existing_ids=set(),
+        watermark=datetime(2026, 8, 10, 11, 0, tzinfo=timezone(timedelta(hours=8))),
+        max_pages=1,
+    )
+
+    assert result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert [item.source_item_id for item in result.items] == ["1001"]
     assert result.counters.details_requested == 1
     assert detail1 in transport.calls
 

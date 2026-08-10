@@ -442,11 +442,15 @@ class EastmoneyGubaCollector:
                 if already_seen:
                     counters.duplicate_records += 1
                 eligible_new = watermark is None or row.published_at > watermark
-                if watermark is not None and not eligible_new:
+                historical_known = already_seen and watermark is not None and not eligible_new
+                if historical_known:
                     seen_ids.add(row.source_item_id)
                     observed_rows[row.source_item_id] = row
                     continue
-                if eligible_new:
+                # The watermark may suppress only already-known historical IDs.
+                # An unknown ID remains eligible even when its publication time
+                # is at or before the committed watermark.
+                if eligible_new or not already_seen:
                     page_all_old_or_seen = False
                     page_has_new = True
                 seen_ids.add(row.source_item_id)
