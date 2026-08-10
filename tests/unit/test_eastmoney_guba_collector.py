@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -40,6 +41,60 @@ class MappingTransport:
 
 def response(name: str, status: int = 200, headers: dict[str, str] | None = None, final_url: str | None = None) -> HttpResponse:
     return HttpResponse(status, body(name), headers or {}, final_url)
+
+
+def synthetic_list_page(rows: list[dict[str, object]]) -> HttpResponse:
+    links = "".join(
+        f'<a data-postid="{row["post_id"]}" href="/news,600001,{row["post_id"]}.html">{row["post_title"]}</a>'
+        for row in rows
+    )
+    payload = {"rc": 1, "re": rows, "count": len(rows), "time": "synthetic"}
+    html = f"<!doctype html><html><body>{links}<script>var article_list={json.dumps(payload)};</script></body></html>"
+    return HttpResponse(200, html.encode(), {})
+
+
+def synthetic_detail(item_id: str, published_at: str) -> HttpResponse:
+    payload = {
+        "post_id": int(item_id),
+        "post_user": {"user_id": f"u-{item_id}", "user_nickname": f"author-{item_id}"},
+        "post_guba": {"stockbar_code": "600001", "stockbar_name": "Synthetic Bar"},
+        "post_title": f"post {item_id}",
+        "post_content": f"body {item_id}",
+        "post_publish_time": published_at,
+        "post_last_time": published_at,
+        "post_display_time": published_at,
+        "post_click_count": 0,
+        "post_forward_count": 0,
+        "post_comment_count": 0,
+        "post_like_count": 0,
+        "post_type": 0,
+        "post_state": 0,
+        "post_top_status": 0,
+        "post_source_id": "",
+    }
+    html = f"<!doctype html><html><body><script>var post_article={json.dumps(payload)};</script></body></html>"
+    return HttpResponse(200, html.encode(), {})
+
+
+def synthetic_row(item_id: str, published_at: str) -> dict[str, object]:
+    return {
+        "post_id": int(item_id),
+        "post_title": f"post {item_id}",
+        "stockbar_code": "600001",
+        "stockbar_name": "Synthetic Bar",
+        "user_id": f"u-{item_id}",
+        "user_nickname": f"author-{item_id}",
+        "post_click_count": 0,
+        "post_forward_count": 0,
+        "post_comment_count": 0,
+        "post_publish_time": published_at,
+        "post_last_time": published_at,
+        "post_display_time": published_at,
+        "post_type": 0,
+        "post_state": 0,
+        "post_top_status": 0,
+        "post_source_id": "",
+    }
 
 
 def collector(routes: dict[str, object], store: InMemoryRawEvidenceStore | None = None) -> tuple[EastmoneyGubaCollector, MappingTransport]:
@@ -312,6 +367,69 @@ def test_unknown_id_at_or_before_watermark_is_still_eligible() -> None:
     assert [item.source_item_id for item in result.items] == ["1001"]
     assert result.counters.details_requested == 1
     assert detail1 in transport.calls
+
+
+def test_mixed_incremental_page_handles_known_and_unknown_old_and_new_ids() -> None:
+    page1 = EastmoneyGubaCollector.list_url("600001", 1)
+    rows = [
+        synthetic_row("1001", "2026-08-10 10:00:00"),  # known old
+        synthetic_row("1002", "2026-08-10 10:05:00"),  # unknown old
+        synthetic_row("1003", "2026-08-10 12:00:00"),  # known newer
+        synthetic_row("1004", "2026-08-10 12:05:00"),  # unknown newer
+    ]
+    routes: dict[str, object] = {page1: synthetic_list_page(rows)}
+    for item_id, published_at in (
+        ("1002", "2026-08-10 10:05:00"),
+        ("1003", "2026-08-10 12:00:00"),
+        ("1004", "2026-08-10 12:05:00"),
+    ):
+        routes[f"https://guba.eastmoney.com/news,600001,{item_id}.html"] = synthetic_detail(item_id, published_at)
+    run, transport = collector(routes)
+
+    result = run.collect(
+        "600001",
+        existing_ids={"1001", "1003"},
+        watermark=datetime(2026, 8, 10, 11, 0, tzinfo=timezone(timedelta(hours=8))),
+        max_pages=1,
+    )
+
+    assert result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert [item.source_item_id for item in result.items] == ["1002", "1003", "1004"]
+    assert result.counters.details_requested == 3
+    assert "https://guba.eastmoney.com/news,600001,1001.html" not in transport.calls
+    assert all(
+        f"https://guba.eastmoney.com/news,600001,{item_id}.html" in transport.calls
+        for item_id in ("1002", "1003", "1004")
+    )
+
+
+def test_historical_known_first_page_does_not_stop_before_unknown_second_page() -> None:
+    page1 = EastmoneyGubaCollector.list_url("600001", 1)
+    page2 = EastmoneyGubaCollector.list_url("600001", 2)
+    page3 = EastmoneyGubaCollector.list_url("600001", 3)
+    old_known = synthetic_row("1001", "2026-08-10 10:00:00")
+    old_unknown = synthetic_row("1002", "2026-08-10 10:05:00")
+    detail2 = "https://guba.eastmoney.com/news,600001,1002.html"
+    run, transport = collector({
+        page1: synthetic_list_page([old_known]),
+        page2: synthetic_list_page([old_unknown]),
+        page3: synthetic_list_page([]),
+        detail2: synthetic_detail("1002", "2026-08-10 10:05:00"),
+    })
+
+    result = run.collect(
+        "600001",
+        existing_ids={"1001"},
+        watermark=datetime(2026, 8, 10, 11, 0, tzinfo=timezone(timedelta(hours=8))),
+        max_pages=3,
+    )
+
+    assert result.status is CollectionStatus.SUCCESS
+    assert result.stop_reason == "empty_page"
+    assert [item.source_item_id for item in result.items] == ["1002"]
+    assert result.counters.details_requested == 1
+    assert page2 in transport.calls
+    assert detail2 in transport.calls
 
 
 def test_retry_exhaustion_is_collection_failed() -> None:
