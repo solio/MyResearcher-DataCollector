@@ -38,8 +38,8 @@ class MappingTransport:
         return current
 
 
-def response(name: str, status: int = 200) -> HttpResponse:
-    return HttpResponse(status, body(name), {})
+def response(name: str, status: int = 200, headers: dict[str, str] | None = None, final_url: str | None = None) -> HttpResponse:
+    return HttpResponse(status, body(name), headers or {}, final_url)
 
 
 def collector(routes: dict[str, object], store: InMemoryRawEvidenceStore | None = None) -> tuple[EastmoneyGubaCollector, MappingTransport]:
@@ -72,7 +72,7 @@ def test_collects_pages_details_and_overlap_idempotently() -> None:
             page1: response("list_page_1.html"),
             page2: response("list_page_2.html"),
             page3: response("empty_page.html"),
-            detail1: response("detail_1001.html"),
+            detail1: response("detail_1001.html", final_url=detail1 + "?redirected=1"),
             detail2: response("detail_1002.html"),
         },
         store,
@@ -81,13 +81,18 @@ def test_collects_pages_details_and_overlap_idempotently() -> None:
     result = run.collect("600001")
 
     assert result.status is CollectionStatus.SUCCESS
-    assert [item.source_item_id for item in result.items] == ["1001", "1002"]
+    assert [item.source_item_id for item in result.items] == ["1001", "1001", "1002"]
+    assert [item.observation_version for item in result.items] == [1, 2, 1]
     assert result.counters.duplicate_records == 1
+    assert result.counters.identity_content_drifts == 1
     assert result.counters.records_out_of_scope == 1
     assert result.counters.pages_success == 3
-    assert result.counters.details_success == 2
-    assert len(store.snapshots) == 5  # three list pages plus two details
+    assert result.counters.details_success == 3
+    assert len(store.snapshots) == 5  # three list pages plus two unique detail payloads
     assert all(item.raw_ref["list"].startswith("memory://list/") for item in result.items)
+    assert result.items[0].schema_version == "eastmoney_guba.raw.v1"
+    assert result.items[0].final_url == detail1 + "?redirected=1"
+    assert result.items[0].source_metadata["final_urls"]["detail"] == detail1 + "?redirected=1"
     assert detail1 in transport.calls and detail2 in transport.calls
 
 
@@ -204,3 +209,100 @@ def test_rate_limit_retries_without_becoming_no_data() -> None:
     assert result.counters.requests_failed == 1
     assert result.counters.requests_success == 1
     assert len(transport.calls) == 2
+
+
+def test_retry_exhaustion_is_collection_failed() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({page1: [TimeoutError(), TimeoutError(), TimeoutError()]})
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.counters.requests_failed == 3
+    assert transport.calls.count(page1) == 3
+
+
+def test_max_pages_is_hard_partial_boundary() -> None:
+    page1, _, _, detail1 = urls()
+    run, _ = collector({
+        page1: response("list_page_1.html"),
+        detail1: response("detail_1001.html"),
+    })
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert result.stop_reason == "max_pages"
+    assert result.counters.pages_requested == 1
+    assert result.counters.details_success == 1
+
+
+def test_retry_after_and_bounded_backoff_are_observable() -> None:
+    page1, _, _, _ = urls()
+    sleeps: list[float] = []
+    transport = MappingTransport({
+        page1: [response("empty_page.html", status=429, headers={"Retry-After": "2"}), response("empty_page.html")]
+    })
+    run = EastmoneyGubaCollector(
+        transport,
+        config=CollectorConfig(max_pages=1, base_backoff_seconds=0.5, min_interval_seconds=2.5),
+        sleep_fn=sleeps.append,
+        monotonic_fn=lambda: 0.0,
+        jitter_fn=lambda _low, _high: 0.0,
+    )
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.NO_NEW_DATA
+    assert 2.0 in sleeps
+    assert 2.5 in sleeps
+    assert max(sleeps) <= 30.0
+
+
+def test_minimum_interval_cannot_be_disabled() -> None:
+    page1, _, _, _ = urls()
+    transport = MappingTransport({page1: response("empty_page.html")})
+    try:
+        EastmoneyGubaCollector(transport, config=CollectorConfig(min_interval_seconds=2.4))
+    except ValueError as exc:
+        assert "at least 2.5" in str(exc)
+    else:
+        raise AssertionError("interval below policy minimum was accepted")
+
+
+def test_redirect_final_url_outside_source_boundary_fails_closed() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({page1: response("empty_page.html", final_url="https://example.invalid/redirect")})
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.failures == ["page 1: redirect"]
+    assert transport.calls == [page1]
+
+
+def test_cancellation_is_explicit_and_does_not_request() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({page1: response("empty_page.html")})
+    run.cancel_check = lambda: True
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.CANCELLED
+    assert result.stop_reason == "cancelled"
+    assert transport.calls == []
+
+
+def test_partial_run_does_not_advance_watermark() -> None:
+    page1, page2, _, detail1 = urls()
+    original = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+    run, _ = collector({
+        page1: response("list_page_1.html"),
+        page2: response("empty_page.html", status=503),
+        detail1: response("detail_1001.html"),
+    })
+
+    result = run.collect("600001", watermark=original, max_pages=2)
+
+    assert result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert result.watermark == original

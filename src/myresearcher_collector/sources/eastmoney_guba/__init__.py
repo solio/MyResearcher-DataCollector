@@ -11,6 +11,7 @@ from .parser import (
     GubaDetailMismatch,
     GubaParseError,
     GubaSchemaMismatch,
+    SCHEMA_VERSION,
     parse_detail_page,
     parse_list_page,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "GubaDetailMismatch",
     "GubaParseError",
     "GubaSchemaMismatch",
+    "SCHEMA_VERSION",
     "HttpResponse",
     "InMemoryRawEvidenceStore",
     "UrllibTransport",

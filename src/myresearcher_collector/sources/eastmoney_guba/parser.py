@@ -12,6 +12,7 @@ from urllib.parse import urljoin, urlparse
 
 
 SOURCE = "eastmoney_guba"
+SCHEMA_VERSION = "eastmoney_guba.raw.v1"
 SHANGHAI = timezone(timedelta(hours=8))
 _ID_RE = re.compile(r"^[0-9]+$")
 _HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
@@ -127,9 +128,11 @@ def _id(value: Any, field: str) -> str:
     return value
 
 
-def _optional_text(value: Any) -> str | None:
-    if value is None or value == "":
+def _optional_text(value: Any, *, preserve_empty: bool = False) -> str | None:
+    if value is None:
         return None
+    if value == "":
+        return "" if preserve_empty else None
     if not isinstance(value, str):
         raise GubaParseError("text field has unexpected type")
     return value
@@ -160,6 +163,20 @@ def parse_source_time(value: Any, field: str, *, required: bool) -> datetime | N
         raise GubaParseError(f"{field} is not a valid source timestamp") from exc
 
 
+def _optional_source_time(
+    value: Any,
+    field: str,
+    field_errors: dict[str, str],
+) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        return parse_source_time(value, field, required=False)
+    except GubaParseError:
+        field_errors[field] = "invalid_source_timestamp"
+        return None
+
+
 def _source_url(href: str, source_item_id: str) -> str:
     url = urljoin("https://guba.eastmoney.com", href)
     parsed = urlparse(url)
@@ -172,14 +189,32 @@ def _source_url(href: str, source_item_id: str) -> str:
     return url
 
 
-def _source_metadata(row: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
+def _source_metadata(
+    row: dict[str, Any],
+    *,
+    detail: bool = False,
+    field_errors: dict[str, str] | None = None,
+) -> dict[str, Any]:
     names = (
         "post_from_num", "post_has_pic", "post_has_video", "media_type",
         "bullish_bearish", "v_user_code", "post_comment_authority",
     )
     if detail:
         names += ("post_loc", "post_ip_address", "digest_type")
-    return {name: row.get(name) for name in names if name in row}
+    metadata = {name: row.get(name) for name in names if name in row}
+    promoted = {
+        "post_id", "post_title", "stockbar_code", "stockbar_name", "user_id",
+        "user_nickname", "post_click_count", "post_forward_count",
+        "post_comment_count", "post_like_count", "post_publish_time",
+        "post_last_time", "post_display_time", "post_type", "post_state",
+        "post_top_status", "post_source_id", "post_content", "post_user",
+        "post_guba", "post_loc", "post_ip_address", "digest_type",
+        *names,
+    }
+    metadata["extra"] = {key: value for key, value in row.items() if key not in promoted}
+    if field_errors:
+        metadata["field_errors"] = dict(field_errors)
+    return metadata
 
 
 def _parse_item(row: dict[str, Any], requested_bar_code: str, links: dict[str, str]) -> GubaListItem | dict[str, Any]:
@@ -195,6 +230,7 @@ def _parse_item(row: dict[str, Any], requested_bar_code: str, links: dict[str, s
     if not href:
         raise GubaSchemaMismatch(f"missing list URL for post {source_item_id}")
     published_raw = row.get("post_publish_time")
+    field_errors: dict[str, str] = {}
     return GubaListItem(
         source_item_id=source_item_id,
         requested_bar_code=requested_bar_code,
@@ -202,10 +238,10 @@ def _parse_item(row: dict[str, Any], requested_bar_code: str, links: dict[str, s
         canonical_bar_name=_optional_text(row.get("stockbar_name")),
         author_id=_optional_text(row.get("user_id")),
         author_name=_optional_text(row.get("user_nickname")),
-        title=_optional_text(row.get("post_title")),
+        title=_optional_text(row.get("post_title"), preserve_empty=True),
         published_at=parse_source_time(published_raw, "post_publish_time", required=True),
-        last_updated_at=parse_source_time(row.get("post_last_time"), "post_last_time", required=False),
-        display_time=parse_source_time(row.get("post_display_time"), "post_display_time", required=False),
+        last_updated_at=_optional_source_time(row.get("post_last_time"), "post_last_time", field_errors),
+        display_time=_optional_source_time(row.get("post_display_time"), "post_display_time", field_errors),
         url=_source_url(href, source_item_id),
         post_type=post_type,
         post_state=_optional_int(row.get("post_state"), "post_state"),
@@ -220,7 +256,7 @@ def _parse_item(row: dict[str, Any], requested_bar_code: str, links: dict[str, s
             "post_last_time": row.get("post_last_time") if isinstance(row.get("post_last_time"), str) else None,
             "post_display_time": row.get("post_display_time") if isinstance(row.get("post_display_time"), str) else None,
         },
-        source_metadata=_source_metadata(row),
+        source_metadata=_source_metadata(row, field_errors=field_errors),
     )
 
 
@@ -267,17 +303,18 @@ def parse_detail_page(html: str) -> GubaDetail:
         raise GubaParseError("post_content is required")
     published_raw = row.get("post_publish_time")
     guba = row["post_guba"]
+    field_errors: dict[str, str] = {}
     return GubaDetail(
         source_item_id=source_item_id,
         canonical_bar_code=_optional_text(guba.get("stockbar_code")),
         canonical_bar_name=_optional_text(guba.get("stockbar_name")),
         author_id=_optional_text(row.get("post_user", {}).get("user_id") if isinstance(row.get("post_user"), dict) else None),
         author_name=_optional_text(row.get("post_user", {}).get("user_nickname") if isinstance(row.get("post_user"), dict) else None),
-        title=_optional_text(row.get("post_title")),
+        title=_optional_text(row.get("post_title"), preserve_empty=True),
         content=content,
         published_at=parse_source_time(published_raw, "post_publish_time", required=True),
-        last_updated_at=parse_source_time(row.get("post_last_time"), "post_last_time", required=False),
-        display_time=parse_source_time(row.get("post_display_time"), "post_display_time", required=False),
+        last_updated_at=_optional_source_time(row.get("post_last_time"), "post_last_time", field_errors),
+        display_time=_optional_source_time(row.get("post_display_time"), "post_display_time", field_errors),
         post_type=post_type,
         post_state=_optional_int(row.get("post_state"), "post_state"),
         post_top_status=_optional_int(row.get("post_top_status"), "post_top_status"),
@@ -291,7 +328,7 @@ def parse_detail_page(html: str) -> GubaDetail:
             "post_last_time": row.get("post_last_time") if isinstance(row.get("post_last_time"), str) else None,
             "post_display_time": row.get("post_display_time") if isinstance(row.get("post_display_time"), str) else None,
         },
-        source_metadata=_source_metadata(row, detail=True),
+        source_metadata=_source_metadata(row, detail=True, field_errors=field_errors),
     )
 
 
@@ -301,6 +338,15 @@ def merge_list_and_detail(item: GubaListItem, detail: GubaDetail) -> dict[str, A
     for name in ("author_id", "author_name", "canonical_bar_code", "title", "published_at"):
         if getattr(item, name) != getattr(detail, name):
             raise GubaDetailMismatch(f"list/detail {name} mismatch")
+    source_metadata = {**item.source_metadata, **detail.source_metadata}
+    source_metadata["extra"] = {
+        **item.source_metadata.get("extra", {}),
+        **detail.source_metadata.get("extra", {}),
+    }
+    source_metadata["field_errors"] = {
+        **item.source_metadata.get("field_errors", {}),
+        **detail.source_metadata.get("field_errors", {}),
+    }
     return {
         "source": SOURCE,
         "source_item_id": item.source_item_id,
@@ -324,5 +370,5 @@ def merge_list_and_detail(item: GubaListItem, detail: GubaDetail) -> dict[str, A
         "forward_count": detail.forward_count,
         "source_post_id": detail.source_post_id,
         "source_times_raw": detail.source_times_raw,
-        "source_metadata": {**item.source_metadata, **detail.source_metadata},
+        "source_metadata": source_metadata,
     }

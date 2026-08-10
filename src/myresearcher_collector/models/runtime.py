@@ -37,6 +37,7 @@ class RuntimeCounters:
     details_requested: int = 0
     details_success: int = 0
     details_failed: int = 0
+    identity_content_drifts: int = 0
 
     def as_dict(self) -> dict[str, int]:
         return {
@@ -54,6 +55,7 @@ class GubaSourceItem:
     """
 
     source: str
+    schema_version: str
     source_item_id: str
     requested_bar_code: str
     canonical_bar_code: str | None
@@ -78,6 +80,8 @@ class GubaSourceItem:
     source_times_raw: dict[str, str | None]
     source_metadata: dict[str, Any]
     raw_ref: dict[str, str]
+    observation_version: int = 1
+    final_url: str | None = None
 
     @property
     def identity_key(self) -> tuple[str, str]:

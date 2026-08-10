@@ -39,7 +39,7 @@ Use `GET` on page 1 `list,{stock_code},f.html`, page 2+ `list,{stock_code},f_{pa
 and the exact standard detail link. Requests must remain HTTPS and source-owned.
 
 Status:
-`IMPLEMENTED_NOT_DEVELOPER_TESTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
 - `sources/eastmoney_guba/collector.py::EastmoneyGubaCollector.list_url`
@@ -50,12 +50,15 @@ Implementation evidence:
 
 Test evidence:
 - The collector tests use the expected list and detail URLs in their mapping
-  transport, but do not exercise the real transport or redirect handling.
+  transport.
+- `test_redirect_final_url_outside_source_boundary_fails_closed` verifies a
+  final URL outside the source boundary is rejected.
+- `test_collects_pages_details_and_overlap_idempotently` verifies final URL
+  recording for an approved HTTPS final URL.
 
 Notes:
-The exact final redirect URL is not recorded or checked. The standard-library
-transport follows redirects without an allowlist callback. This is a required
-gap, not a source observation.
+`UrllibTransport` validates every redirect and final URL through its source
+redirect handler. No live redirect was used.
 
 ### Request parameters and headers
 
@@ -169,14 +172,15 @@ multiple requested bars remains one logical source item with multiple
 associations.
 
 Status:
-`IMPLEMENTED_NOT_DEVELOPER_TESTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
 - `GubaListItem`, `GubaDetail`, `GubaSourceItem` retain both bar values.
 - `GubaSourceItem.identity_key` is `(source, source_item_id)`.
 
 Test evidence:
-- No cross-bar fixture or test exists in this Round.
+- `test_cross_bar_and_nullable_fields_remain_explicit` verifies requested and
+  canonical bars remain distinct for the same source row.
 
 ### Identity/content drift and immutable observations
 
@@ -186,18 +190,22 @@ for the same ID become a new immutable observation/version and expose an
 identity-content drift metric rather than being silently merged.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- `collector.py::collect` skips every already-seen ID without comparing the new
-  raw facts or recording a drift metric.
+- `collector.py::collect` compares repeated list observations, increments
+  `identity_content_drifts`, retains immutable raw references and emits an
+  incremented `observation_version` for changed source facts.
+- `GubaSourceItem.identity_key` remains the logical `(source, source_item_id)`;
+  versioned observations are not silently merged.
 
 Test evidence:
-- `test_collects_pages_details_and_overlap_idempotently` covers duplicate ID
-  suppression only; it does not cover changed facts.
+- `test_collects_pages_details_and_overlap_idempotently` covers identical
+  overlap suppression and changed-count drift with versions `[1, 2, 1]`.
 
 Notes:
-This is a required identity contract gap and blocks Tester handoff.
+Cross-run comparison can use the optional `existing_observations` mapping;
+durable storage remains outside this source-isolated round.
 
 ## Fields
 
@@ -208,21 +216,23 @@ Emit the required source, source ID, requested bar, content, publication time,
 collection time, URL, raw reference and source metadata fields.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- `GubaSourceItem` contains most promoted fields and `raw_ref`.
-- It has no `schema_version` field or collector/parser schema-version constant.
-- `parser.py::_source_metadata` retains only a fixed subset and does not
-  populate the required `source_metadata.extra` with remaining source fields.
+- `GubaSourceItem.schema_version` and parser constant `SCHEMA_VERSION` provide
+  the frozen raw contract version.
+- `parser.py::_source_metadata` places unpromoted source fields in
+  `source_metadata.extra`.
+- Required promoted fields, source times, raw refs and final URL are present
+  on the source item.
 
 Test evidence:
-- Existing tests verify selected promoted fields and raw references, but not
-  schema version or complete extra-field preservation.
+- `test_collects_pages_details_and_overlap_idempotently` checks the schema
+  version, final URL and raw refs.
+- `test_source_metadata_extra_is_retained` checks unpromoted source fields.
 
 Notes:
-The missing required fields are frozen in section 7 of the source spec; this is
-a required gap and blocks Tester handoff.
+No production DataClean envelope is claimed.
 
 ### Nullable values, numeric zero and body semantics
 
@@ -232,22 +242,25 @@ numeric zero, preserve an empty source body, and never substitute title for
 body.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
 - `parser.py::_optional_int` distinguishes `0` from `None`.
 - `merge_list_and_detail` passes through the detail body without title fallback.
-- `parser.py::_optional_text` converts `""` to `None`, which does not preserve
-  the spec's title null-versus-empty distinction.
+- `parser.py::_optional_text(..., preserve_empty=True)` retains an empty title
+  as `""`; nullable author and metadata values remain `None`.
 
 Test evidence:
 - `test_list_parser_preserves_scope_and_source_times` checks numeric zero.
 - `test_detail_parser_and_merge_preserve_empty_body_without_title_fallback`
   checks empty body behavior.
-- No test covers empty title preservation, missing counts, or nullable author.
+- `test_cross_bar_and_nullable_fields_remain_explicit` checks nullable author
+  and missing count versus numeric zero.
+- `test_empty_title_and_optional_invalid_times_are_preserved_as_field_state`
+  checks empty title preservation.
 
 Notes:
-The empty-title conversion is a required semantic gap, not a test-only gap.
+Title and body are never synthesized from one another.
 
 ### Alternate post types and source metadata
 
@@ -296,19 +309,19 @@ update/display fields remain nullable with a field error and do not invalidate
 an otherwise valid item.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- `parse_source_time(..., required=False)` returns null only for `None`/empty;
-  a non-empty malformed optional timestamp raises `GubaParseError`, causing
-  the row to fail.
+- `_optional_source_time` records `field_errors` and returns null for malformed
+  optional update/display values while required publication time remains strict.
 
 Test evidence:
-- Only invalid required publication time is tested by
-  `test_invalid_publish_time_is_rejected`.
+- `test_invalid_publish_time_is_rejected` checks required publication failure.
+- `test_empty_title_and_optional_invalid_times_are_preserved_as_field_state`
+  checks nullable optional times and field errors.
 
 Notes:
-The optional-field failure behavior is a required source-spec distinction.
+The raw source time strings remain available in `source_times_raw`.
 
 ## Error Behavior and Runtime Outcomes
 
@@ -319,21 +332,21 @@ Expose `SUCCESS`, `NO_NEW_DATA`, `PARTIAL_COLLECTION`, `COLLECTION_FAILED`,
 `SPEC_MISMATCH`, and `CANCELLED` with the frozen meanings.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
 - `models/runtime.py::CollectionStatus` declares all six values.
-- `collector.py::collect` returns the first five in its implemented paths, but
-  has no cancellation input or cancellation path.
+- `collector.py::collect` accepts `cancel_check` and returns `CANCELLED` without
+  advancing the watermark or issuing a request.
 
 Test evidence:
 - Tests cover `SUCCESS`, `NO_NEW_DATA`, `PARTIAL_COLLECTION`, and
   `SPEC_MISMATCH`.
-- No test or implementation path produces `CANCELLED`.
+- `test_cancellation_is_explicit_and_does_not_request` covers `CANCELLED`.
 
 Notes:
-The absent external-cancellation contract is a required gap for the frozen
-runtime outcome set.
+The callback is an internal source-isolated cancellation boundary; no scheduler
+or external orchestration is introduced.
 
 ### Empty, malformed and partial bodies
 
@@ -363,7 +376,7 @@ non-success responses rather than empty pages. Exhaustion maps to failed or
 partial according to acquired evidence.
 
 Status:
-`IMPLEMENTED_NOT_DEVELOPER_TESTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
 - `collector.py::_fetch` classifies timeout/OSError/URLError, 403, 429 and
@@ -372,8 +385,9 @@ Implementation evidence:
 Test evidence:
 - Timeout success retry, 429 retry, 403 detail failure and later 503 partial
   tests exist.
-- There is no explicit retry-exhaustion assertion, DNS/TLS case, or other
-  non-2xx case.
+- `test_retry_exhaustion_is_collection_failed` covers timeout exhaustion.
+- `test_redirect_final_url_outside_source_boundary_fails_closed` covers an
+  explicit non-success redirect-policy failure.
 
 ### Retry-After, backoff and access-block budget
 
@@ -382,19 +396,20 @@ Honor a safe numeric `Retry-After`, use bounded exponential backoff with
 jitter, retry 403/WAF conservatively, and expose the retry behavior.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- `collector.py::_backoff` applies deterministic exponential delay only.
-- `_fetch` never reads `Retry-After` and has no jitter or observable retry
-  metadata beyond aggregate counters.
+- `collector.py::_retry_after` accepts bounded numeric `Retry-After` values.
+- `_backoff` applies bounded exponential delay plus injected jitter and the
+  retry-after floor; request counters expose retry attempts.
 
 Test evidence:
-- Existing 429/timeout tests validate retry classification only.
+- `test_retry_after_and_bounded_backoff_are_observable` checks Retry-After,
+  interval sleep and the backoff bound.
+- `test_retry_exhaustion_is_collection_failed` checks exhaustion.
 
 Notes:
-Retry-After and jitter are explicit frozen policy requirements; this gap blocks
-Tester handoff.
+The jitter function is injectable for deterministic tests.
 
 ### Rate limiting and concurrency
 
@@ -403,18 +418,18 @@ Use at least the approved default interval, one in-flight request per source,
 and no account/cookie/CAPTCHA bypass.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- Requests are sequential, but `base_backoff_seconds` defaults to `0.0` and
-  no minimum inter-request interval or elapsed-time accounting exists.
+- Requests are sequential; `_rate_limit` enforces the configured minimum
+  interval, and `CollectorConfig` rejects values below 2.5 seconds.
 
 Test evidence:
-- No timing or concurrency test exists.
+- `test_minimum_interval_cannot_be_disabled` checks the lower bound.
+- `test_retry_after_and_bounded_backoff_are_observable` checks interval sleep.
 
 Notes:
-The approved spec calls for a configurable interval not below 2.5 seconds;
-the current collector does not enforce it. This is a required gap.
+No account, cookie or CAPTCHA bypass exists.
 
 ## Abnormal Cases
 
@@ -435,7 +450,8 @@ Implementation evidence:
 
 Test evidence:
 - Alternate type and zero-count behavior are tested.
-- No pinned, cross-bar, missing-author, missing-count or repost fixture exists.
+- `test_cross_bar_and_nullable_fields_remain_explicit` covers cross-bar,
+  missing-author and missing-count behavior.
 
 ### Duplicate pages and structure changes
 
@@ -456,8 +472,7 @@ Test evidence:
 - `test_malformed_embedded_payload_is_schema_mismatch`
 
 Notes:
-The changed-facts/content-drift requirement is separate and remains
-`NOT_IMPLEMENTED` above.
+Changed facts are represented by `observation_version` and the drift counter.
 
 ### Forbidden content filtering
 
@@ -485,7 +500,7 @@ least two pages, and stop only after a full old/at-watermark page plus one
 confirmation page; `max_pages` remains a hard cap.
 
 Status:
-`IMPLEMENTED_NOT_DEVELOPER_TESTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
 - `collect` starts at page 1, uses page-number routes and counts consecutive
@@ -494,10 +509,11 @@ Implementation evidence:
 Test evidence:
 - `test_watermark_confirmation_returns_no_new_data_without_detail_requests`
   covers the no-new-data confirmation path.
+- `test_partial_run_does_not_advance_watermark` covers partial-run protection.
 
 Notes:
-No test proves that a previously seen ID with a newer publication time resets
-the boundary; the current early `seen_ids` branch does not compare its time.
+Repeated IDs are compared before duplicate suppression; a changed observation
+is versioned and a watermark boundary is not advanced by a partial run.
 
 ### High-watermark commit and partial runs
 
@@ -506,18 +522,18 @@ Advance the committed watermark only after every required page/detail in the
 claimed window succeeds; partial or failed runs must not advance it.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- `collect` computes `new_watermark = max(item.published_at, ...)` even when
-  the result status is `PARTIAL_COLLECTION`.
-- No committed-watermark store or atomic commit boundary exists.
+- `collect` returns the prior watermark for `PARTIAL_COLLECTION`,
+  `COLLECTION_FAILED`, `SPEC_MISMATCH` and `CANCELLED`; only successful/no-data
+  outcomes compute a candidate watermark.
 
 Test evidence:
-- No partial-run watermark regression test exists.
+- `test_partial_run_does_not_advance_watermark`.
 
 Notes:
-This violates an explicit incremental contract and blocks Tester handoff.
+Durable committed-watermark persistence remains outside this round.
 
 ### Page overlap and replay identity
 
@@ -611,23 +627,23 @@ list, first/later page failure, detail failure, retry exhaustion, max-pages
 boundary and idempotent replay.
 
 Status:
-`NOT_IMPLEMENTED`
+`IMPLEMENTED_AND_DEVELOPER_TESTED`
 
 Implementation evidence:
-- The existing parser/collector test modules cover overlap, ID mismatch,
-  alternate type, missing ID, malformed JSON, publish/update separation, zero
-  counts, empty page, later page failure, detail failure, a retry success case,
-  max-page partial and replay idempotency.
+- The parser/collector test modules cover overlap, exact ID/detail agreement,
+  cross-bar fields, alternate type, missing ID, malformed JSON, publish/update
+  separation, nullable author, missing-vs-zero counts, empty page, later page
+  failure, detail failure, retry exhaustion, max-page boundary and replay
+  idempotency.
 
 Test evidence:
-- Missing coverage: cross-bar, nullable author, missing counts, retry
-  exhaustion and a dedicated exact max-pages boundary fixture.
+- `test_cross_bar_and_nullable_fields_remain_explicit`
+- `test_retry_exhaustion_is_collection_failed`
+- `test_max_pages_is_hard_partial_boundary`
 
 Notes:
-Because the frozen acceptance list is not fully represented in Developer-side
-tests, this item is a required gap and blocks Tester handoff. This does not
-claim that the implementation paths are all incorrect; it records the missing
-Developer evidence.
+All acceptance cases are deterministic and offline. This is Developer evidence,
+not independent Tester acceptance.
 
 ## Fixture Provenance
 
@@ -642,19 +658,15 @@ added by this audit.
 | `empty_page.html` | Source-success empty `re` list as the approved empty-page stop shape | `LIVE-EVIDENCE-DERIVED STRUCTURE` plus `PURE POLICY SYNTHETIC CASE` | Empty-page outcome is synthetic-only |
 | `malformed_page.html` | Approved fail-closed policy for missing embedded assignment | `PURE POLICY SYNTHETIC CASE` | Schema mismatch is synthetic-only |
 
-No fixture establishes live redirect behavior, Retry-After behavior, official
-rate limits, historical completeness, deletion semantics, cross-bar identity,
-identity-content drift or durable raw persistence.
+No fixture establishes official rate limits, historical completeness, deletion
+semantics or durable raw persistence. Redirect policy, Retry-After handling,
+cross-bar fields and identity-content drift are validated only with synthetic
+transport/fixture data.
 
 ## Self-Audit Decision
 
-`DEVELOPER_SELF_AUDIT: BLOCKED_FOR_TESTER`
+`DEVELOPER_SELF_AUDIT: READY_FOR_TESTER`
 
-Required gaps are: redirect/final-host enforcement and recording; required
-`schema_version` and `source_metadata.extra`; identity-content drift/version
-handling; empty-title and optional-time semantics; `CANCELLED` execution path;
-Retry-After/jitter/minimum rate behavior; partial-run watermark protection; and
-the missing acceptance-test cases listed above.
-
-These gaps are recorded only. No production code, fixtures or source
-specification was changed during this self-audit.
+All previously listed REQUIRED gaps have implementation evidence and
+deterministic Developer-side evidence. `CONTRACT_BLOCKED` and
+`INTENTIONALLY_DEFERRED_BY_APPROVED_SPEC` items remain unchanged.

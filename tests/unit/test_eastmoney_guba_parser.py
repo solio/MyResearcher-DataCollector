@@ -39,6 +39,50 @@ def test_list_parser_preserves_scope_and_source_times() -> None:
     assert row.reply_count == 0
 
 
+def test_cross_bar_and_nullable_fields_remain_explicit() -> None:
+    html = fixture("list_page_1.html").replace(
+        '"user_id":"9001","user_nickname":"author-one"',
+        '"user_id":null,"user_nickname":null',
+    ).replace(
+        '"post_click_count":0,"post_forward_count":0,"post_comment_count":0',
+        '"post_forward_count":0,"post_comment_count":0',
+        1,
+    )
+    page = parse_list_page(html, "600002")
+    row = page.rows[0]
+    assert row.requested_bar_code == "600002"
+    assert row.canonical_bar_code == "600001"
+    assert row.author_id is None
+    assert row.author_name is None
+    assert row.read_count is None
+
+
+def test_empty_title_and_optional_invalid_times_are_preserved_as_field_state() -> None:
+    html = fixture("list_page_1.html").replace(
+        '"post_title":"synthetic post one"', '"post_title":""', 1
+    ).replace(
+        '"post_last_time":"2026-08-10 10:05:00"', '"post_last_time":"invalid"', 1
+    ).replace(
+        '"post_display_time":"2026-08-10 10:00:00"', '"post_display_time":"also-invalid"', 1
+    )
+    row = parse_list_page(html, "600001").rows[0]
+    assert row.title == ""
+    assert row.last_updated_at is None
+    assert row.display_time is None
+    assert row.source_metadata["field_errors"] == {
+        "post_last_time": "invalid_source_timestamp",
+        "post_display_time": "invalid_source_timestamp",
+    }
+
+
+def test_source_metadata_extra_is_retained() -> None:
+    html = fixture("list_page_1.html").replace(
+        '"post_source_id":""', '"post_source_id":"","synthetic_extra":{"flag":true}', 1
+    )
+    row = parse_list_page(html, "600001").rows[0]
+    assert row.source_metadata["extra"] == {"synthetic_extra": {"flag": True}}
+
+
 def test_detail_parser_and_merge_preserve_empty_body_without_title_fallback() -> None:
     page = parse_list_page(fixture("list_page_1.html"), "600001")
     detail_html = fixture("detail_1001.html").replace(

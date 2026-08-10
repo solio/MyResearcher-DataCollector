@@ -2,11 +2,14 @@
 
 ```text
 DEVELOPER_ROUND: READY_FOR_TESTER
+DEVELOPER_SELF_AUDIT: READY_FOR_TESTER
 Next Role: Tester
 FIRST_SOURCE: eastmoney_guba
 SOURCE_SPEC: APPROVED
 SPEC_MISMATCH: NONE OBSERVED
 ```
+
+Traceability: `runs/phase-01-round-02/spec-implementation-traceability.md`
 
 ## Implemented behavior
 
@@ -16,6 +19,11 @@ SPEC_MISMATCH: NONE OBSERVED
 - `post_publish_time`, `post_last_time` and `post_display_time` remain separate timezone-aware values using the approved UTC+08:00 source interpretation.
 - Requested bar and canonical bar are retained separately. Alternate nonzero post types are retained in fetched page evidence and counted, but not emitted under the approved scope.
 - `src/myresearcher_collector/sources/eastmoney_guba/collector.py` provides injectable HTTP transport, retry classification for timeout/429/403/5xx, page/detail counters, overlap idempotency by `(source, source_item_id)`, watermark confirmation, explicit terminal statuses and a developer-only in-memory raw evidence store.
+- Source items carry `schema_version`, `source_metadata.extra`, final URL,
+  identity-content drift counters and immutable `observation_version` values.
+- Redirects are restricted to approved HTTPS Eastmoney hosts; bounded backoff,
+  numeric `Retry-After`, minimum request interval, cancellation and partial-run
+  watermark protection are enforced at the source-isolated boundary.
 - `src/myresearcher_collector/cli/` provides the minimal `eastmoney-guba` command boundary. It returns nonzero for partial/failure/spec-mismatch outcomes and does not implement DataClean persistence.
 
 ## Fixtures and tests
@@ -35,6 +43,10 @@ Developer tests cover:
 - later-page and detail failure → `PARTIAL_COLLECTION`;
 - first-page schema drift → `SPEC_MISMATCH`;
 - raw evidence references and counter reconciliation.
+- cross-bar/nullable/missing-count fields, empty-title preservation and optional
+  time field errors;
+- retry exhaustion, `Retry-After`, interval bounds, redirect policy,
+  cancellation and partial-run watermark protection.
 
 ## Exact validation commands
 
@@ -45,7 +57,9 @@ PYTHONDONTWRITEBYTECODE=1 python -m pytest -q
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 python -m myresearcher_collector.cli --help
 ```
 
-Observed result at handoff: `15 passed`, `15 collected`, compile succeeded, CLI help succeeded. Pytest may report a non-blocking cache-permission warning because this checkout's `.pytest_cache` is not writable.
+Observed result at correction handoff: `25 passed`, `25 collected`, compile
+succeeded, CLI help succeeded. Pytest may report a non-blocking cache-permission
+warning because this checkout's `.pytest_cache` is not writable.
 
 ## Changed files
 
