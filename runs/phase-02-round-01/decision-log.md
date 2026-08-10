@@ -16,23 +16,26 @@ may share bytes, but it cannot merge request observations.
 
 ### D-03 — Observations are append-only versions
 
-The logical key is `(source, source_item_id, scope_key)`. Identical current
-facts are idempotently linked; changed facts acquired in an authorized path
-append `observation_version + 1`. Historical known IDs at/before the Phase 1
-watermark are not made subject to a new refresh obligation.
+The logical key is `(source, source_item_id)`; requested scopes are append-only
+associations. Identical current facts are idempotently linked; changed facts
+acquired in an authorized path append `observation_version + 1`. Historical
+known IDs at/before the Phase 1 watermark are not made subject to a new refresh
+obligation.
 
 ### D-04 — Checkpoint is optimization state
 
-`collector_checkpoints` stores the last safe watermark/run only. It is never a
-source completeness claim and cannot suppress an unknown source ID merely from
-its publication time.
+`collector_checkpoints` stores the last runtime-declared safe watermark/run
+only. It is never a source completeness claim and cannot suppress an unknown
+source ID merely from its publication time. A `PARTIAL_COLLECTION` may advance
+it only when the runtime safe-frontier and persistence conditions are proven;
+the status label alone is not decisive.
 
 ### D-05 — Filesystem publication precedes SQLite reference
 
 A raw file is durable and hash-verified before its evidence row is committed.
-Checkpoint and terminal success are committed only with the corresponding
-metadata transaction. This is the minimal recoverable ordering across two
-storage systems.
+Checkpoint and terminal status are committed only with the corresponding
+metadata transaction and a validated runtime safe frontier. This is the
+minimal recoverable ordering across two storage systems.
 
 ### D-06 — DataClean uses a stable export boundary
 
@@ -84,3 +87,9 @@ the append-only observation table.
 
 Rejected because Phase 1 explicitly preserves unknown IDs at or before the
 watermark as eligible.
+
+### R-05 — Global list/detail evidence topology
+
+Rejected because evidence roles must be dictated by the applicable
+SOURCE_SPEC. Eastmoney retains its list/detail roles, but a future source with
+one direct response must not fabricate a nonexistent list request.

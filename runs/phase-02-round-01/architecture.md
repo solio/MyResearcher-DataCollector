@@ -43,5 +43,8 @@ deployment surface without satisfying a frozen requirement.
 
 Collector owns source requests, parsing, source semantics and runtime outcome.
 Persistence owns append-only storage, lineage, atomic publication and safe
-checkpoint commit. DataClean owns cleaning and downstream interpretation. No
-layer performs sentiment, finance or trading decisions here.
+checkpoint commit. Collector runtime declares any safe contiguous frontier;
+Persistence validates and atomically commits it but does not recompute page
+order, item eligibility or source completeness. DataClean owns cleaning and
+downstream interpretation. No layer performs sentiment, finance or trading
+decisions here.

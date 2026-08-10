@@ -56,7 +56,7 @@ therefore regenerates the same child IDs, while no ID depends on Python's
 process hash or object address.
 
 The terminal status is written only after all required evidence, observations,
-failures and (for a safe successful run) checkpoint changes are committed.
+failures and any eligible checkpoint change are committed.
 `NO_NEW_DATA` is never inferred from zero child rows alone.
 
 ## 3. RawEvidence
@@ -87,7 +87,8 @@ replaced with a later response.
 ## 4. SourceItemObservation
 
 An observation is an accepted, actually acquired source-item snapshot. It is
-append-only and must be linked to at least one list or detail evidence row.
+append-only and must be linked to one or more supporting RawEvidence rows that
+are sufficient under the applicable source specification.
 
 Logical identity is `(source, source_item_id)`; the Phase 1 source identity is
 not split by requested bar. `scope_key` is a requested-scope association kept
@@ -128,10 +129,13 @@ before the Phase 1 watermark is not required to be detail-fetched solely to
 discover historical changes; this storage contract does not add refresh work.
 
 `observation_evidence(observation_id, evidence_id, evidence_role)` is a join
-table. It must contain at least the accepted detail evidence and the list
-evidence used to establish identity/scope. `observation_scopes(observation_id,
-scope_key, requested_bar_code)` records every requested-bar association without
-mutating the observation when another bar sees the same source item.
+table. Its roles are explicit and versioned, and the linked evidence set must
+satisfy the applicable SOURCE_SPEC. For `eastmoney_guba` Phase 1, accepted
+observations retain the required list and detail evidence roles; a future
+source with one direct item response need not fabricate a list role.
+`observation_scopes(observation_id, scope_key, requested_bar_code)` records
+every requested-bar association without mutating the observation when another
+bar sees the same source item.
 
 ## 5. CollectionAttempt and CollectionFailure
 
@@ -173,9 +177,19 @@ identity/observations: an unknown ID remains eligible even when its valid
 publication time is at or before the checkpoint watermark.
 
 Checkpoint advancement is allowed only in the same SQLite transaction that
-commits all required observations/evidence for a `SUCCESS` or completed safe
-`NO_NEW_DATA` run. `PARTIAL_COLLECTION`, `COLLECTION_FAILED`,
-`SPEC_MISMATCH` and `CANCELLED` leave the prior checkpoint unchanged.
+commits all required observations, raw evidence, attempt/failure lineage and
+metadata through a runtime-declared `safe_frontier`. The terminal status name
+alone does not decide advancement. In particular, `PARTIAL_COLLECTION` MAY
+advance conditionally when the Collector has produced a proven safe contiguous
+frontier and persistence has committed everything required before it.
+
+Persistence MUST NOT compute or reinterpret that frontier. It validates only
+that the runtime supplied one, that no unresolved gap crosses it, and that all
+required records before it are committed. An acquisition failure, unresolved
+eligible item, parse failure preventing accepted persistence, persistence
+failure, identity ambiguity or source/spec mismatch crossing the frontier
+blocks advancement. If those checks fail, the prior checkpoint remains
+unchanged.
 
 ## 7. Storage invariants
 
@@ -183,14 +197,18 @@ commits all required observations/evidence for a `SUCCESS` or completed safe
    append-only. A hash/path mismatch is a hard storage error.
 2. **Immutable observations:** no in-place UPDATE/DELETE; versions and drift
    are appended.
-3. **Traceability:** every observation has list/detail evidence lineage; every
-   evidence row has a run and request-attempt lineage.
+3. **Traceability:** every observation has sufficient supporting RawEvidence
+   lineage under its applicable SOURCE_SPEC; every evidence row has a run and
+   request-attempt lineage. Evidence roles are not globally fixed to
+   list/detail.
 4. **Deterministic identity:** UUID/hex IDs are explicit persisted values;
    content hashes use SHA-256 over bytes/canonical fields. No unstable Python
    `hash()` or object identity is used.
 5. **Failure != empty:** terminal status and failure rows distinguish no data,
    partial acquisition, failed acquisition, parse/schema failure and cancel.
-6. **Checkpoint safety:** no failed/partial run advances watermark.
+6. **Checkpoint safety:** checkpoint movement is conditional on a runtime-
+   declared proven safe contiguous frontier and complete persistence before it;
+   `PARTIAL_COLLECTION` is neither an automatic advance nor an automatic ban.
 7. **Source semantics:** missing remains `NULL`, numeric zero remains zero,
    and source publication/update/observation times are not substituted.
 
@@ -204,7 +222,8 @@ ordered and recoverable:
    `fsync`, validate byte size/SHA-256, and atomically rename with no-clobber
    semantics to its content-addressed final path. `fsync` the directory.
 3. In one SQLite transaction insert attempts, raw-evidence rows, observations,
-   failures and (only when safe) the checkpoint and terminal run status.
+   failures and (only when the runtime-declared safe frontier passes storage
+   validation) the checkpoint and terminal run status.
 4. Commit. Only a committed terminal run may be reported as `SUCCESS` or
    `NO_NEW_DATA`.
 

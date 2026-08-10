@@ -19,7 +19,9 @@ implementation by itself.
 - Defined CollectionRun, RawEvidence, SourceItemObservation,
   CollectionAttempt/Failure and CollectorCheckpoint.
 - Defined append-only, traceability, identity, atomic publish, failure and
-  checkpoint invariants.
+  conditional safe-frontier checkpoint invariants.
+- Kept evidence traceability source-agnostic while retaining Eastmoney's
+  source-required list/detail roles.
 - Proposed a minimal SQLite schema and local content-addressed raw layout.
 - Defined a read-only versioned export boundary to DataClean without designing
   DataClean internals.

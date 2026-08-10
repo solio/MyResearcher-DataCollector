@@ -35,6 +35,7 @@ The following are already determined by frozen contracts and are not deferred:
 - raw evidence and observations are immutable;
 - request lineage is retained even when bytes are content-deduplicated;
 - failure is distinct from empty/no-data;
-- failed or partial runs cannot advance a checkpoint;
+- a checkpoint cannot cross an unresolved gap; a partial run may advance only
+  through a runtime-declared, proven safe contiguous frontier;
 - an unknown ID cannot be skipped solely because it is at/before the watermark;
 - Collector does not perform DataClean cleaning or sentiment/finance work.
