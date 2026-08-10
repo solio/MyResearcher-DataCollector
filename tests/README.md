@@ -6,4 +6,4 @@
 
 Production network access must never be the only test mechanism. See `docs/data-collector/testing-contract.md`.
 
-Phase 0 includes only a package-structure smoke test; no real source behavior is claimed.
+Phase 1 Round 2 includes offline parser/collector behavior tests for the approved Eastmoney Guba source. Tests remain independent of production network availability.

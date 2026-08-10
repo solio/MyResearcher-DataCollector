@@ -2,7 +2,7 @@
 
 MyResearcher-DataCollector is the acquisition boundary between external sources and MyResearcher-DataClean. It fetches, parses, minimally normalizes raw structure, preserves traceability, and reports acquisition outcomes. It does not clean content, infer sentiment, make financial judgments, or generate trading decisions.
 
-Current status: **Phase 0 project bootstrap**. No production data source is implemented.
+Current status: **Phase 1 Round 2 Developer implementation**. The isolated Eastmoney Guba source adapter is implemented behind its approved Source Spec; Tester review is pending.
 
 ## Pipeline
 
@@ -21,7 +21,7 @@ MyResearcher-DataClean
 - `agents/`: the three approved role definitions.
 - `docs/data-collector/`: product, architecture, data, source, test, runtime and phase contracts.
 - `specs/`: one evidence-backed SOURCE_SPEC per future production adapter.
-- `src/myresearcher_collector/`: package skeleton; no source implementation in Phase 0.
+- `src/myresearcher_collector/`: source-isolated adapter, internal raw models and minimal CLI boundary.
 - `tests/`: unit, integration and sanitized fixture boundaries.
 - `runs/`: phase/round scope and evidence.
 - `scripts/`: future deterministic project utilities.
@@ -32,13 +32,15 @@ A production adapter may start only after a Source Researcher has produced an ap
 
 Read [AGENTS.md](AGENTS.md) before doing any work.
 
-## Phase 0 checks
+## Deterministic checks
 
 From this directory:
 
 ```bash
 python -m compileall -q src tests
 python -m pytest --collect-only -q
-```
+python -m pytest -q
 
-Zero collected tests is expected until Phase 1; syntax and project configuration must still be valid.
+# From a source checkout, exercise the source boundary without a package install:
+PYTHONPATH=src python -m myresearcher_collector.cli --help
+```
