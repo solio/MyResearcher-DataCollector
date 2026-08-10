@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Runtime artifacts must not be committed by default.
+output/
+logs/
+
+# Credentials and browser state are never fixtures.
+cookies*.json
+credentials*.json
