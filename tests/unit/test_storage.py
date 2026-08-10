@@ -275,6 +275,53 @@ def test_safe_frontier_commits_for_success_no_data_and_partial(tmp_path: Path, s
     assert store.checkpoint("eastmoney_guba", "stock:600001") == ("2026-08-10T03:00:00.000000Z", "run-1")
 
 
+def test_checkpoint_allows_forward_advance(tmp_path: Path) -> None:
+    store, _ = make_store(tmp_path)
+    t1 = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc)
+    start_run(store, "run-1")
+    assert store.finish_run("run-1", status="SUCCESS", finished_at=NOW, safe_frontier=SafeFrontier(t1)) is True
+    start_run(store, "run-2")
+    assert store.finish_run("run-2", status="SUCCESS", finished_at=NOW, safe_frontier=SafeFrontier(t2)) is True
+    assert store.checkpoint("eastmoney_guba", "stock:600001") == ("2026-08-10T02:00:00.000000Z", "run-2")
+
+
+def test_checkpoint_equal_frontier_is_idempotent(tmp_path: Path) -> None:
+    store, _ = make_store(tmp_path)
+    t1 = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)
+    start_run(store, "run-1")
+    assert store.finish_run("run-1", status="SUCCESS", finished_at=NOW, safe_frontier=SafeFrontier(t1)) is True
+    start_run(store, "run-2")
+    assert store.finish_run("run-2", status="SUCCESS", finished_at=NOW, safe_frontier=SafeFrontier(t1)) is True
+    assert store.checkpoint("eastmoney_guba", "stock:600001") == ("2026-08-10T01:00:00.000000Z", "run-2")
+
+
+def test_checkpoint_regression_fails_closed_and_keeps_run_running(tmp_path: Path) -> None:
+    store, _ = make_store(tmp_path)
+    t1 = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc)
+    start_run(store, "run-1")
+    assert store.finish_run("run-1", status="SUCCESS", finished_at=NOW, safe_frontier=SafeFrontier(t2)) is True
+    start_run(store, "run-2")
+    with pytest.raises(PersistenceError, match="checkpoint frontier regression"):
+        store.finish_run("run-2", status="SUCCESS", finished_at=NOW, safe_frontier=SafeFrontier(t1))
+    assert store.checkpoint("eastmoney_guba", "stock:600001") == ("2026-08-10T02:00:00.000000Z", "run-1")
+    assert store.conn.execute("SELECT status, watermark_after_utc FROM collection_runs WHERE run_id='run-2'").fetchone() == ("RUNNING", None)
+
+
+def test_partial_checkpoint_regression_fails_closed(tmp_path: Path) -> None:
+    store, _ = make_store(tmp_path)
+    t1 = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc)
+    start_run(store, "run-1")
+    assert store.finish_run("run-1", status="PARTIAL_COLLECTION", finished_at=NOW, safe_frontier=SafeFrontier(t2)) is True
+    start_run(store, "run-2")
+    with pytest.raises(PersistenceError, match="checkpoint frontier regression"):
+        store.finish_run("run-2", status="PARTIAL_COLLECTION", finished_at=NOW, safe_frontier=SafeFrontier(t1))
+    assert store.checkpoint("eastmoney_guba", "stock:600001") == ("2026-08-10T02:00:00.000000Z", "run-1")
+    assert store.conn.execute("SELECT status FROM collection_runs WHERE run_id='run-2'").fetchone()[0] == "RUNNING"
+
+
 def test_partial_without_frontier_and_unresolved_gap_do_not_advance(tmp_path: Path) -> None:
     store, _ = make_store(tmp_path)
     start_run(store)

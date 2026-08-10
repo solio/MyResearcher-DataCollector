@@ -45,6 +45,11 @@ def _optional_utc(value: datetime | str | None) -> str | None:
     return None if value is None else utc_text(value)
 
 
+def _utc_order(value: str) -> datetime:
+    """Parse the canonical UTC text used by the persistence schema."""
+    return datetime.fromisoformat(value[:-1] + "+00:00")
+
+
 def _item_fingerprint(item: GubaSourceItem) -> str:
     metadata = dict(item.source_metadata)
     metadata.pop("final_urls", None)
@@ -340,6 +345,13 @@ class SQLitePersistence:
             if current is None or current[0] != "RUNNING":
                 raise PersistenceError("run is missing or already terminal")
             if advance:
+                existing = self.conn.execute(
+                    "SELECT watermark_utc FROM collector_checkpoints "
+                    "WHERE source=? AND scope_key=?",
+                    (current[1], current[2]),
+                ).fetchone()
+                if existing is not None and _utc_order(frontier_text) < _utc_order(existing[0]):
+                    raise PersistenceError("checkpoint frontier regression")
                 self.conn.execute(
                     """INSERT INTO collector_checkpoints(source, scope_key, watermark_utc, last_safe_run_id, updated_at_utc)
                        VALUES (?,?,?,?,?)
