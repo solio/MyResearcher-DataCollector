@@ -196,12 +196,16 @@ Implementation evidence:
 - `collector.py::collect` compares repeated list observations, increments
   `identity_content_drifts`, retains immutable raw references and emits an
   incremented `observation_version` for changed source facts.
+- Detail observations are fingerprinted after acquisition, so changed detail
+  body or metadata facts are versioned even when the list row is unchanged.
 - `GubaSourceItem.identity_key` remains the logical `(source, source_item_id)`;
   versioned observations are not silently merged.
 
 Test evidence:
 - `test_collects_pages_details_and_overlap_idempotently` covers identical
   overlap suppression and changed-count drift with versions `[1, 2, 1]`.
+- `test_detail_content_drift_creates_new_observation_version` covers a changed
+  detail body with an unchanged list row.
 
 Notes:
 Cross-run comparison can use the optional `existing_observations` mapping;
@@ -386,6 +390,9 @@ Test evidence:
 - Timeout success retry, 429 retry, 403 detail failure and later 503 partial
   tests exist.
 - `test_retry_exhaustion_is_collection_failed` covers timeout exhaustion.
+- `test_429_uses_three_attempt_retry_budget`,
+  `test_5xx_uses_three_attempt_retry_budget` and
+  `test_403_keeps_two_attempt_access_block_budget` cover the separate budgets.
 - `test_redirect_final_url_outside_source_boundary_fails_closed` covers an
   explicit non-success redirect-policy failure.
 
@@ -407,6 +414,8 @@ Test evidence:
 - `test_retry_after_and_bounded_backoff_are_observable` checks Retry-After,
   interval sleep and the backoff bound.
 - `test_retry_exhaustion_is_collection_failed` checks exhaustion.
+- The 429/5xx/403 retry-budget regression tests verify the frozen total-attempt
+  policy.
 
 Notes:
 The jitter function is injectable for deterministic tests.
@@ -510,6 +519,8 @@ Test evidence:
 - `test_watermark_confirmation_returns_no_new_data_without_detail_requests`
   covers the no-new-data confirmation path.
 - `test_partial_run_does_not_advance_watermark` covers partial-run protection.
+- `test_seen_id_newer_than_watermark_is_eligible` covers an already-seen ID
+  whose valid publication time is newer than the committed watermark.
 
 Notes:
 Repeated IDs are compared before duplicate suppression; a changed observation
@@ -568,11 +579,15 @@ Status:
 Implementation evidence:
 - `InMemoryRawEvidenceStore.put` stores immutable byte copies under SHA-256
   keyed `memory://` references; `collect` attaches list/detail refs.
+- List and detail bytes are stored immediately after successful transport and
+  before parsing, including schema-mismatch paths.
 - `source_times_raw` and selected source metadata are carried forward.
 
 Test evidence:
 - `test_collects_pages_details_and_overlap_idempotently` checks five stored
   snapshots and item raw references.
+- `test_first_page_schema_failure_is_spec_mismatch` checks raw retention for a
+  malformed page before `SPEC_MISMATCH` returns.
 
 Notes:
 The approved spec explicitly leaves durable raw snapshot/manifest format and
@@ -640,6 +655,10 @@ Test evidence:
 - `test_cross_bar_and_nullable_fields_remain_explicit`
 - `test_retry_exhaustion_is_collection_failed`
 - `test_max_pages_is_hard_partial_boundary`
+- `test_429_uses_three_attempt_retry_budget`
+- `test_5xx_uses_three_attempt_retry_budget`
+- `test_detail_content_drift_creates_new_observation_version`
+- `test_seen_id_newer_than_watermark_is_eligible`
 
 Notes:
 All acceptance cases are deterministic and offline. This is Developer evidence,

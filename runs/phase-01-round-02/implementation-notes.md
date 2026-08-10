@@ -17,6 +17,9 @@
   numeric `Retry-After`, applies bounded jittered backoff and enforces the
   minimum source request interval. Cancellation and partial-run watermark
   protection are source-isolated runtime behaviors.
+- Retry budgets are three total attempts for timeout/429/5xx and two total
+  attempts for 403 access blocks. Structural page/detail bytes are retained
+  before parsing so `SPEC_MISMATCH` remains replayable.
 
 ## Contract blockers retained
 

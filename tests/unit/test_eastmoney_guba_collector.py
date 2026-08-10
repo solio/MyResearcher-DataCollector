@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from myresearcher_collector.models import CollectionStatus
@@ -142,13 +142,15 @@ def test_later_page_failure_is_partial_not_no_data() -> None:
 
 def test_first_page_schema_failure_is_spec_mismatch() -> None:
     page1, _, _, _ = urls()
-    run, _ = collector({page1: response("malformed_page.html")})
+    store = InMemoryRawEvidenceStore()
+    run, _ = collector({page1: response("malformed_page.html")}, store)
 
     result = run.collect("600001", max_pages=1)
 
     assert result.status is CollectionStatus.SPEC_MISMATCH
     assert result.items == []
     assert result.counters.pages_failed == 1
+    assert len(store.snapshots) == 1
 
 
 def test_valid_empty_page_is_no_new_data() -> None:
@@ -209,6 +211,87 @@ def test_rate_limit_retries_without_becoming_no_data() -> None:
     assert result.counters.requests_failed == 1
     assert result.counters.requests_success == 1
     assert len(transport.calls) == 2
+
+
+def test_429_uses_three_attempt_retry_budget() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({
+        page1: [response("empty_page.html", status=429)] * 3,
+    })
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.counters.requests_total == 3
+    assert result.counters.requests_failed == 3
+    assert len(transport.calls) == 3
+
+
+def test_5xx_uses_three_attempt_retry_budget() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({
+        page1: [response("empty_page.html", status=503)] * 3,
+    })
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.counters.requests_total == 3
+    assert result.counters.requests_failed == 3
+    assert len(transport.calls) == 3
+
+
+def test_403_keeps_two_attempt_access_block_budget() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({
+        page1: [response("empty_page.html", status=403)] * 3,
+    })
+
+    result = run.collect("600001", max_pages=1)
+
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.counters.requests_total == 2
+    assert len(transport.calls) == 2
+
+
+def test_detail_content_drift_creates_new_observation_version() -> None:
+    page1, page2, _, detail1 = urls()
+    changed = body("detail_1001.html").replace(b"synthetic body one", b"changed detail body")
+    run, transport = collector({
+        page1: response("list_page_1.html"),
+        page2: response("list_page_1.html"),
+        detail1: [response("detail_1001.html"), HttpResponse(200, changed, {})],
+    })
+
+    result = run.collect("600001", max_pages=2)
+
+    assert result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert result.counters.identity_content_drifts == 1
+    assert result.counters.details_requested == 2
+    assert [item.observation_version for item in result.items] == [1, 2]
+    assert [item.content for item in result.items] == ["synthetic body one", "changed detail body"]
+    assert transport.calls.count(detail1) == 2
+
+
+def test_seen_id_newer_than_watermark_is_eligible() -> None:
+    page1, page2, _, detail1 = urls()
+    run, transport = collector({
+        page1: response("list_page_1.html"),
+        page2: response("empty_page.html"),
+        detail1: response("detail_1001.html"),
+    })
+
+    result = run.collect(
+        "600001",
+        existing_ids={"1001"},
+        watermark=datetime(2026, 8, 10, 9, 0, tzinfo=timezone(timedelta(hours=8))),
+        max_pages=2,
+    )
+
+    assert result.status is CollectionStatus.SUCCESS
+    assert len(result.items) == 1
+    assert result.counters.details_requested == 1
+    assert detail1 in transport.calls
 
 
 def test_retry_exhaustion_is_collection_failed() -> None:

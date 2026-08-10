@@ -195,7 +195,7 @@ class EastmoneyGubaCollector:
         return status, text, body, headers, final_url
 
     def _fetch(self, url: str, counters: RuntimeCounters) -> tuple[str, bytes, dict[str, str], str]:
-        attempts = self.config.access_block_attempts
+        attempts = self.config.max_attempts
         for attempt in range(1, self.config.max_attempts + 1):
             counters.requests_total += 1
             try:
@@ -323,6 +323,36 @@ class EastmoneyGubaCollector:
             and row.source_times_raw == item.source_times_raw
         )
 
+    @staticmethod
+    def _merged_fingerprint(merged: Mapping[str, Any]) -> tuple[Any, ...]:
+        return tuple(
+            (name, merged.get(name))
+            for name in (
+                "source_item_id", "canonical_bar_code", "canonical_bar_name",
+                "author_id", "author_name", "title", "content", "published_at",
+                "last_updated_at", "display_time", "post_type", "post_state",
+                "post_top_status", "read_count", "reply_count", "like_count",
+                "forward_count", "source_post_id", "source_times_raw",
+                "source_metadata",
+            )
+        )
+
+    @staticmethod
+    def _item_detail_fingerprint(item: GubaSourceItem) -> tuple[Any, ...]:
+        metadata = dict(item.source_metadata)
+        metadata.pop("final_urls", None)
+        return tuple(
+            (name, metadata if name == "source_metadata" else getattr(item, name))
+            for name in (
+                "source_item_id", "canonical_bar_code", "canonical_bar_name",
+                "author_id", "author_name", "title", "content", "published_at",
+                "last_updated_at", "display_time", "post_type", "post_state",
+                "post_top_status", "read_count", "reply_count", "like_count",
+                "forward_count", "source_post_id", "source_times_raw",
+                "source_metadata",
+            )
+        )
+
     def collect(
         self,
         stock_code: str,
@@ -341,8 +371,9 @@ class EastmoneyGubaCollector:
         counters = RuntimeCounters()
         items: list[GubaSourceItem] = []
         failures: list[str] = []
-        seen_ids = set(existing_ids or ())
+        seen_ids = set(existing_ids or ()) | set(existing_observations or ())
         observed_rows: dict[str, Any] = {}
+        observed_detail_fingerprints: dict[str, tuple[Any, ...]] = {}
         observation_versions = {
             source_item_id: item.observation_version
             for source_item_id, item in (existing_observations or {}).items()
@@ -369,6 +400,7 @@ class EastmoneyGubaCollector:
                 stop_reason = "page_failure"
                 break
 
+            page_ref = self.evidence_store.put("list", None, raw_page)
             try:
                 parsed_page = parse_list_page(html, stock_code)
             except GubaSchemaMismatch as exc:
@@ -387,7 +419,6 @@ class EastmoneyGubaCollector:
             counters.pages_success += 1
             counters.records_received += len(parsed_page.rows) + len(parsed_page.out_of_scope_rows)
             counters.records_out_of_scope += len(parsed_page.out_of_scope_rows)
-            page_ref = self.evidence_store.put("list", None, raw_page)
             if not parsed_page.rows and not parsed_page.out_of_scope_rows:
                 stop_reason = "empty_page"
                 break
@@ -400,7 +431,7 @@ class EastmoneyGubaCollector:
                     break
                 prior_row = observed_rows.get(row.source_item_id)
                 prior_item = (existing_observations or {}).get(row.source_item_id)
-                drift = (
+                list_drift = (
                     prior_row is not None and self._row_fingerprint(prior_row) != self._row_fingerprint(row)
                 ) or (
                     prior_row is None
@@ -410,10 +441,8 @@ class EastmoneyGubaCollector:
                 already_seen = row.source_item_id in seen_ids
                 if already_seen:
                     counters.duplicate_records += 1
-                if already_seen and not drift:
-                    continue
                 eligible_new = watermark is None or row.published_at > watermark
-                if watermark is not None and not eligible_new and not drift:
+                if watermark is not None and not eligible_new:
                     seen_ids.add(row.source_item_id)
                     observed_rows[row.source_item_id] = row
                     continue
@@ -422,11 +451,10 @@ class EastmoneyGubaCollector:
                     page_has_new = True
                 seen_ids.add(row.source_item_id)
                 observed_rows[row.source_item_id] = row
-                if drift:
-                    counters.identity_content_drifts += 1
                 counters.details_requested += 1
                 try:
                     detail_html, raw_detail, _, detail_final_url = self._fetch(self.detail_url(row.url), counters)
+                    detail_ref = self.evidence_store.put("detail", row.source_item_id, raw_detail)
                     detail = parse_detail_page(detail_html)
                     merged = merge_list_and_detail(row, detail)
                 except GubaSchemaMismatch:
@@ -440,7 +468,24 @@ class EastmoneyGubaCollector:
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
 
-                detail_ref = self.evidence_store.put("detail", row.source_item_id, raw_detail)
+                detail_fingerprint = self._merged_fingerprint(merged)
+                prior_detail_fingerprint = observed_detail_fingerprints.get(row.source_item_id)
+                if prior_detail_fingerprint is None and prior_item is not None:
+                    prior_detail_fingerprint = self._item_detail_fingerprint(prior_item)
+                detail_drift = (
+                    prior_detail_fingerprint is not None
+                    and detail_fingerprint != prior_detail_fingerprint
+                )
+                drift = list_drift or detail_drift
+                observed_detail_fingerprints[row.source_item_id] = detail_fingerprint
+                counters.details_success += 1
+                first_watermark_eligible_observation = (
+                    watermark is not None and eligible_new and prior_row is None
+                )
+                if already_seen and not drift and not first_watermark_eligible_observation:
+                    continue
+                if drift:
+                    counters.identity_content_drifts += 1
                 collected_at = self.clock()
                 if collected_at.tzinfo is None:
                     collected_at = collected_at.replace(tzinfo=timezone.utc)
@@ -479,7 +524,6 @@ class EastmoneyGubaCollector:
                     final_url=detail_final_url,
                 )
                 items.append(item)
-                counters.details_success += 1
                 counters.records_parsed += 1
 
             if stop_reason == "cancelled":
