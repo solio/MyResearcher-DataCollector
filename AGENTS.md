@@ -38,16 +38,32 @@ Do not add roles without a future approved requirement.
 - Raw data remains traceable.
 - One source working correctly before many sources working partially.
 
+## Cross-Client / Cross-Model Collaboration
+
+This project may be maintained by multiple AI coding clients and models, including Codex with GPT/Codex models, Claude Code CLI with DeepSeek models, and future clients/models. No Agent may assume that another client can see its chat, that another model remembers prior decisions, or that hidden context is shared.
+
+The Git repository is the authoritative shared project memory. Requirements, contracts, specifications, decisions, evidence, open questions, implementation state, test state and handoff state must be persisted as repository artifacts. `Chat history is NOT part of the project contract.`
+
+`Role`, `Client` and `Model` are separate concepts:
+
+- Role: the current responsibility (`Source Researcher`, `Developer` or `Tester`).
+- Client: the execution environment (for example Codex or Claude Code CLI).
+- Model: the model running in that client (for example a GPT/Codex model or DeepSeek).
+
+Roles may be executed by different clients and models. Role authority comes from repository contracts, not model capability. A stronger model gains no extra authority; a weaker model receives no relaxed acceptance criteria. See `docs/data-collector/collaboration-contract.md` for the handoff protocol and source-of-truth priority.
+
 ## Mandatory reading order
 
 Before starting any task, read:
 
 1. `AGENTS.md`
 2. `docs/data-collector/product-goal.md`
-3. `docs/data-collector/data-contract.md`
-4. `docs/data-collector/implementation-plan.md`
-5. the current run's `scope.md`
-6. the applicable `specs/<source-name>.md`
+3. `docs/data-collector/collaboration-contract.md`
+4. `docs/data-collector/data-contract.md`
+5. `docs/data-collector/implementation-plan.md`
+6. the current run's `scope.md`
+7. the applicable `specs/<source-name>.md`
+8. `current handoff.md` when present
 
 If instructions conflict, priority is:
 

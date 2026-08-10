@@ -40,6 +40,28 @@ Before implementation, Phase 1 must:
 4. define exact runtime outcomes and fixture acceptance;
 5. keep network-dependent research separate from offline regression tests.
 
+Cross-client handoff rules are active before Phase 1. The minimal repository flow is:
+
+```text
+Select one source
+        ↓
+Source Research
+        ↓
+SOURCE_SPEC
+        ↓
+Repository Handoff
+        ↓
+Developer
+        ↓
+Repository Handoff
+        ↓
+Tester
+        ↓
+PASS / FAIL
+```
+
+Handoff artifacts carry evidence and continuation state only; they do not change the Phase 1 business goal or create an additional role.
+
 Phase 1 is proposed only. It has not started and is not authorized by this plan.
 
 ## Phase 2 — Collector reliability
