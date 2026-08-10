@@ -62,13 +62,23 @@ Do not include credentials, cookie values, authorization headers or unnecessary 
 - Phase 1 guarantee: only the explicitly requested pages and their per-page outcomes are claimed. Do not claim full-history completeness.
 - evidence/status: `APPROVED WITH EXPLICIT LIMITATION` — no historical backfill guarantee is authorized.
 
+### Historical refresh semantics
+
+- Phase 1 does not proactively re-fetch a known item whose valid
+  `post_publish_time` is at or before the committed watermark solely to discover
+  mutable engagement fields, `post_last_time` changes or post-publication body
+  edits.
+- Consequently, Phase 1 does not guarantee detection of historical engagement
+  changes or historical content edits. A future bounded recent-window refresh
+  may be specified only with new evidence and explicit authorization.
+
 ## 6. Item Identity
 
 - source_item_id source location: decimal `post_id` in an in-scope `article_list.re[*]` item; it must match the detail `post_article.post_id` and the ID in its standard detail URL.
 - uniqueness scope/guarantee: unique within `eastmoney_guba` top-level post records for Collector idempotency. This is an evidence-backed operational contract, not a claim of a published website guarantee.
 - required format: non-empty base-10 digits; preserve as a string in the common envelope.
 - missing-ID behavior: row parse failure; never invent a hash or use title/URL as fallback identity.
-- collision behavior: same `(source, source_item_id)` with identical raw content is an overlap/re-observation; different source facts become a new immutable observation/version and raise an identity-content drift metric. They are never silently merged.
+- collision behavior: same `(source, source_item_id)` with identical raw content is an overlap/re-observation. When a detail/source-item observation is actually acquired during an authorized Phase 1 acquisition, different source facts become a new immutable observation/version and raise an identity-content drift metric; they are never silently merged. A known historical ID at or before the committed watermark is not required to trigger detail acquisition merely to discover such changes.
 - cross-bar behavior: the same ID observed through multiple requested bars remains one source item with multiple observations/associations; requested bar and canonical `stockbar_code` are both retained.
 - evidence/status: `APPROVED` — ID agreement was observed across list, URL and detail.
 
@@ -166,7 +176,7 @@ Terminal outcomes for this source are frozen as follows:
 - anonymous/missing author: keep nullable author fields; never generate an author identity or hash a display name.
 - reposts/alternate post types: preserve the complete page in raw evidence and count every nonzero `post_type` as an explicit out-of-scope source row. Do not emit it under this spec, fetch it through an unverified parser or classify it by quality. Adding an alternate type requires a spec change with detail evidence.
 - missing fields: follow section 7; source numeric zero remains zero, missing remains null.
-- duplicate items/pages: deduplicate accepted emission by `(source, source_item_id)` while retaining page/observation provenance and metrics.
+- duplicate items/pages: deduplicate accepted emission by `(source, source_item_id)` while retaining page/observation provenance and metrics. A boundary-page reappearance alone is not a historical detail refresh requirement; its raw page evidence remains retained.
 - structure changes: missing assignments, changed types or semantic mismatch produce explicit schema/parse failure and retained raw evidence.
 - content filtering: forbidden in adapter. The `post_type=0` boundary is a frozen source-object scope, not a content decision. Within that scope there is no advertisement, spam, length, language, quality, author-value or sentiment filtering.
 - evidence/status: `APPROVED`; alternate types and cross-bar rows were observed, deletion behavior remains `UNKNOWN`.
@@ -177,7 +187,11 @@ Terminal outcomes for this source are frozen as follows:
 - stable ordering assumption: do not assume immutable page membership or globally monotonic numeric IDs. Use valid `post_publish_time` plus observed IDs for stopping and idempotency.
 - overlap window: always re-fetch at least two pages for an incremental run. Continue until one full successfully parsed page contains only IDs already seen with publication times at or before the committed watermark; then fetch one additional confirmation page before stopping. `max_pages` remains a hard coverage cap.
 - high-water commit: advance the committed watermark only after all required pages/details in the claimed window succeed. A partial/failed run must not advance it.
-- late-arriving/update behavior: a known ID with changed raw facts is a new observation/version. Engagement and `post_last_time` are mutable snapshots; original `published_at` is immutable unless a source correction is captured as drift.
+- late-arriving/update behavior: a known ID with `post_publish_time` newer than the committed watermark is eligible for detail acquisition even if its ID was seen before. If source-item/detail facts are actually acquired in that authorized path and differ, they become a new observation/version. Engagement and `post_last_time` are mutable snapshots; original `published_at` is immutable unless a source correction is captured as drift. Historical known IDs at or before the committed watermark may confirm the boundary without detail refresh, so historical mutable-fact and content-edit detection is not guaranteed in Phase 1.
+- historical refresh policy: `OUT OF SCOPE FOR PHASE 1`. No continuous old-post recrawl or all-history mutation tracker is required.
+- observation boundary: a boundary list row is retained as page-level raw
+  evidence for coverage and stopping; it is not by itself a detail/source-item
+  observation that requires emitting a historical version.
 - idempotency key: `(source='eastmoney_guba', source_item_id)` for logical identity; observation/raw snapshot identity additionally includes collection/version provenance.
 - coverage statement: report pages requested/succeeded/failed, source rows received, rows in scope/out of scope/failed, details requested/succeeded/failed, first/last publish time and stop reason. Hitting `max_pages` before the confirmation boundary is `PARTIAL_COLLECTION`, not success.
 - evidence/status: `APPROVED ENGINEERING POLICY` based on reproduced moving-page overlap.
@@ -206,7 +220,7 @@ Terminal outcomes for this source are frozen as follows:
 - [x] runtime outcomes approved
 - [x] unresolved non-blocking limitations listed
 
-Developer acceptance must include deterministic offline fixtures/tests for: page 1 and page 2 overlap, exact ID/detail agreement, cross-bar standard posts, explicitly counted nonzero alternate post types, missing ID, malformed/missing embedded JSON, publish versus last-update time, nullable author, missing counts versus numeric zero, empty valid list, first-page failure, later-page failure, detail failure, retry exhaustion, `max_pages` boundary and idempotent replay. No live network test is an acceptance dependency.
+Developer acceptance must include deterministic offline fixtures/tests for: page 1 and page 2 overlap, exact ID/detail agreement, cross-bar standard posts, explicitly counted nonzero alternate post types, missing ID, malformed/missing embedded JSON, publish versus last-update time, nullable author, missing counts versus numeric zero, empty valid list, first-page failure, later-page failure, detail failure, retry exhaustion, `max_pages` boundary and idempotent replay. It must also prove that a seen ID newer than the committed watermark is not suppressed, and that changed source/detail facts are versioned when actually acquired during an authorized path. It must not require historical known IDs at or before the committed watermark to be detail-fetched solely to discover mutable changes; the absence of such historical refresh is an explicit Phase 1 limitation. No live network test is an acceptance dependency.
 
 ## Open Questions / Blocks
 
@@ -219,3 +233,4 @@ Developer acceptance must include deterministic offline fixtures/tests for: page
 | Date | Change | Evidence | Author |
 |---|---|---|---|
 | 2026-08-10 | Approved Phase 1 top-level-post source semantics and explicit exclusions | `runs/phase-01-round-01/research-evidence.md` | Source Researcher / Phase 1 Research Lead |
+| 2026-08-10 | Narrowed incremental observation semantics: no required historical detail refresh at/before watermark; preserve drift when source-item/detail facts are actually acquired | `runs/phase-01-round-05/evidence.md`, `runs/phase-01-round-06/decision.md` | Source Researcher / Phase 1 Spec Correction |
