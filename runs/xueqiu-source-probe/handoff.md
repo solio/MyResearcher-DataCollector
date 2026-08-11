@@ -38,3 +38,18 @@ production files modified: NONE
 
 Next Role: Reviewer
 
+## Round 2 update
+
+Round 2 status: XUEQIU_SOURCE_PROBE_R2: BLOCKED
+
+- Path A browser-context fetch: BROWSER_CORS_BLOCKED; no readable JSON.
+- Path B api.xueqiu.com navigation: BROWSER_CLIENT_BLOCKED with net::ERR_BLOCKED_BY_CLIENT.
+- No page=2 or moving-page request was made because page 1 JSON was unavailable.
+- Existing public HTML observation remains HTML_BROWSER_PATH_CANDIDATE only.
+- Production browser requirement: UNRESOLVED.
+- Login requirement: UNRESOLVED.
+- No production files were modified.
+
+Detailed evidence: runs/xueqiu-source-probe/round-02-probe.md and runs/xueqiu-source-probe/round-02-sanitized-evidence.md
+
+Next Role: Reviewer

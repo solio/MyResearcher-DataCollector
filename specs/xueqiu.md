@@ -179,3 +179,52 @@ Before any production adapter is authorized, Reviewer must require:
 
 Until then, no Xueqiu Collector implementation may be started.
 
+## 17. Round 2 Browser/API Access Resolution
+
+Round 2 tested only the two requested browser/API paths and did not repeat the
+known anonymous plain-HTTP WAF requests.
+
+### Path A: browser-context same-origin fetch
+
+- Browser origin page: https://xueqiu.com/S/SH600519
+- Request: GET https://xueqiu.com/query/v1/symbol/search/status
+- Parameters: symbol=SH600519, count=20, page=1, sort=time
+- credentials: include
+- headers: Accept JSON/text and X-Requested-With XMLHttpRequest
+- result: BROWSER_CORS_BLOCKED
+- readable JSON: NO
+- page=2 and repeat page=1: NOT RUN because page=1 JSON was unavailable
+
+The browser page itself rendered public HTML, but the browser context could not
+return the same-origin fetch result to the probe. This does not establish the
+source endpoint response shape.
+
+### Path B: api.xueqiu.com
+
+- URL: https://api.xueqiu.com/query/v1/symbol/search/status.json
+- Parameters: symbol_id=SH600519, symbol=SH600519, source=user, count=20,
+  page=1, sort=time, comment=0, hl=0
+- result: BROWSER_CLIENT_BLOCKED
+- browser error: net::ERR_BLOCKED_BY_CLIENT
+- source HTTP status/content-type/body: NOT OBSERVED
+
+The browser-client error is not interpreted as an API 401, 403 or WAF response.
+No parameter grid or alternate-host loop was attempted.
+
+### Round 2 access decision
+
+- public HTML browser path: HTML_BROWSER_PATH_CANDIDATE
+- usable JSON collection path: NO
+- production browser requirement: UNRESOLVED
+- login requirement: UNRESOLVED
+- API session requirement: UNRESOLVED
+- JSON top-level list path and field mapping: UNRESOLVED
+- page overlap and moving-page behavior: UNRESOLVED
+
+The HTML browser path has visible discussion nodes, post URL/id links and page
+controls, but it is not approved for a production Collector and no browser
+crawler is authorized. Round 2 therefore leaves this candidate spec in
+CANDIDATE status and routes the route decision to Reviewer.
+
+Round 2 evidence: runs/xueqiu-source-probe/round-02-probe.md and
+runs/xueqiu-source-probe/round-02-sanitized-evidence.md
