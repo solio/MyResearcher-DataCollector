@@ -2,9 +2,11 @@
 
 Role: `Developer`
 
-Branch/worktree: `phase2-live-smoke-prep` / `MyResearcher-DataCollector-live-smoke-prep`
+Source branch/commit: `phase2-live-smoke-prep` / `ac4f93a`
 
-Baseline: `7cb584c` (`PHASE_2_OFFLINE_ACCEPTANCE_FAIL`; no live request was made)
+Original preparation baseline: `7cb584c`
+
+Reconciled main baseline: `2701e13` (`PHASE_2_OFFLINE_ACCEPTANCE_PASS`)
 
 ## Preparation artifact
 
@@ -14,7 +16,8 @@ Current live-run capability:
   in-memory evidence and bypasses persistence. The complete
   `execute_and_persist_collection` path exists, but baseline CLI cannot invoke
   it with a production transport or report its persisted run.
-- Prepared branch: **YES, gated on fresh Offline Acceptance PASS**. The new
+- Prepared branch: **YES**. Round 08 independently closed the Offline Gate at
+  main `2701e13`, after testing the Round 07 fix commit `16f70c8`. The new
   command invokes the existing Collector -> RawEvidenceStore -> Persistence ->
   SQLite -> checkpoint chain. It does not implement another crawler or state
   system.
@@ -35,7 +38,7 @@ Changes made:
 - added deterministic fixture-transport tests. No Collector, safe-frontier,
   checkpoint, schema, Storage Contract or SOURCE_SPEC semantics were changed.
 
-Preparation verification (offline only):
+Original preparation verification at old baseline (historical, offline only):
 
 ```text
 python -m compileall -q src tests
@@ -50,9 +53,40 @@ python -m pytest -q
   90 passed, 1 xfailed, 1 failed
 ```
 
-The one full-suite failure is the pre-existing PST-020 cross-gap acceptance
-failure recorded at the baseline, not a preparation regression. No live
-network test was collected or executed.
+The historical failure above was the then-open PST-020 cross-gap defect. Round
+07 corrected it and Round 08 independently recorded
+`PHASE_2_OFFLINE_ACCEPTANCE_PASS`: acceptance/integration `31 passed, 1
+xfailed`, full suite `86 passed, 1 xfailed`, both exit 0. Reconciled validation
+is recorded before merge and live execution.
+
+Reconciled validation on latest PASS main (offline only):
+
+```text
+main before integration: 2701e13
+prep source commit: ac4f93a
+cherry-pick commit: 4246ae4
+
+git diff --check
+  exit 0
+
+PYTHONPYCACHEPREFIX=/tmp/myresearcher-datacollector-pyc \
+  python -m compileall -q src tests
+  exit 0
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python -m pytest tests/acceptance tests/integration -q
+  31 passed, 1 approved xfail; exit 0
+
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q
+  91 passed, 1 approved xfail; exit 0
+
+eastmoney-guba-live-smoke 601012 --max-pages 1 \
+  --min-interval 3.0 --timeout 20 --data-dir <fresh-path> --plan-only
+  network_execution=false; data_dir_ready=true; exit 0
+```
+
+The approved xfail remains the PST-017 mapping note. No network request or
+data-directory creation occurred during reconciliation/plan validation.
 
 Future live command:
 
@@ -127,17 +161,16 @@ approved contract change require it.
 
 Remaining blocker:
 
-- **Execution gate only:** baseline `7cb584c` records
-  `PHASE_2_OFFLINE_ACCEPTANCE_FAIL` for the unresolved partial-safe-frontier
-  cross-gap case. Merge/rebase the eventual Developer correction, obtain a
-  fresh Independent Tester Offline Acceptance PASS, and rerun the deterministic
-  preparation tests before using `--confirm-live`.
-- Do not execute LIVE_SMOKE and do not infer Phase 2 PASS from this preparation.
+- **NONE for the offline gate.** Round 08 closed it at `2701e13`; PST-020 and
+  PST-018/PST-019 pass independently. Reconciled deterministic validation and
+  `--plan-only` must still pass before merge and `--confirm-live`.
+- Live execution remains a separate outcome and does not alter the historical
+  Phase 2 acceptance artifacts.
 
 ## Future execution checklist
 
 1. Confirm the repository records a fresh Independent Tester Offline
-   Acceptance PASS on the exact code to execute.
+   Acceptance PASS on the code being integrated (confirmed by Round 08).
 2. Confirm the preparation changes are integrated without modifying the frozen
    Storage Contract, SOURCE_SPEC or persistence/checkpoint semantics.
 3. Choose a new local absolute data directory outside the repository; do not
