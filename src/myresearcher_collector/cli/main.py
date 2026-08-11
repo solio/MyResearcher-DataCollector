@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     batch.add_argument("--targets", type=Path, required=True, help="JSON target config")
     batch.add_argument("--data-dir", type=Path, required=True)
-    batch.add_argument("--max-pages", type=int, default=2)
+    batch.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     batch.add_argument("--timeout", type=float, default=20.0)
     batch_mode = batch.add_mutually_exclusive_group(required=True)
     batch_mode.add_argument(
