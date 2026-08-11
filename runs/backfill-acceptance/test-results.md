@@ -25,6 +25,13 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
 14 passed
 ```
 
+BF-A03 correction evidence (within the Tester-owned suite) independently
+executes a fresh successful Backfill with `SUCCESS` /
+`backfill_range_complete`, then directly queries SQLite for the persisted run,
+raw evidence and observation. The same query finds zero rows for that scope in
+`collector_checkpoints`; the subsequent ordinary forward plan reports
+`BOOTSTRAP_PENDING`.
+
 Existing source/persistence/retention/batch/Xueqiu regression set:
 
 ```text
@@ -51,8 +58,11 @@ No live source, Xueqiu, credentials or real network was used.
   `backfill_range_complete`, `range_complete=true`.
 - BF-A02: real `execute_and_persist_backfill_collection` preserved a seeded
   forward checkpoint in SQLite, not merely in the report.
-- BF-A03: successful fresh Backfill left the checkpoint `NULL`; ordinary
-  forward plan remained `BOOTSTRAP_PENDING`.
+- BF-A03: fresh checkpoint was directly verified `NULL`, successful Backfill
+  returned `SUCCESS` / `backfill_range_complete`, and direct SQLite queries
+  confirmed CollectionRun, RawEvidence and SourceItemObservation persistence;
+  `collector_checkpoints` remained empty and the subsequent forward plan was
+  `BOOTSTRAP_PENDING`.
 - BF-A04: persisted known IDs did not stop traversal before the time boundary.
 - BF-A05: overlapping page ID detail was requested once and emitted once;
   page traversal continued.

@@ -8,6 +8,10 @@ Tested Developer commit:
 
 `b01c608c3497e2ea5bc8f3c4b43f1bbad3e114a2`
 
+Tester correction commit SHA:
+
+`1c3d020`
+
 Eastmoney Backfill: `PASS`
 
 ## Acceptance matrix
@@ -32,11 +36,13 @@ Eastmoney Backfill: `PASS`
 | Full suite | 222 passed, 1 approved xfail, exit 0 |
 | Real network | NO |
 
-The Backfill path never declared or committed a forward safe frontier. Both
-seeded and fresh SQLite checkpoint queries confirmed that historical traversal
-cannot create or modify a forward checkpoint. Detail, failure and raw-evidence
-counters remained reconciled across success, partial, failure and schema
-mismatch outcomes.
+The corrected BF-A03 executes a successful historical Backfill on a fresh
+SQLite/data directory. Direct queries confirm the CollectionRun, RawEvidence
+and SourceItemObservation were persisted, while `collector_checkpoints`
+remains empty and the subsequent forward plan remains `BOOTSTRAP_PENDING`.
+The Backfill path never declared or committed a forward safe frontier. Detail,
+failure and raw-evidence counters remained reconciled across success, partial,
+failure and schema mismatch outcomes.
 
 ## Next Role
 

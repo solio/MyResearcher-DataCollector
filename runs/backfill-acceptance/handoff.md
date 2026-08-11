@@ -8,9 +8,17 @@
 
 `b01c608c3497e2ea5bc8f3c4b43f1bbad3e114a2`
 
+Tester correction commit SHA:
+
+`1c3d020`
+
 ## Evidence summary
 
 - Tester-owned Backfill acceptance: 14 passed.
+- BF-A03 real fresh successful Backfill: PASS; direct SQLite evidence shows
+  CollectionRun, RawEvidence and SourceItemObservation persisted while
+  `collector_checkpoints` stayed empty; forward plan remained
+  `BOOTSTRAP_PENDING`.
 - Developer Backfill targeted tests: 14 passed.
 - Existing Eastmoney/Persistence/Xueqiu offline/Retention/Batch regression:
   102 passed, 1 approved xfail.
