@@ -25,6 +25,8 @@ class RetentionReport:
     logical_bytes_eligible: int
     physical_bytes_purged: int
     errors: tuple[str, ...] = ()
+    recovery_required: int = 0
+    cleanup_required: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -98,6 +100,7 @@ def purge_raw_bodies(
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     errors: list[str] = []
+    recovery_required = cleanup_required = 0
     scanned = eligible = purged = retained_recent = retained_failure = 0
     logical_eligible = physical_purged = 0
     try:
@@ -127,9 +130,25 @@ def purge_raw_bodies(
                 errors.append(f"{source}:{digest}: unsafe filesystem path")
                 continue
             tombstone = path.with_name(f"{digest}.body.purging")
-            _recover_tombstone(path, tombstone, body_state, errors, source, digest)
             if body_state == "PURGED":
+                if tombstone.exists():
+                    if dry_run:
+                        cleanup_required += 1
+                    else:
+                        _recover_tombstone(path, tombstone, body_state, errors, source, digest)
                 continue
+            if tombstone.exists() and not path.exists():
+                if dry_run:
+                    recovery_required += 1
+                    continue
+                _recover_tombstone(path, tombstone, body_state, errors, source, digest)
+                continue
+            elif tombstone.exists() and path.exists():
+                if dry_run:
+                    cleanup_required += 1
+                else:
+                    _recover_tombstone(path, tombstone, body_state, errors, source, digest)
+                    continue
             try:
                 file_size = path.stat().st_size
             except FileNotFoundError:
@@ -194,6 +213,8 @@ def purge_raw_bodies(
             logical_bytes_eligible=logical_eligible,
             physical_bytes_purged=physical_purged,
             errors=tuple(errors),
+            recovery_required=recovery_required,
+            cleanup_required=cleanup_required,
         )
     finally:
         conn.close()

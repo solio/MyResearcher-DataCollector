@@ -7,7 +7,8 @@ body retention is seven days. Metadata, observations, and failure-linked bodies
 are retained; only eligible physical body files are purged after explicit
 confirmation. Independent Tester should run the RET acceptance checks and review
 the migration fixture, CLI dry-run/confirm boundary, interrupted `.purging`
-recovery, and source identity invariant.
+recovery, source identity invariant, and the read-only dry-run snapshots. Dry-run
+reports `recovery_required`/`cleanup_required` without changing files or SQLite.
 
 Real Xueqiu network: not executed.
 

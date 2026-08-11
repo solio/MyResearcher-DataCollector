@@ -223,12 +223,31 @@ def test_ret010_dry_run_reports_without_mutating(tmp_path: Path, capsys: pytest.
     store, raw = make_store(tmp_path)
     _, digest = add_evidence(store, raw, "dry", b"dry-body", OLD)
     store.close()
+    before_files = sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for path in (tmp_path / "raw").rglob("*")
+        if path.is_file()
+    )
+    conn = sqlite3.connect(tmp_path / "collector.db")
+    before_state = conn.execute("SELECT * FROM raw_body_state ORDER BY source, content_sha256").fetchall()
+    before_evidence = conn.execute("SELECT * FROM raw_evidence ORDER BY evidence_id").fetchall()
+    conn.close()
     assert main(["raw-retention", "--data-dir", str(tmp_path)]) == 0
     output = capsys.readouterr().out
     assert '"eligible_objects": 1' in output
     assert '"purged_objects": 0' in output
     assert state(tmp_path, "xueqiu", digest) == "PRESENT"
     assert (tmp_path / "raw" / "xueqiu" / f"{digest}.body").exists()
+    after_files = sorted(
+        (str(path.relative_to(tmp_path)), path.read_bytes())
+        for path in (tmp_path / "raw").rglob("*")
+        if path.is_file()
+    )
+    conn = sqlite3.connect(tmp_path / "collector.db")
+    assert after_files == before_files
+    assert conn.execute("SELECT * FROM raw_body_state ORDER BY source, content_sha256").fetchall() == before_state
+    assert conn.execute("SELECT * FROM raw_evidence ORDER BY evidence_id").fetchall() == before_evidence
+    conn.close()
 
 
 def _item(content: str, *, collected_at: datetime) -> XueqiuSourceItem:
@@ -338,7 +357,7 @@ def test_ret012a_db_state_failure_restores_body_from_purging_tombstone(tmp_path:
     assert not body.with_name(body.name + ".purging").exists()
 
 
-def test_ret012b_interrupted_precommit_purge_recovers_present_body(tmp_path: Path) -> None:
+def test_ret012b1_dry_run_reports_recoverable_present_tombstone_without_mutation(tmp_path: Path) -> None:
     store, raw = make_store(tmp_path)
     _, digest = add_evidence(store, raw, "recover-present", b"recover-body", OLD)
     body = tmp_path / "raw" / "xueqiu" / f"{digest}.body"
@@ -347,12 +366,28 @@ def test_ret012b_interrupted_precommit_purge_recovers_present_body(tmp_path: Pat
 
     result = purge(store, tmp_path, dry_run=True, confirm=False)
     assert result.errors == ()
+    assert result.recovery_required == 1
+    assert state(tmp_path, "xueqiu", digest) == "PRESENT"
+    assert not body.exists()
+    assert tombstone.exists()
+
+
+def test_ret012b2_confirm_recovers_present_body_from_tombstone(tmp_path: Path) -> None:
+    store, raw = make_store(tmp_path)
+    _, digest = add_evidence(store, raw, "recover-present-confirm", b"recover-body", OLD)
+    body = tmp_path / "raw" / "xueqiu" / f"{digest}.body"
+    tombstone = body.with_name(body.name + ".purging")
+    body.rename(tombstone)
+
+    result = purge(store, tmp_path, dry_run=False, confirm=True)
+    assert result.errors == ()
+    assert result.purged_objects == 0
     assert state(tmp_path, "xueqiu", digest) == "PRESENT"
     assert body.exists()
     assert not tombstone.exists()
 
 
-def test_ret012c_committed_purge_cleans_leftover_tombstone(tmp_path: Path) -> None:
+def test_ret012c1_dry_run_reports_purged_tombstone_without_cleanup(tmp_path: Path) -> None:
     store, raw = make_store(tmp_path)
     _, digest = add_evidence(store, raw, "recover-purged", b"purged-body", OLD)
     purge(store, tmp_path, dry_run=False, confirm=True)
@@ -361,6 +396,21 @@ def test_ret012c_committed_purge_cleans_leftover_tombstone(tmp_path: Path) -> No
     tombstone.write_bytes(b"leftover tombstone")
 
     result = purge_raw_bodies(db_path=tmp_path / "collector.db", raw_data_dir=tmp_path, now=NOW, dry_run=True, confirm=False)
+    assert result.errors == ()
+    assert result.cleanup_required == 1
+    assert state(tmp_path, "xueqiu", digest) == "PURGED"
+    assert tombstone.exists()
+
+
+def test_ret012c2_confirm_cleans_purged_tombstone(tmp_path: Path) -> None:
+    store, raw = make_store(tmp_path)
+    _, digest = add_evidence(store, raw, "recover-purged-confirm", b"purged-body", OLD)
+    purge(store, tmp_path, dry_run=False, confirm=True)
+    body = tmp_path / "raw" / "xueqiu" / f"{digest}.body"
+    tombstone = body.with_name(body.name + ".purging")
+    tombstone.write_bytes(b"leftover tombstone")
+
+    result = purge_raw_bodies(db_path=tmp_path / "collector.db", raw_data_dir=tmp_path, now=NOW, dry_run=False, confirm=True)
     assert result.errors == ()
     assert state(tmp_path, "xueqiu", digest) == "PURGED"
     assert not tombstone.exists()
