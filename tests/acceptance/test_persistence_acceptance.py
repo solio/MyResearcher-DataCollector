@@ -750,7 +750,8 @@ def test_pst021_checkpoint_component_regression_forward_equal_and_backward(tmp_p
 
 
 def test_pst022_source_agnostic_direct_evidence_role_is_supported(tmp_path: Path) -> None:
-    store, raw = make_store(tmp_path)
+    raw = RawEvidenceStore(tmp_path, source="synthetic_direct")
+    store = SQLitePersistence(tmp_path / "collector.db", raw)
     start_run(store, "direct-source", source="synthetic_direct", scope="synthetic:one")
     links = add_observation_evidence(store, raw, "direct-source", direct=True)
     item = make_item(source="synthetic_direct", item_id="direct-1")

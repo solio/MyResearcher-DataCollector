@@ -186,6 +186,17 @@ class SQLitePersistence:
         content_type: str | None,
         storage_version: str = "raw.v1",
     ) -> None:
+        attempt = self.conn.execute(
+            """SELECT a.run_id, r.source
+               FROM collection_attempts AS a
+               JOIN collection_runs AS r ON r.run_id=a.run_id
+              WHERE a.attempt_id = ?""",
+            (attempt_id,),
+        ).fetchone()
+        if attempt is None or attempt[0] != run_id:
+            raise PersistenceError("attempt does not belong to run")
+        if attempt[1] != published.source:
+            raise PersistenceError("published raw source does not match collection run source")
         # Verification occurs before opening the SQLite transaction/reference.
         self.raw_store.verify(str(published.relative_path), published.sha256, published.byte_size)
         with self._write():
@@ -196,7 +207,7 @@ class SQLitePersistence:
                   WHERE a.attempt_id = ?""",
                 (attempt_id,),
             ).fetchone()
-            if attempt is None or attempt[0] != run_id:
+            if attempt is None or attempt[0] != run_id or attempt[1] != published.source:
                 raise PersistenceError("attempt does not belong to run")
             self.conn.execute(
                 """INSERT INTO raw_evidence(

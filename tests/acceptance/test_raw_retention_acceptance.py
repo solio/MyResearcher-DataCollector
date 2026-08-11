@@ -315,3 +315,71 @@ def test_ret011_v1_fixture_migrates_in_place_and_initializes_present_state(tmp_p
     assert migrated.execute("SELECT count(*) FROM collector_checkpoints").fetchone()[0] == 1
     assert migrated.execute("SELECT body_state FROM raw_body_state WHERE source='xueqiu' AND content_sha256=?", (digest,)).fetchone()[0] == "PRESENT"
     migrated.close()
+
+
+def test_ret012a_db_state_failure_restores_body_from_purging_tombstone(tmp_path: Path) -> None:
+    store, raw = make_store(tmp_path)
+    _, digest = add_evidence(store, raw, "fault", b"fault-body", OLD)
+    conn = sqlite3.connect(tmp_path / "collector.db")
+    conn.execute(
+        """CREATE TRIGGER injected_retention_failure
+           BEFORE UPDATE OF body_state ON raw_body_state
+           BEGIN SELECT RAISE(ABORT, 'injected state failure'); END"""
+    )
+    conn.commit()
+    conn.close()
+
+    result = purge(store, tmp_path, dry_run=False, confirm=True)
+    body = tmp_path / "raw" / "xueqiu" / f"{digest}.body"
+    assert result.purged_objects == 0
+    assert any("state update failed" in error for error in result.errors)
+    assert state(tmp_path, "xueqiu", digest) == "PRESENT"
+    assert body.exists()
+    assert not body.with_name(body.name + ".purging").exists()
+
+
+def test_ret012b_interrupted_precommit_purge_recovers_present_body(tmp_path: Path) -> None:
+    store, raw = make_store(tmp_path)
+    _, digest = add_evidence(store, raw, "recover-present", b"recover-body", OLD)
+    body = tmp_path / "raw" / "xueqiu" / f"{digest}.body"
+    tombstone = body.with_name(body.name + ".purging")
+    body.rename(tombstone)
+
+    result = purge(store, tmp_path, dry_run=True, confirm=False)
+    assert result.errors == ()
+    assert state(tmp_path, "xueqiu", digest) == "PRESENT"
+    assert body.exists()
+    assert not tombstone.exists()
+
+
+def test_ret012c_committed_purge_cleans_leftover_tombstone(tmp_path: Path) -> None:
+    store, raw = make_store(tmp_path)
+    _, digest = add_evidence(store, raw, "recover-purged", b"purged-body", OLD)
+    purge(store, tmp_path, dry_run=False, confirm=True)
+    body = tmp_path / "raw" / "xueqiu" / f"{digest}.body"
+    tombstone = body.with_name(body.name + ".purging")
+    tombstone.write_bytes(b"leftover tombstone")
+
+    result = purge_raw_bodies(db_path=tmp_path / "collector.db", raw_data_dir=tmp_path, now=NOW, dry_run=True, confirm=False)
+    assert result.errors == ()
+    assert state(tmp_path, "xueqiu", digest) == "PURGED"
+    assert not tombstone.exists()
+
+
+def test_ret013_published_source_must_match_run_source(tmp_path: Path) -> None:
+    store, xueqiu_raw = make_store(tmp_path, source="xueqiu")
+    eastmoney_raw = RawEvidenceStore(tmp_path, source="eastmoney_guba")
+    store.start_run("source-mismatch", "xueqiu", "scope:test", started_at=OLD, collector_version="c", parser_version="p", schema_version="xueqiu.raw.v1")
+    store.record_attempt("source-mismatch", "mismatch-attempt", ordinal=0, request_kind="list", request_url="https://example.test/mismatch", started_at=OLD, finished_at=OLD, outcome="success", retry_number=1, retry_budget=1, http_status=200)
+    wrong = eastmoney_raw.publish("source-mismatch", 0, b"wrong-source")
+    with pytest.raises(PersistenceError, match="source"):
+        store.record_raw_evidence("source-mismatch", "mismatch-attempt", "mismatch-evidence", wrong, evidence_kind="list", request_url="https://example.test/mismatch", final_url=None, fetched_at=OLD, http_status=200, content_type="application/json")
+    assert store.conn.execute("SELECT count(*) FROM raw_evidence").fetchone()[0] == 0
+    assert store.conn.execute("SELECT count(*) FROM raw_body_state").fetchone()[0] == 0
+
+    store.record_attempt("source-mismatch", "correct-attempt", ordinal=1, request_kind="list", request_url="https://example.test/correct", started_at=OLD, finished_at=OLD, outcome="success", retry_number=1, retry_budget=1, http_status=200)
+    correct = xueqiu_raw.publish("source-mismatch", 1, b"correct-source")
+    store.record_raw_evidence("source-mismatch", "correct-attempt", "correct-evidence", correct, evidence_kind="list", request_url="https://example.test/correct", final_url=None, fetched_at=OLD, http_status=200, content_type="application/json")
+    assert store.conn.execute("SELECT count(*) FROM raw_evidence").fetchone()[0] == 1
+    assert store.conn.execute("SELECT count(*) FROM raw_body_state").fetchone()[0] == 1
+    store.close()

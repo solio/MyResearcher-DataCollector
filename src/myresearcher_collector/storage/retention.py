@@ -49,6 +49,30 @@ def _verify_body(path: Path, digest: str, expected_size: int) -> int:
     return size
 
 
+def _recover_tombstone(path: Path, tombstone: Path, body_state: str, errors: list[str], source: str, digest: str) -> None:
+    """Recover the two safe post-rename states before scanning an object."""
+    if body_state == "PURGED":
+        if tombstone.exists():
+            try:
+                tombstone.unlink()
+            except OSError as exc:
+                errors.append(f"{source}:{digest}: purged tombstone cleanup failed: {type(exc).__name__}")
+        return
+    if tombstone.exists() and not path.exists():
+        try:
+            tombstone.rename(path)
+        except OSError as exc:
+            errors.append(f"{source}:{digest}: interrupted purge recovery failed: {type(exc).__name__}")
+    elif tombstone.exists() and path.exists():
+        # A previous recovery restored the body but could not remove its stale
+        # tombstone.  PRESENT remains authoritative, so remove only the stale
+        # marker.
+        try:
+            tombstone.unlink()
+        except OSError as exc:
+            errors.append(f"{source}:{digest}: stale purge tombstone cleanup failed: {type(exc).__name__}")
+
+
 def purge_raw_bodies(
     *,
     db_path: str | Path,
@@ -82,8 +106,6 @@ def purge_raw_bodies(
         ).fetchall()
         scanned = len(objects)
         for source, digest, body_state in objects:
-            if body_state == "PURGED":
-                continue
             references = conn.execute(
                 """SELECT e.evidence_id, e.fetched_at_utc, e.byte_size,
                           e.filesystem_path,
@@ -103,6 +125,10 @@ def purge_raw_bodies(
             source_root = (raw_data_dir / "raw" / source).resolve()
             if source_root not in path.parents or path.name != f"{digest}.body":
                 errors.append(f"{source}:{digest}: unsafe filesystem path")
+                continue
+            tombstone = path.with_name(f"{digest}.body.purging")
+            _recover_tombstone(path, tombstone, body_state, errors, source, digest)
+            if body_state == "PURGED":
                 continue
             try:
                 file_size = path.stat().st_size
@@ -128,9 +154,9 @@ def purge_raw_bodies(
             if dry_run:
                 continue
             try:
-                path.unlink()
+                path.rename(tombstone)
             except OSError as exc:
-                errors.append(f"{source}:{digest}: purge failed: {type(exc).__name__}")
+                errors.append(f"{source}:{digest}: purge rename failed: {type(exc).__name__}")
                 continue
             try:
                 conn.execute(
@@ -140,12 +166,25 @@ def purge_raw_bodies(
                     (utc_text(current), utc_text(current), source, digest),
                 )
                 conn.commit()
-            except sqlite3.Error as exc:
+            except Exception as exc:
                 conn.rollback()
-                errors.append(f"{source}:{digest}: state update failed: {type(exc).__name__}")
+                try:
+                    tombstone.rename(path)
+                except OSError as restore_exc:
+                    errors.append(
+                        f"{source}:{digest}: state update failed: {type(exc).__name__}; "
+                        f"body restore failed: {type(restore_exc).__name__}"
+                    )
+                else:
+                    errors.append(f"{source}:{digest}: state update failed: {type(exc).__name__}")
                 continue
             purged += 1
-            physical_purged += file_size
+            try:
+                tombstone.unlink()
+            except OSError as exc:
+                errors.append(f"{source}:{digest}: purged tombstone cleanup failed: {type(exc).__name__}")
+            else:
+                physical_purged += file_size
         return RetentionReport(
             scanned_objects=scanned,
             eligible_objects=eligible,

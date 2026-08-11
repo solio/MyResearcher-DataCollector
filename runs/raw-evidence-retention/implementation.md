@@ -20,10 +20,17 @@ schema, and batch behavior are unchanged.
 - Republishing the same content-addressed body restores `PRESENT` and clears the
   purge timestamp.
 - Integrity checks verify path confinement, byte size, and SHA-256 before purge.
+- Physical purge uses `<sha>.body.purging`: the body is atomically renamed,
+  state is committed as `PURGED`, and only then is the tombstone removed. A
+  failed state update rolls the tombstone back to `.body`; startup recovers
+  PRESENT and PURGED tombstones conservatively.
+- Publication rejects a `PublishedRaw` whose source differs from its collection
+  run source before inserting either evidence or body-state rows.
 
 ## Verification coverage
 
-RET-001 through RET-011 cover age, shared references, failure/spec retention,
-purged/missing semantics, republish, dry-run behavior, migration, and historical
-observation drift/versioning. The full suite also preserves existing Eastmoney,
-Xueqiu, persistence, and batch behavior.
+RET-001 through RET-013 cover age, shared references, failure/spec retention,
+purged/missing semantics, republish, dry-run behavior, migration, historical
+observation drift/versioning, interrupted purge recovery, and source identity
+validation. The full suite also preserves existing Eastmoney, Xueqiu,
+persistence, and batch behavior.
