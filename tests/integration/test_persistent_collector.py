@@ -40,6 +40,64 @@ def response(name: str, status: int = 200) -> HttpResponse:
     )
 
 
+def synthetic_row(item_id: str, published_at: str) -> dict[str, object]:
+    return {
+        "post_id": int(item_id),
+        "post_title": f"post {item_id}",
+        "stockbar_code": "600001",
+        "stockbar_name": "Synthetic Bar",
+        "user_id": f"u-{item_id}",
+        "user_nickname": f"author-{item_id}",
+        "post_click_count": 0,
+        "post_forward_count": 0,
+        "post_comment_count": 0,
+        "post_publish_time": published_at,
+        "post_last_time": published_at,
+        "post_display_time": published_at,
+        "post_type": 0,
+        "post_state": 0,
+        "post_top_status": 0,
+        "post_source_id": "",
+    }
+
+
+def synthetic_list_page(rows: list[dict[str, object]]) -> HttpResponse:
+    import json
+
+    links = "".join(
+        f'<a data-postid="{row["post_id"]}" href="/news,600001,{row["post_id"]}.html">{row["post_title"]}</a>'
+        for row in rows
+    )
+    payload = {"rc": 1, "re": rows, "count": len(rows), "time": "synthetic"}
+    html = f"<!doctype html><html><body>{links}<script>var article_list={json.dumps(payload)};</script></body></html>"
+    return HttpResponse(200, html.encode(), {"content-type": "text/html"})
+
+
+def synthetic_detail(item_id: str, published_at: str, status: int = 200) -> HttpResponse:
+    import json
+
+    payload = {
+        "post_id": int(item_id),
+        "post_user": {"user_id": f"u-{item_id}", "user_nickname": f"author-{item_id}"},
+        "post_guba": {"stockbar_code": "600001", "stockbar_name": "Synthetic Bar"},
+        "post_title": f"post {item_id}",
+        "post_content": f"body {item_id}",
+        "post_publish_time": published_at,
+        "post_last_time": published_at,
+        "post_display_time": published_at,
+        "post_click_count": 0,
+        "post_forward_count": 0,
+        "post_comment_count": 0,
+        "post_like_count": 0,
+        "post_type": 0,
+        "post_state": 0,
+        "post_top_status": 0,
+        "post_source_id": "",
+    }
+    html = f"<!doctype html><html><body><script>var post_article={json.dumps(payload)};</script></body></html>"
+    return HttpResponse(status, html.encode(), {"content-type": "text/html"})
+
+
 def urls() -> tuple[str, str, str, str, str]:
     return (
         EastmoneyGubaCollector.list_url("600001", 1),
@@ -143,6 +201,64 @@ def test_incremental_execution_reads_ids_and_checkpoint_and_returns_no_new_data(
     try:
         assert store.conn.execute("SELECT status FROM collection_runs WHERE run_id='run-second'").fetchone()[0] == "NO_NEW_DATA"
         assert store.checkpoint("eastmoney_guba", "stock:600001") == (checkpoint[0], "run-second")
+    finally:
+        store.close()
+
+
+def test_partial_runtime_safe_prefix_advances_checkpoint_exactly_to_prefix(tmp_path: Path) -> None:
+    page1, page2, _, detail1, _ = urls()
+    seed = run_one(
+        tmp_path,
+        "run-seed",
+        MappingTransport({
+            page1: response("list_page_1.html"),
+            page2: response("empty_page.html"),
+            detail1: response("detail_1001.html"),
+        }),
+        max_pages=2,
+    )
+    assert seed.result.status is CollectionStatus.SUCCESS
+    before = reopen(tmp_path)
+    try:
+        checkpoint_before = before.checkpoint("eastmoney_guba", "stock:600001")
+    finally:
+        before.close()
+    assert checkpoint_before is not None
+
+    new_page = synthetic_list_page([synthetic_row("1003", "2026-08-10 12:00:00")])
+    new_detail = synthetic_detail("1003", "2026-08-10 12:00:00")
+    new_page_url = EastmoneyGubaCollector.list_url("600001", 1)
+    second_page_url = EastmoneyGubaCollector.list_url("600001", 2)
+    detail_url = "https://guba.eastmoney.com/news,600001,1003.html"
+    transport = MappingTransport({
+        new_page_url: new_page,
+        second_page_url: new_page,
+        detail_url: [new_detail, synthetic_detail("1003", "2026-08-10 12:00:00", status=503)]
+        + [synthetic_detail("1003", "2026-08-10 12:00:00", status=503)] * 2,
+    })
+    partial = run_one(tmp_path, "run-partial-safe", transport, max_pages=2)
+    assert partial.result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert partial.result.safe_frontier is not None
+    assert partial.result.safe_frontier > datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc)
+    assert partial.failure_count == 1
+
+    store = reopen(tmp_path)
+    try:
+        checkpoint_after = store.checkpoint("eastmoney_guba", "stock:600001")
+        expected_frontier = partial.result.safe_frontier.astimezone(timezone.utc).isoformat(
+            timespec="microseconds"
+        ).replace("+00:00", "Z")
+        assert checkpoint_after == (
+            expected_frontier,
+            "run-partial-safe",
+        )
+        assert store.conn.execute(
+            "SELECT status, watermark_after_utc FROM collection_runs WHERE run_id='run-partial-safe'"
+        ).fetchone() == ("PARTIAL_COLLECTION", checkpoint_after[0])
+        failure = store.conn.execute(
+            "SELECT evidence_id FROM collection_failures WHERE run_id='run-partial-safe'"
+        ).fetchone()
+        assert failure[0] is not None and store.verify_evidence(failure[0]).exists()
     finally:
         store.close()
 

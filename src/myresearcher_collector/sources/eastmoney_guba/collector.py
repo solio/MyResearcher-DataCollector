@@ -382,6 +382,8 @@ class EastmoneyGubaCollector:
         stop_reason: str | None = None
         had_successful_page = False
         any_page_failure = False
+        completed_page_frontier: datetime | None = None
+        safe_prefix_open = True
 
         for page_number in range(1, page_limit + 1):
             if self.cancel_check and self.cancel_check():
@@ -425,6 +427,8 @@ class EastmoneyGubaCollector:
 
             page_all_old_or_seen = bool(parsed_page.rows)
             page_has_new = False
+            page_detail_failure = False
+            page_items: list[GubaSourceItem] = []
             for row in parsed_page.rows:
                 if self.cancel_check and self.cancel_check():
                     stop_reason = "cancelled"
@@ -464,11 +468,15 @@ class EastmoneyGubaCollector:
                 except GubaSchemaMismatch:
                     counters.details_failed += 1
                     counters.records_failed += 1
+                    page_detail_failure = True
+                    safe_prefix_open = False
                     failures.append(f"detail {row.source_item_id}: schema_mismatch")
                     return CollectionResult(CollectionStatus.SPEC_MISMATCH, items, counters, failures, "detail_schema_mismatch", watermark)
                 except (GubaDetailMismatch, GubaParseError, FetchFailure) as exc:
                     counters.details_failed += 1
                     counters.records_failed += 1
+                    page_detail_failure = True
+                    safe_prefix_open = False
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
 
@@ -528,10 +536,19 @@ class EastmoneyGubaCollector:
                     final_url=detail_final_url,
                 )
                 items.append(item)
+                page_items.append(item)
                 counters.records_parsed += 1
 
             if stop_reason == "cancelled":
                 break
+
+            # A completed page is a runtime-owned safe prefix candidate. A
+            # later detail failure may leave that earlier prefix safe, while a
+            # failed page or coverage cap is never silently promoted here.
+            if safe_prefix_open and not page_detail_failure and page_items:
+                completed_page_frontier = max(
+                    item.published_at for item in page_items
+                )
 
             if watermark is not None and page_all_old_or_seen and not page_has_new:
                 boundary_pages += 1
@@ -563,7 +580,22 @@ class EastmoneyGubaCollector:
             if status in (CollectionStatus.SUCCESS, CollectionStatus.NO_NEW_DATA)
             else watermark
         )
-        return CollectionResult(status, items, counters, failures, stop_reason, new_watermark)
+        safe_frontier = None
+        if status is CollectionStatus.SUCCESS:
+            safe_frontier = completed_page_frontier
+        elif status is CollectionStatus.NO_NEW_DATA:
+            # A confirmed incremental boundary proves the prior committed
+            # frontier even when no detail was re-fetched in this run.
+            safe_frontier = completed_page_frontier or (
+                watermark if stop_reason == "watermark_confirmed" else None
+            )
+        elif (
+            status is CollectionStatus.PARTIAL_COLLECTION
+            and not any_page_failure
+            and counters.details_failed > 0
+        ):
+            safe_frontier = completed_page_frontier
+        return CollectionResult(status, items, counters, failures, stop_reason, new_watermark, safe_frontier)
 
     @staticmethod
     def _failure_name(exc: Exception) -> str:

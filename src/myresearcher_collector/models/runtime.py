@@ -96,6 +96,8 @@ class CollectionResult:
     failures: list[str] = field(default_factory=list)
     stop_reason: str | None = None
     watermark: datetime | None = None
+    # Explicit declaration from the source runtime, never inferred by storage.
+    safe_frontier: datetime | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -105,4 +107,5 @@ class CollectionResult:
             "failures": list(self.failures),
             "stop_reason": self.stop_reason,
             "watermark": self.watermark.isoformat() if self.watermark else None,
+            "safe_frontier": self.safe_frontier.isoformat() if self.safe_frontier else None,
         }

@@ -178,14 +178,17 @@ def _failure_event(
 
 
 def _safe_frontier(result: CollectionResult) -> SafeFrontier | None:
-    if result.watermark is None:
+    if result.safe_frontier is None:
         return None
-    if result.status in (CollectionStatus.SUCCESS, CollectionStatus.NO_NEW_DATA):
-        return SafeFrontier(result.watermark)
-    if result.status is CollectionStatus.PARTIAL_COLLECTION:
-        gaps = tuple(result.failures) or (result.stop_reason or "partial_collection",)
-        return SafeFrontier(result.watermark, all_required_persisted=False, unresolved_gaps=gaps)
-    return None
+    if result.status not in (
+        CollectionStatus.SUCCESS,
+        CollectionStatus.NO_NEW_DATA,
+        CollectionStatus.PARTIAL_COLLECTION,
+    ):
+        return None
+    # The Collector has already proven this declaration. Integration only
+    # translates it; it does not derive a timestamp from items or failures.
+    return SafeFrontier(result.safe_frontier)
 
 
 def execute_and_persist_collection(
