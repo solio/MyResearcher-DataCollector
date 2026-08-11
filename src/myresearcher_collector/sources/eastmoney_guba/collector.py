@@ -49,6 +49,7 @@ class HttpResponse:
 
 
 _ALLOWED_SOURCE_HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
+BOOTSTRAP_MIN_PAGES = 3
 
 
 class RedirectPolicyError(RuntimeError):
@@ -124,7 +125,7 @@ class InMemoryRawEvidenceStore:
 @dataclass(frozen=True)
 class CollectorConfig:
     timeout_seconds: float = 20.0
-    max_pages: int = 2
+    max_pages: int = BOOTSTRAP_MIN_PAGES
     max_attempts: int = 3
     access_block_attempts: int = 2
     base_backoff_seconds: float = 0.5
@@ -361,12 +362,21 @@ class EastmoneyGubaCollector:
         existing_observations: Mapping[str, GubaSourceItem] | None = None,
         watermark: datetime | None = None,
         max_pages: int | None = None,
+        bootstrap: bool | None = None,
     ) -> CollectionResult:
         if not isinstance(stock_code, str) or len(stock_code) != 6 or not stock_code.isdigit():
             raise ValueError("stock_code must be six decimal digits")
         page_limit = max_pages if max_pages is not None else self.config.max_pages
         if page_limit < 1:
             raise ValueError("max_pages must be at least 1")
+        bootstrap = watermark is None if bootstrap is None else bootstrap
+        if bootstrap and watermark is not None:
+            raise ValueError("bootstrap requires checkpoint watermark to be NULL")
+        if bootstrap and page_limit < BOOTSTRAP_MIN_PAGES:
+            raise ValueError(
+                f"bootstrap requires max_pages >= {BOOTSTRAP_MIN_PAGES}"
+            )
+        traversal_limit = BOOTSTRAP_MIN_PAGES if bootstrap else page_limit
 
         counters = RuntimeCounters()
         items: list[GubaSourceItem] = []
@@ -383,10 +393,11 @@ class EastmoneyGubaCollector:
         had_successful_page = False
         any_page_failure = False
         completed_page_frontier: datetime | None = None
+        bootstrap_frontier: datetime | None = None
         safe_prefix_open = True
         safe_frontier_valid = True
 
-        for page_number in range(1, page_limit + 1):
+        for page_number in range(1, traversal_limit + 1):
             if self.cancel_check and self.cancel_check():
                 stop_reason = "cancelled"
                 break
@@ -422,7 +433,11 @@ class EastmoneyGubaCollector:
             counters.pages_success += 1
             counters.records_received += len(parsed_page.rows) + len(parsed_page.out_of_scope_rows)
             counters.records_out_of_scope += len(parsed_page.out_of_scope_rows)
-            if not parsed_page.rows and not parsed_page.out_of_scope_rows:
+            if (
+                not bootstrap
+                and not parsed_page.rows
+                and not parsed_page.out_of_scope_rows
+            ):
                 stop_reason = "empty_page"
                 break
 
@@ -486,6 +501,12 @@ class EastmoneyGubaCollector:
                         safe_frontier_valid = False
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
+
+                if bootstrap and (
+                    bootstrap_frontier is None
+                    or merged["published_at"] > bootstrap_frontier
+                ):
+                    bootstrap_frontier = merged["published_at"]
 
                 detail_fingerprint = self._merged_fingerprint(merged)
                 prior_detail_fingerprint = observed_detail_fingerprints.get(row.source_item_id)
@@ -557,21 +578,54 @@ class EastmoneyGubaCollector:
                     item.published_at for item in page_items
                 )
 
-            if watermark is not None and page_all_old_or_seen and not page_has_new:
+            if not bootstrap and watermark is not None and page_all_old_or_seen and not page_has_new:
                 boundary_pages += 1
                 if boundary_pages >= 2:
                     stop_reason = "watermark_confirmed"
                     break
-            elif watermark is not None:
+            elif not bootstrap and watermark is not None:
                 boundary_pages = 0
 
-            if page_number == page_limit:
+            if bootstrap and page_number == traversal_limit:
+                stop_reason = "bootstrap_complete"
+            elif page_number == page_limit:
                 stop_reason = "max_pages"
 
         if stop_reason == "cancelled":
             return CollectionResult(CollectionStatus.CANCELLED, items, counters, failures, stop_reason, watermark)
         if not had_successful_page:
             return CollectionResult(CollectionStatus.COLLECTION_FAILED, items, counters, failures, stop_reason, watermark)
+        if bootstrap:
+            if counters.pages_success != BOOTSTRAP_MIN_PAGES:
+                status = CollectionStatus.PARTIAL_COLLECTION
+                return CollectionResult(
+                    status,
+                    items,
+                    counters,
+                    failures,
+                    stop_reason,
+                    watermark,
+                    None,
+                )
+            if counters.records_failed or counters.details_failed:
+                return CollectionResult(
+                    CollectionStatus.PARTIAL_COLLECTION,
+                    items,
+                    counters,
+                    failures,
+                    stop_reason,
+                    watermark,
+                    None,
+                )
+            return CollectionResult(
+                CollectionStatus.SUCCESS,
+                items,
+                counters,
+                failures,
+                "bootstrap_complete",
+                bootstrap_frontier,
+                bootstrap_frontier,
+            )
         if any_page_failure or counters.records_failed or counters.details_failed:
             status = CollectionStatus.PARTIAL_COLLECTION
         elif stop_reason == "watermark_confirmed":
@@ -582,14 +636,24 @@ class EastmoneyGubaCollector:
             status = CollectionStatus.PARTIAL_COLLECTION
         else:
             status = CollectionStatus.SUCCESS if items else CollectionStatus.NO_NEW_DATA
+        resolved_watermarks = [item.published_at for item in items]
+        if watermark is not None:
+            resolved_watermarks.append(watermark)
         new_watermark = (
-            max((item.published_at for item in items), default=watermark)
+            max(resolved_watermarks, default=None)
             if status in (CollectionStatus.SUCCESS, CollectionStatus.NO_NEW_DATA)
             else watermark
         )
         safe_frontier = None
         if status is CollectionStatus.SUCCESS:
-            safe_frontier = completed_page_frontier
+            safe_frontier = max(
+                (
+                    value
+                    for value in (watermark, completed_page_frontier)
+                    if value is not None
+                ),
+                default=None,
+            )
         elif status is CollectionStatus.NO_NEW_DATA:
             # A confirmed incremental boundary proves the prior committed
             # frontier even when no detail was re-fetched in this run.

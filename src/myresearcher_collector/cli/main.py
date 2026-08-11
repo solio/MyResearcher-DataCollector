@@ -25,6 +25,7 @@ from myresearcher_collector.batch import (
 from myresearcher_collector.models import CollectionStatus
 from myresearcher_collector.run_report import summarize_run
 from myresearcher_collector.sources.eastmoney_guba import (
+    BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
     EastmoneyGubaCollector,
     UrllibTransport,
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     guba = subparsers.add_parser("eastmoney-guba", help="collect standard Eastmoney Guba posts")
     guba.add_argument("stock_code", help="six-digit A-share stock code")
-    guba.add_argument("--max-pages", type=int, default=2)
+    guba.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     guba.add_argument("--timeout", type=float, default=20.0)
 
     live = subparsers.add_parser(
@@ -77,6 +78,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the bounded plan without constructing a network transport",
     )
     live_mode.add_argument(
+        "--confirm-live",
+        action="store_true",
+        help="acknowledge that this command will perform real HTTPS GET requests",
+    )
+
+    persistent = subparsers.add_parser(
+        "eastmoney-guba-persistent",
+        help="run one persistent Eastmoney scope through bootstrap or incremental collection",
+    )
+    persistent.add_argument("stock_code", help="six-digit A-share stock code")
+    persistent.add_argument(
+        "--data-dir",
+        type=Path,
+        required=True,
+        help="persistent directory for collector.db and raw evidence",
+    )
+    persistent.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
+    persistent.add_argument("--timeout", type=float, default=20.0)
+    persistent.add_argument("--min-interval", type=float, default=3.0)
+    persistent.add_argument(
+        "--user-agent",
+        default=os.environ.get("MYRESEARCHER_EASTMONEY_USER_AGENT", DEFAULT_USER_AGENT),
+        help="descriptive non-secret User-Agent; environment fallback is supported",
+    )
+    persistent_mode = persistent.add_mutually_exclusive_group(required=True)
+    persistent_mode.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="inspect the persistent mode without constructing a network transport",
+    )
+    persistent_mode.add_argument(
         "--confirm-live",
         action="store_true",
         help="acknowledge that this command will perform real HTTPS GET requests",
@@ -129,6 +161,43 @@ def _data_dir_state(data_dir: Path) -> str:
     return "empty" if next(data_dir.iterdir(), None) is None else "nonempty"
 
 
+def _persistent_mode(data_dir: Path, stock_code: str) -> tuple[str, str | None]:
+    db_path = data_dir / "collector.db"
+    if not db_path.exists():
+        return "BOOTSTRAP_PENDING", None
+    if not db_path.is_file():
+        raise ValueError("persistent collector.db path must be a file")
+    connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        row = connection.execute(
+            """SELECT watermark_utc FROM collector_checkpoints
+               WHERE source=? AND scope_key=?""",
+            ("eastmoney_guba", f"stock:{stock_code}"),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        raise ValueError("persistent collector.db does not have the approved schema") from exc
+    finally:
+        connection.close()
+    if row is None or row[0] is None:
+        return "BOOTSTRAP_PENDING", None
+    return "INCREMENTAL", str(row[0])
+
+
+def _validated_persistent_settings(
+    args: argparse.Namespace,
+) -> tuple[Path, str, str, str | None]:
+    data_dir, user_agent = _validated_live_settings(args)
+    state = _data_dir_state(data_dir)
+    if state == "not_a_directory":
+        raise ValueError("persistent data_dir must be absent or a directory")
+    mode, checkpoint = _persistent_mode(data_dir, args.stock_code)
+    if mode == "BOOTSTRAP_PENDING" and args.max_pages < BOOTSTRAP_MIN_PAGES:
+        raise ValueError(
+            f"bootstrap requires max_pages >= {BOOTSTRAP_MIN_PAGES}"
+        )
+    return data_dir, user_agent, mode, checkpoint
+
+
 def live_smoke_plan(args: argparse.Namespace) -> dict[str, object]:
     """Describe the future execution without constructing a transport."""
     data_dir, _ = _validated_live_settings(args)
@@ -151,6 +220,24 @@ def live_smoke_plan(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def persistent_run_plan(args: argparse.Namespace) -> dict[str, object]:
+    """Describe bootstrap/incremental mode without mutating persistent state."""
+    data_dir, _, mode, checkpoint = _validated_persistent_settings(args)
+    return {
+        "mode": "PLAN_ONLY",
+        "network_execution": False,
+        "source": "eastmoney_guba",
+        "stock_code": args.stock_code,
+        "collection_mode": mode,
+        "checkpoint": checkpoint,
+        "max_pages": args.max_pages,
+        "bootstrap_min_pages": BOOTSTRAP_MIN_PAGES,
+        "data_dir": str(data_dir),
+        "sqlite_location": str(data_dir / "collector.db"),
+        "raw_evidence_location": str(data_dir / "raw" / "eastmoney_guba"),
+    }
+
+
 def execute_live_smoke(
     args: argparse.Namespace,
     *,
@@ -163,6 +250,42 @@ def execute_live_smoke(
     state = _data_dir_state(data_dir)
     if state not in {"absent", "empty"}:
         raise ValueError("live smoke data_dir must be a new or empty directory")
+    run_id = run_id or uuid.uuid4().hex
+    execute_and_persist_collection(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        stock_code=args.stock_code,
+        transport=(
+            transport
+            if transport is not None
+            else UrllibTransport(user_agent=user_agent)
+        ),
+        run_id=run_id,
+        collector_config=CollectorConfig(
+            max_pages=args.max_pages,
+            timeout_seconds=args.timeout,
+            min_interval_seconds=args.min_interval,
+        ),
+        sleep_fn=sleep_fn,
+        max_pages=args.max_pages,
+        bootstrap_if_no_checkpoint=False,
+    )
+    return summarize_run(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        run_id=run_id,
+    )
+
+
+def execute_persistent_run(
+    args: argparse.Namespace,
+    *,
+    transport: Transport | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    run_id: str | None = None,
+) -> dict[str, object]:
+    """Execute one reusable scope; NULL checkpoint selects bounded bootstrap."""
+    data_dir, user_agent, _, _ = _validated_persistent_settings(args)
     run_id = run_id or uuid.uuid4().hex
     execute_and_persist_collection(
         db_path=data_dir / "collector.db",
@@ -219,6 +342,18 @@ def main(argv: list[str] | None = None) -> int:
         if summary["stop_reason"] is not None:
             return 2
         return 0 if summary["targets_failed"] == 0 and summary["targets_partial"] == 0 else 1
+
+    if args.command == "eastmoney-guba-persistent":
+        try:
+            if args.plan_only:
+                print(json.dumps(persistent_run_plan(args), ensure_ascii=False, indent=2))
+                return 0
+            summary = execute_persistent_run(args)
+        except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            print(f"persistent run error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0 if summary["status"] in ("SUCCESS", "NO_NEW_DATA") else 1
 
     if args.command == "eastmoney-guba-live-smoke":
         try:

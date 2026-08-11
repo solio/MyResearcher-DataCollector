@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from myresearcher_collector.models import CollectionStatus
 from myresearcher_collector.sources.eastmoney_guba import (
     CollectorConfig,
@@ -151,6 +153,83 @@ def test_collects_pages_details_and_overlap_idempotently() -> None:
     assert detail1 in transport.calls and detail2 in transport.calls
 
 
+def test_fresh_bootstrap_completes_exact_three_page_window_and_declares_frontier() -> None:
+    page1, page2, page3, _ = urls()
+    rows = [
+        synthetic_row("3001", "2026-08-10 10:00:00"),
+        synthetic_row("3002", "2026-08-10 12:00:00"),
+        synthetic_row("3003", "2026-08-10 11:00:00"),
+    ]
+    detail_urls = [
+        f"https://guba.eastmoney.com/news,600001,{row['post_id']}.html"
+        for row in rows
+    ]
+    run, transport = collector({
+        page1: synthetic_list_page([rows[0]]),
+        page2: synthetic_list_page([rows[1]]),
+        page3: synthetic_list_page([rows[2]]),
+        detail_urls[0]: synthetic_detail("3001", "2026-08-10 10:00:00"),
+        detail_urls[1]: synthetic_detail("3002", "2026-08-10 12:00:00"),
+        detail_urls[2]: synthetic_detail("3003", "2026-08-10 11:00:00"),
+    })
+
+    result = run.collect("600001", max_pages=8)
+
+    expected_frontier = datetime(
+        2026, 8, 10, 12, 0, tzinfo=timezone(timedelta(hours=8))
+    )
+    assert result.status is CollectionStatus.SUCCESS
+    assert result.stop_reason == "bootstrap_complete"
+    assert result.safe_frontier == expected_frontier
+    assert result.watermark == expected_frontier
+    assert result.counters.pages_requested == 3
+    assert transport.calls == [
+        page1, detail_urls[0], page2, detail_urls[1], page3, detail_urls[2]
+    ]
+
+
+def test_bootstrap_detail_failure_never_declares_initial_frontier() -> None:
+    page1, page2, page3, _ = urls()
+    rows = [
+        synthetic_row("3101", "2026-08-10 10:00:00"),
+        synthetic_row("3102", "2026-08-10 11:00:00"),
+        synthetic_row("3103", "2026-08-10 12:00:00"),
+    ]
+    routes: dict[str, object] = {
+        page1: synthetic_list_page([rows[0]]),
+        page2: synthetic_list_page([rows[1]]),
+        page3: synthetic_list_page([rows[2]]),
+    }
+    for row in rows[:2]:
+        item_id = str(row["post_id"])
+        routes[f"https://guba.eastmoney.com/news,600001,{item_id}.html"] = (
+            synthetic_detail(item_id, str(row["post_publish_time"]))
+        )
+    failed_detail = "https://guba.eastmoney.com/news,600001,3103.html"
+    routes[failed_detail] = [HttpResponse(503, b"synthetic failure", {})] * 3
+    run, _ = collector(routes)
+
+    result = run.collect("600001", max_pages=3)
+
+    assert result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert result.safe_frontier is None
+    assert result.watermark is None
+    assert result.counters.pages_success == 3
+    assert result.counters.details_failed == 1
+
+
+@pytest.mark.parametrize("max_pages", [1, 2])
+def test_bootstrap_rejects_short_window_before_network(
+    max_pages: int,
+) -> None:
+    run, transport = collector({})
+
+    with pytest.raises(ValueError, match="bootstrap requires max_pages >= 3"):
+        run.collect("600001", max_pages=max_pages)
+
+    assert transport.calls == []
+
+
 def test_watermark_confirmation_returns_no_new_data_without_detail_requests() -> None:
     page1, page2, _, detail1 = urls()
     run, transport = collector(
@@ -187,7 +266,7 @@ def test_later_page_failure_is_partial_not_no_data() -> None:
         }
     )
 
-    result = run.collect("600001", max_pages=2)
+    result = run.collect("600001", max_pages=2, bootstrap=False)
 
     assert result.status is CollectionStatus.PARTIAL_COLLECTION
     assert result.counters.pages_success == 1
@@ -200,7 +279,7 @@ def test_first_page_schema_failure_is_spec_mismatch() -> None:
     store = InMemoryRawEvidenceStore()
     run, _ = collector({page1: response("malformed_page.html")}, store)
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.SPEC_MISMATCH
     assert result.items == []
@@ -212,7 +291,7 @@ def test_valid_empty_page_is_no_new_data() -> None:
     page1, _, _, _ = urls()
     run, _ = collector({page1: response("empty_page.html")})
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.NO_NEW_DATA
     assert result.stop_reason == "empty_page"
@@ -228,7 +307,7 @@ def test_detail_failure_is_partial_and_does_not_emit_title_as_body() -> None:
         }
     )
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.PARTIAL_COLLECTION
     assert result.items == []
@@ -245,7 +324,7 @@ def test_timeout_retries_then_succeeds() -> None:
         }
     )
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.PARTIAL_COLLECTION  # max-page cap is not a complete boundary
     assert result.counters.requests_total == 4
@@ -260,7 +339,7 @@ def test_rate_limit_retries_without_becoming_no_data() -> None:
         {page1: [response("empty_page.html", status=429), response("empty_page.html")]}
     )
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.NO_NEW_DATA
     assert result.counters.requests_failed == 1
@@ -274,7 +353,7 @@ def test_429_uses_three_attempt_retry_budget() -> None:
         page1: [response("empty_page.html", status=429)] * 3,
     })
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.COLLECTION_FAILED
     assert result.counters.requests_total == 3
@@ -288,7 +367,7 @@ def test_5xx_uses_three_attempt_retry_budget() -> None:
         page1: [response("empty_page.html", status=503)] * 3,
     })
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.COLLECTION_FAILED
     assert result.counters.requests_total == 3
@@ -302,7 +381,7 @@ def test_403_keeps_two_attempt_access_block_budget() -> None:
         page1: [response("empty_page.html", status=403)] * 3,
     })
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.COLLECTION_FAILED
     assert result.counters.requests_total == 2
@@ -318,7 +397,7 @@ def test_detail_content_drift_creates_new_observation_version() -> None:
         detail1: [response("detail_1001.html"), HttpResponse(200, changed, {})],
     })
 
-    result = run.collect("600001", max_pages=2)
+    result = run.collect("600001", max_pages=2, bootstrap=False)
 
     assert result.status is CollectionStatus.PARTIAL_COLLECTION
     assert result.counters.identity_content_drifts == 1
@@ -436,7 +515,7 @@ def test_retry_exhaustion_is_collection_failed() -> None:
     page1, _, _, _ = urls()
     run, transport = collector({page1: [TimeoutError(), TimeoutError(), TimeoutError()]})
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.COLLECTION_FAILED
     assert result.counters.requests_failed == 3
@@ -450,7 +529,7 @@ def test_max_pages_is_hard_partial_boundary() -> None:
         detail1: response("detail_1001.html"),
     })
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.PARTIAL_COLLECTION
     assert result.stop_reason == "max_pages"
@@ -472,7 +551,7 @@ def test_retry_after_and_bounded_backoff_are_observable() -> None:
         jitter_fn=lambda _low, _high: 0.0,
     )
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.NO_NEW_DATA
     assert 2.0 in sleeps
@@ -495,7 +574,7 @@ def test_redirect_final_url_outside_source_boundary_fails_closed() -> None:
     page1, _, _, _ = urls()
     run, transport = collector({page1: response("empty_page.html", final_url="https://example.invalid/redirect")})
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.COLLECTION_FAILED
     assert result.failures == ["page 1: redirect"]
@@ -507,7 +586,7 @@ def test_cancellation_is_explicit_and_does_not_request() -> None:
     run, transport = collector({page1: response("empty_page.html")})
     run.cancel_check = lambda: True
 
-    result = run.collect("600001", max_pages=1)
+    result = run.collect("600001", max_pages=1, bootstrap=False)
 
     assert result.status is CollectionStatus.CANCELLED
     assert result.stop_reason == "cancelled"
