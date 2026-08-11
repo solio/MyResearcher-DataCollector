@@ -181,14 +181,51 @@ def test_bf_a02_checkpoint_isolation_and_a03_fresh_forward_pending(tmp_path: Pat
         store.close()
 
     fresh = tmp_path / "fresh"
-    assert main([
-        "backfill", "--source", "eastmoney_guba", "--stock", STOCK,
-        "--from", "2026-05-01", "--to", "2026-05-02",
-        "--data-dir", str(fresh), "--plan-only",
-    ]) == 0
-    plan = json.loads(capsys.readouterr().out)
-    assert plan["checkpoint"] is None
-    assert plan["checkpoint_mutation"] is False
+    fresh_raw = RawEvidenceStore(fresh / "data", source="eastmoney_guba")
+    fresh_store = SQLitePersistence(fresh / "collector.db", fresh_raw)
+    try:
+        assert fresh_store.checkpoint("eastmoney_guba", f"stock:{STOCK}") is None
+        assert fresh_store.conn.execute(
+            "SELECT count(*) FROM collector_checkpoints WHERE source=? AND scope_key=?",
+            ("eastmoney_guba", f"stock:{STOCK}"),
+        ).fetchone()[0] == 0
+    finally:
+        fresh_store.close()
+
+    fresh_from, fresh_to = in_range()
+    successful = run_backfill(
+        fresh,
+        {
+            page_url(1): synthetic_page(("9015", "2026-08-10 10:00:00")),
+            page_url(2): synthetic_page(("9016", "2026-08-08 10:00:00")),
+            detail_url("9015"): synthetic_detail("9015", "2026-08-10 10:00:00"),
+        },
+        run_id="bf-a03-fresh-success",
+        from_time=fresh_from,
+        to_time=fresh_to,
+        max_pages=2,
+    )
+    assert successful.execution.result.status is CollectionStatus.SUCCESS
+    assert successful.execution.result.stop_reason == "backfill_range_complete"
+    fresh_store = reopen(fresh)
+    try:
+        assert fresh_store.conn.execute(
+            "SELECT count(*) FROM collection_runs WHERE run_id='bf-a03-fresh-success'"
+        ).fetchone()[0] == 1
+        assert fresh_store.conn.execute(
+            "SELECT count(*) FROM raw_evidence WHERE run_id='bf-a03-fresh-success'"
+        ).fetchone()[0] >= 3
+        assert fresh_store.conn.execute(
+            "SELECT count(*) FROM source_item_observations WHERE source_item_id='9015'"
+        ).fetchone()[0] == 1
+        assert fresh_store.conn.execute(
+            "SELECT count(*) FROM collector_checkpoints WHERE source=? AND scope_key=?",
+            ("eastmoney_guba", f"stock:{STOCK}"),
+        ).fetchone()[0] == 0
+        assert fresh_store.checkpoint("eastmoney_guba", f"stock:{STOCK}") is None
+    finally:
+        fresh_store.close()
+
     assert main([
         "eastmoney-guba-persistent", STOCK, "--data-dir", str(fresh), "--plan-only",
     ]) == 0
