@@ -134,6 +134,20 @@ class CollectorConfig:
     min_interval_seconds: float = 3.0
 
 
+@dataclass(frozen=True)
+class BackfillCollectionResult:
+    """Backfill traversal statistics plus the shared runtime result."""
+
+    result: CollectionResult
+    pages_scanned: int
+    records_received: int
+    records_in_range: int
+    records_failed: int
+    earliest_observed_at: datetime | None
+    latest_observed_at: datetime | None
+    range_complete: bool
+
+
 class FetchFailure(RuntimeError):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
@@ -668,6 +682,185 @@ class EastmoneyGubaCollector:
         ):
             safe_frontier = completed_page_frontier
         return CollectionResult(status, items, counters, failures, stop_reason, new_watermark, safe_frontier)
+
+    def collect_backfill(
+        self,
+        stock_code: str,
+        *,
+        from_time: datetime,
+        to_time: datetime,
+        max_pages: int | None = None,
+    ) -> BackfillCollectionResult:
+        """Traverse newest-to-oldest pages for an inclusive historical range.
+
+        This deliberately does not consult known IDs or a checkpoint.  The
+        returned shared result never declares a safe frontier, so callers can
+        reuse the normal persistence tables without advancing forward state.
+        """
+        if not isinstance(stock_code, str) or len(stock_code) != 6 or not stock_code.isdigit():
+            raise ValueError("stock_code must be six decimal digits")
+        if from_time.tzinfo is None or to_time.tzinfo is None:
+            raise ValueError("backfill range requires timezone-aware datetimes")
+        if from_time > to_time:
+            raise ValueError("backfill from_time must be at or before to_time")
+        page_limit = max_pages if max_pages is not None else self.config.max_pages
+        if page_limit < 1:
+            raise ValueError("max_pages must be at least 1")
+
+        counters = RuntimeCounters()
+        items: list[GubaSourceItem] = []
+        failures: list[str] = []
+        earliest: datetime | None = None
+        latest: datetime | None = None
+        records_in_range = 0
+        range_complete = False
+        stop_reason: str | None = None
+        previous_page_signature: tuple[str, ...] | None = None
+
+        def build_item(merged: Mapping[str, Any], list_ref: str, detail_ref: str,
+                       list_final_url: str, detail_final_url: str) -> GubaSourceItem:
+            collected_at = self.clock()
+            if collected_at.tzinfo is None:
+                collected_at = collected_at.replace(tzinfo=timezone.utc)
+            metadata = dict(merged["source_metadata"])
+            metadata["final_urls"] = {"list": list_final_url, "detail": detail_final_url}
+            return GubaSourceItem(
+                source=SOURCE, schema_version=SCHEMA_VERSION,
+                source_item_id=merged["source_item_id"],
+                requested_bar_code=merged["requested_bar_code"],
+                canonical_bar_code=merged["canonical_bar_code"],
+                canonical_bar_name=merged["canonical_bar_name"],
+                author_id=merged["author_id"], author_name=merged["author_name"],
+                title=merged["title"], content=merged["content"],
+                published_at=merged["published_at"],
+                last_updated_at=merged["last_updated_at"],
+                display_time=merged["display_time"], url=merged["url"],
+                post_type=merged["post_type"], post_state=merged["post_state"],
+                post_top_status=merged["post_top_status"],
+                read_count=merged["read_count"], reply_count=merged["reply_count"],
+                like_count=merged["like_count"], forward_count=merged["forward_count"],
+                source_post_id=merged["source_post_id"], collected_at=collected_at,
+                source_times_raw=merged["source_times_raw"], source_metadata=metadata,
+                raw_ref={"list": list_ref, "detail": detail_ref}, observation_version=1,
+                final_url=detail_final_url,
+            )
+
+        for page_number in range(1, page_limit + 1):
+            if self.cancel_check and self.cancel_check():
+                stop_reason = "cancelled"
+                break
+            counters.pages_requested += 1
+            page_url = self.list_url(stock_code, page_number)
+            try:
+                html, raw_page, _, page_final_url = self._fetch(page_url, counters)
+            except FetchFailure as exc:
+                counters.pages_failed += 1
+                failures.append(f"page {page_number}: {exc.kind}")
+                stop_reason = "pagination_failure" if counters.pages_success else "source_failure"
+                break
+            page_ref = self.evidence_store.put("list", None, raw_page)
+            try:
+                parsed_page = parse_list_page(html, stock_code)
+            except GubaSchemaMismatch:
+                counters.pages_failed += 1
+                counters.records_failed += 1
+                failures.append(f"page {page_number}: schema_mismatch")
+                stop_reason = "schema_mismatch"
+                break
+            except GubaParseError:
+                counters.pages_failed += 1
+                counters.records_failed += 1
+                failures.append(f"page {page_number}: parse_failure")
+                stop_reason = "source_failure"
+                break
+
+            signature = tuple(row.source_item_id for row in parsed_page.rows)
+            if signature and signature == previous_page_signature:
+                failures.append(f"page {page_number}: pagination_not_progressing")
+                stop_reason = "pagination_failure"
+                break
+            previous_page_signature = signature
+            counters.pages_success += 1
+            counters.records_received += len(parsed_page.rows) + len(parsed_page.out_of_scope_rows)
+            counters.records_out_of_scope += len(parsed_page.out_of_scope_rows)
+            page_times = [row.published_at for row in parsed_page.rows]
+            if page_times:
+                page_min, page_max = min(page_times), max(page_times)
+                earliest = page_min if earliest is None else min(earliest, page_min)
+                latest = page_max if latest is None else max(latest, page_max)
+
+            page_detail_failure = False
+            for row in parsed_page.rows:
+                if row.published_at > to_time or row.published_at < from_time:
+                    continue
+                records_in_range += 1
+                counters.details_requested += 1
+                counters.records_parsed += 1
+                counters.details_success += 1
+                try:
+                    detail_html, raw_detail, _, detail_final_url = self._fetch(self.detail_url(row.url), counters)
+                    detail_ref = self.evidence_store.put("detail", row.source_item_id, raw_detail)
+                    detail = parse_detail_page(detail_html)
+                    merged = merge_list_and_detail(row, detail)
+                except GubaSchemaMismatch:
+                    counters.details_failed += 1
+                    counters.records_failed += 1
+                    counters.records_parsed -= 1
+                    page_detail_failure = True
+                    failures.append(f"detail {row.source_item_id}: schema_mismatch")
+                    continue
+                except (GubaDetailMismatch, GubaParseError, FetchFailure) as exc:
+                    counters.details_failed += 1
+                    counters.records_failed += 1
+                    counters.records_parsed -= 1
+                    page_detail_failure = True
+                    failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
+                    continue
+                items.append(build_item(merged, page_ref, detail_ref, page_final_url, detail_final_url))
+
+            if page_times and max(page_times) < from_time:
+                range_complete = True
+                stop_reason = "backfill_range_complete"
+                break
+            if not parsed_page.rows and not parsed_page.out_of_scope_rows:
+                range_complete = True
+                stop_reason = "backfill_range_complete"
+                break
+            if page_detail_failure:
+                # Keep traversing to establish coverage, but unresolved range
+                # work prevents SUCCESS below.
+                continue
+
+        if stop_reason == "cancelled":
+            status = CollectionStatus.CANCELLED
+        elif stop_reason == "schema_mismatch":
+            status = CollectionStatus.SPEC_MISMATCH
+        elif stop_reason in {"source_failure", "pagination_failure"}:
+            status = CollectionStatus.COLLECTION_FAILED if counters.pages_success == 0 else CollectionStatus.PARTIAL_COLLECTION
+        elif range_complete and counters.records_failed == 0:
+            status = CollectionStatus.SUCCESS
+        elif counters.pages_success >= page_limit and not range_complete:
+            status = CollectionStatus.PARTIAL_COLLECTION
+            stop_reason = "max_pages_reached"
+        elif counters.records_failed:
+            status = CollectionStatus.PARTIAL_COLLECTION
+            stop_reason = stop_reason or "source_failure"
+        else:
+            status = CollectionStatus.PARTIAL_COLLECTION
+            stop_reason = stop_reason or "max_pages_reached"
+        result = CollectionResult(
+            status, items, counters, failures, stop_reason, None, None,
+        )
+        return BackfillCollectionResult(
+            result=result,
+            pages_scanned=counters.pages_success,
+            records_received=counters.records_received,
+            records_in_range=records_in_range,
+            records_failed=counters.records_failed,
+            earliest_observed_at=earliest,
+            latest_observed_at=latest,
+            range_complete=range_complete and status is CollectionStatus.SUCCESS,
+        )
 
     @staticmethod
     def _failure_name(exc: Exception) -> str:

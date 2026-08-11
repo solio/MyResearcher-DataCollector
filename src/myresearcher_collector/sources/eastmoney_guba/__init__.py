@@ -2,6 +2,7 @@
 
 from .collector import (
     BOOTSTRAP_MIN_PAGES,
+    BackfillCollectionResult,
     CollectorConfig,
     EastmoneyGubaCollector,
     HttpResponse,
@@ -19,6 +20,7 @@ from .parser import (
 
 __all__ = [
     "BOOTSTRAP_MIN_PAGES",
+    "BackfillCollectionResult",
     "CollectorConfig",
     "EastmoneyGubaCollector",
     "GubaDetailMismatch",

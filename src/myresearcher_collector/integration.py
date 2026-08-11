@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 from .models import CollectionResult, CollectionStatus
 from .sources.eastmoney_guba.collector import (
+    BackfillCollectionResult,
     BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
     EastmoneyGubaCollector,
@@ -140,6 +141,19 @@ class PersistentCollection:
     attempt_count: int
     evidence_count: int
     failure_count: int
+
+
+@dataclass(frozen=True)
+class PersistentBackfillCollection:
+    run_id: str
+    execution: BackfillCollectionResult
+    db_path: Path
+    raw_data_dir: Path
+    records_new: int
+    records_existing: int
+    records_versioned: int
+    checkpoint_before: str | None
+    checkpoint_after: str | None
 
 
 class _XueqiuCapturingTransport:
@@ -398,6 +412,117 @@ def execute_and_persist_collection(
         return PersistentCollection(
             run_id, result, db_path, raw_data_dir,
             len(capture.events), len(evidence_ids), len(result.failures),
+        )
+    finally:
+        store.close()
+
+
+def execute_and_persist_backfill_collection(
+    *,
+    db_path: str | Path,
+    raw_data_dir: str | Path,
+    stock_code: str,
+    from_time: datetime,
+    to_time: datetime,
+    transport: Transport,
+    run_id: str | None = None,
+    collector_config: CollectorConfig | None = None,
+    clock: Callable[[], datetime] | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    max_pages: int | None = None,
+) -> PersistentBackfillCollection:
+    """Persist one Eastmoney backfill without ever advancing its checkpoint."""
+    run_id = run_id or uuid.uuid4().hex
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    db_path = Path(db_path)
+    raw_data_dir = Path(raw_data_dir)
+    raw_store = RawEvidenceStore(raw_data_dir, source="eastmoney_guba")
+    store = SQLitePersistence(db_path, raw_store)
+    scope_key = f"stock:{stock_code}"
+    checkpoint = store.checkpoint("eastmoney_guba", scope_key)
+    checkpoint_before = checkpoint[0] if checkpoint else None
+    watermark_before = _watermark(checkpoint_before)
+    started_at = clock()
+    config = collector_config or CollectorConfig()
+    capture = _CapturingTransport(transport, raw_store, run_id, clock)
+    evidence_store = _CapturingEvidenceStore(capture)
+    try:
+        store.start_run(
+            run_id, "eastmoney_guba", scope_key, started_at=started_at,
+            collector_version="eastmoney_guba.collector.v1",
+            parser_version="eastmoney_guba.parser.v1",
+            schema_version="eastmoney_guba.raw.v1",
+            watermark_before=watermark_before,
+        )
+        collector = EastmoneyGubaCollector(
+            capture, evidence_store=evidence_store, config=config,
+            sleep_fn=sleep_fn, clock=clock,
+        )
+        execution = collector.collect_backfill(
+            stock_code, from_time=from_time, to_time=to_time, max_pages=max_pages,
+        )
+        result = execution.result
+        evidence_ids: dict[int, str] = {}
+        attempt_ids: dict[int, str] = {}
+        with store.transaction():
+            for event in capture.events:
+                attempt_id = f"{run_id}-attempt-{event.ordinal}"
+                attempt_ids[event.ordinal] = attempt_id
+                store.record_attempt(
+                    run_id, attempt_id, ordinal=event.ordinal,
+                    request_kind=event.request_kind, request_url=event.url,
+                    started_at=event.started_at, finished_at=event.finished_at,
+                    outcome=_attempt_outcome(event), retry_number=event.retry_number,
+                    retry_budget=config.access_block_attempts if event.status == 403 else config.max_attempts,
+                    http_status=event.status, retry_after_seconds=_retry_after(event.headers),
+                    error_class=event.error_class or (None if event.status == 200 else f"http_{event.status}"),
+                    error_message=event.error_message,
+                )
+                if event.published is not None:
+                    evidence_id = f"{run_id}-evidence-{event.ordinal}"
+                    evidence_ids[event.ordinal] = evidence_id
+                    store.record_raw_evidence(
+                        run_id, attempt_id, evidence_id, event.published,
+                        evidence_kind=event.request_kind, request_url=event.url,
+                        final_url=event.final_url, fetched_at=event.finished_at,
+                        http_status=event.status, content_type=event.headers.get("content-type"),
+                    )
+            for index, message in enumerate(result.failures):
+                event = _failure_event(message, capture.events, stock_code)
+                store.record_failure(
+                    run_id, f"{run_id}-failure-{index}", phase="collect",
+                    failure_class=message.split(":", 1)[-1].strip() or "collection_failure",
+                    occurred_at=clock(), message=message,
+                    attempt_id=attempt_ids.get(event.ordinal) if event else None,
+                    evidence_id=evidence_ids.get(event.ordinal) if event else None,
+                )
+            observations = []
+            for item in result.items:
+                links = []
+                for role in ("list", "detail"):
+                    token = item.raw_ref.get(role)
+                    if token is None or not token.startswith("capture://event/"):
+                        raise PersistenceError("collector item has no persisted raw evidence token")
+                    ordinal = int(token.rsplit("/", 1)[-1])
+                    evidence_id = evidence_ids.get(ordinal)
+                    if evidence_id is None:
+                        raise PersistenceError("collector item evidence was not published")
+                    links.append((evidence_id, role))
+                observations.append((item, scope_key, links))
+            created, _advanced = store.persist_result(
+                run_id, observations, status=result.status.value,
+                finished_at=clock(), counters=result.counters, safe_frontier=None,
+            )
+        records_new = sum(1 for _oid, version, made in created if made and version == 1)
+        records_versioned = sum(1 for _oid, version, made in created if made and version > 1)
+        records_existing = sum(1 for _oid, _version, made in created if not made)
+        checkpoint_after_row = store.checkpoint("eastmoney_guba", scope_key)
+        checkpoint_after = checkpoint_after_row[0] if checkpoint_after_row else None
+        if checkpoint_after != checkpoint_before:
+            raise PersistenceError("backfill changed forward checkpoint")
+        return PersistentBackfillCollection(
+            run_id, execution, db_path, raw_data_dir, records_new,
+            records_existing, records_versioned, checkpoint_before, checkpoint_after,
         )
     finally:
         store.close()

@@ -16,8 +16,14 @@ from pathlib import Path
 from typing import Callable
 
 from myresearcher_collector.integration import (
+    execute_and_persist_backfill_collection,
     execute_and_persist_collection,
     execute_and_persist_xueqiu_collection,
+)
+from myresearcher_collector.backfill import (
+    BackfillConfigError,
+    range_as_dict,
+    resolve_backfill_range,
 )
 from myresearcher_collector.batch import (
     BatchConfigError,
@@ -142,6 +148,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--plan-only", action="store_true",
         help="print the sequential plan without constructing a transport",
     )
+    backfill = subparsers.add_parser(
+        "backfill", help="sequentially acquire one source/stock historical range"
+    )
+    backfill.add_argument("--source", choices=("eastmoney_guba", "xueqiu"), required=True)
+    backfill.add_argument("--stock", required=True, help="six-digit A-share stock code")
+    range_group = backfill.add_mutually_exclusive_group(required=False)
+    range_group.add_argument("--from", dest="from_value", help="inclusive ISO date/timestamp")
+    range_group.add_argument("--days", type=int, help="look back from the current UTC date boundary")
+    backfill.add_argument("--to", dest="to_value", help="inclusive ISO date/timestamp")
+    backfill.add_argument("--data-dir", type=Path, required=True)
+    backfill.add_argument("--max-pages", type=int, default=100)
+    backfill.add_argument("--timeout", type=float, default=20.0)
+    backfill.add_argument("--min-interval", type=float, default=3.0)
+    backfill_mode = backfill.add_mutually_exclusive_group(required=True)
+    backfill_mode.add_argument("--plan-only", action="store_true")
+    backfill_mode.add_argument("--confirm-live", action="store_true")
     batch_mode.add_argument(
         "--confirm-live", action="store_true",
         help="explicitly allow real sequential HTTPS requests",
@@ -194,7 +216,9 @@ def _data_dir_state(data_dir: Path) -> str:
     return "empty" if next(data_dir.iterdir(), None) is None else "nonempty"
 
 
-def _persistent_mode(data_dir: Path, stock_code: str) -> tuple[str, str | None]:
+def _persistent_mode(
+    data_dir: Path, stock_code: str, source: str = "eastmoney_guba"
+) -> tuple[str, str | None]:
     db_path = data_dir / "collector.db"
     if not db_path.exists():
         return "BOOTSTRAP_PENDING", None
@@ -205,7 +229,7 @@ def _persistent_mode(data_dir: Path, stock_code: str) -> tuple[str, str | None]:
         row = connection.execute(
             """SELECT watermark_utc FROM collector_checkpoints
                WHERE source=? AND scope_key=?""",
-            ("eastmoney_guba", f"stock:{stock_code}"),
+            (source, f"stock:{stock_code}"),
         ).fetchone()
     except sqlite3.Error as exc:
         raise ValueError("persistent collector.db does not have the approved schema") from exc
@@ -360,6 +384,75 @@ def execute_batch_cli(args: argparse.Namespace) -> dict[str, object]:
     return summary.as_dict()
 
 
+def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
+    if args.max_pages < 1:
+        raise BackfillConfigError("max_pages must be at least 1")
+    if args.min_interval < 2.5:
+        raise BackfillConfigError("min_interval must be at least 2.5 seconds")
+    resolved = resolve_backfill_range(
+        source=args.source, stock_code=args.stock, from_value=args.from_value,
+        to_value=args.to_value, days=args.days,
+    )
+    data_dir = args.data_dir.expanduser().resolve()
+    checkpoint = None
+    db_path = data_dir / "collector.db"
+    if db_path.is_file():
+        _mode, checkpoint = _persistent_mode(data_dir, args.stock, args.source)
+    return {
+        "mode": "PLAN_ONLY",
+        "network_execution": False,
+        **range_as_dict(resolved),
+        "max_pages": args.max_pages,
+        "checkpoint": checkpoint,
+        "checkpoint_mutation": False,
+        "estimated_mode": "BACKFILL",
+        "data_dir": str(data_dir),
+        "source_access": "BROWSER_MANAGED_OFFLINE_ONLY" if args.source == "xueqiu" else "HTTPS_GET_ONLY",
+    }
+
+
+def execute_backfill_cli(args: argparse.Namespace) -> dict[str, object]:
+    if args.source != "eastmoney_guba":
+        raise RuntimeError("xueqiu backfill live host is not wired; offline path is NOT_READY")
+    if args.max_pages < 1:
+        raise BackfillConfigError("max_pages must be at least 1")
+    if args.min_interval < 2.5:
+        raise BackfillConfigError("min_interval must be at least 2.5 seconds")
+    resolved = resolve_backfill_range(
+        source=args.source, stock_code=args.stock, from_value=args.from_value,
+        to_value=args.to_value, days=args.days,
+    )
+    data_dir = args.data_dir.expanduser().resolve()
+    execution = execute_and_persist_backfill_collection(
+        db_path=data_dir / "collector.db", raw_data_dir=data_dir,
+        stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
+        transport=UrllibTransport(),
+        collector_config=CollectorConfig(timeout_seconds=args.timeout, min_interval_seconds=args.min_interval, max_pages=args.max_pages),
+        max_pages=args.max_pages,
+    )
+    stats = execution.execution
+    result = stats.result
+    report = {
+        **range_as_dict(resolved), "run_id": execution.run_id,
+        "status": result.status.value, "stop_reason": result.stop_reason,
+        "pages_scanned": stats.pages_scanned,
+        "records_received": stats.records_received,
+        "records_in_range": stats.records_in_range,
+        "records_new": execution.records_new,
+        "records_existing": execution.records_existing,
+        "records_versioned": execution.records_versioned,
+        "records_failed": stats.records_failed,
+        "earliest_observed_at": stats.earliest_observed_at,
+        "latest_observed_at": stats.latest_observed_at,
+        "checkpoint_before": execution.checkpoint_before,
+        "checkpoint_after": execution.checkpoint_after,
+        "range_complete": stats.range_complete,
+    }
+    if report["checkpoint_after"] != report["checkpoint_before"]:
+        raise RuntimeError("backfill checkpoint isolation assertion failed")
+    return report
+
+
 def xueqiu_plan(args: argparse.Namespace) -> dict[str, object]:
     if args.max_pages < 1:
         raise ValueError("max_pages must be at least 1")
@@ -430,6 +523,18 @@ def main(argv: list[str] | None = None) -> int:
         if summary["stop_reason"] is not None:
             return 2
         return 0 if summary["targets_failed"] == 0 and summary["targets_partial"] == 0 else 1
+
+    if args.command == "backfill":
+        try:
+            if args.plan_only:
+                print(json.dumps(backfill_plan(args), ensure_ascii=False, indent=2, default=_json_default))
+                return 0
+            summary = execute_backfill_cli(args)
+        except (BackfillConfigError, LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            print(f"backfill error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(summary, ensure_ascii=False, indent=2, default=_json_default))
+        return 0 if summary["status"] == "SUCCESS" else 1
 
     if args.command == "xueqiu":
         try:
