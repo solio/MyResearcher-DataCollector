@@ -228,3 +228,49 @@ CANDIDATE status and routes the route decision to Reviewer.
 
 Round 2 evidence: runs/xueqiu-source-probe/round-02-probe.md and
 runs/xueqiu-source-probe/round-02-sanitized-evidence.md
+
+## 18. Final Browser Network Feasibility Gate
+
+Final route: `XUEQIU_FINAL_FEASIBILITY: JSON_API_READY_FOR_SPEC_APPROVAL`
+
+The final gate used a temporary local Google Chrome profile with DevTools/CDP
+Network observation against `https://xueqiu.com/S/SH600519`. No login was
+submitted, and no cookie value, credential, full response body or challenge
+signature value was retained.
+
+The page's own traffic exposed this JSON request:
+
+`GET https://xueqiu.com/query/v1/symbol/search/status.json`
+
+Observed non-secret parameters were `symbol=SH600519`, `count=10`,
+`comment=0`, `hl=0`, `source=all`, `sort=time`, `page=1`, `q=`, and `type=11`.
+The page-2 request advanced to `page=2` and also carried
+`last_id=404539054`. The browser appended a challenge/signature parameter;
+its name and value are intentionally omitted.
+
+For page 1, page 2, and a repeated page 1, the response was HTTP 200
+`application/json` XHR with top-level keys including `list`, `count`,
+`maxPage`, and `page`; each observed list contained 10 items. Required
+candidate fields were present: `id`, `description`, `title`, `created_at`,
+`target`, `user.id`, `user.screen_name`, `fav_count`, `reply_count`, and
+`retweet_count`.
+
+Candidate mapping evidence is now available: `source_item_id = str(item.id)`;
+IDs were non-empty and unique within each page, page 1/page 2 had zero overlap,
+and the repeated page 1 had 10/10 ID overlap with no additions or removals.
+`created_at` was numeric Unix epoch milliseconds, and page 2 was broadly older
+than page 1. Description HTML representation remains UNRESOLVED because raw
+content values were not copied or normalized.
+
+This bounded flow establishes JSON availability and observed
+pagination/moving-page behavior, but does not freeze bootstrap or incremental
+algorithms. The browser-managed session/access mechanism and challenge
+parameter handling remain Reviewer decisions. Earlier plain-HTTP WAF and
+in-app-browser limitations remain environment-specific observations.
+
+Evidence: `runs/xueqiu-source-probe/final-browser-network-probe.md`,
+`runs/xueqiu-source-probe/final-browser-network-evidence.md`, and
+`runs/xueqiu-source-probe/final-handoff.md`.
+
+Status remains `CANDIDATE`; no production adapter or source semantics were
+modified.

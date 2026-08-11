@@ -53,3 +53,30 @@ Round 2 status: XUEQIU_SOURCE_PROBE_R2: BLOCKED
 Detailed evidence: runs/xueqiu-source-probe/round-02-probe.md and runs/xueqiu-source-probe/round-02-sanitized-evidence.md
 
 Next Role: Reviewer
+
+## Final Browser Network Feasibility Gate
+
+Final status: `XUEQIU_FINAL_FEASIBILITY: JSON_API_READY_FOR_SPEC_APPROVAL`
+
+Real temporary Chrome Network observation resolved a usable anonymous JSON
+path for `SH600519`:
+
+- `GET https://xueqiu.com/query/v1/symbol/search/status.json`
+- page 1 and page 2 returned HTTP 200 `application/json` XHR responses;
+  page 2 advanced `page=2` and used `last_id=404539054`.
+- `list` contained 10 items with non-empty unique `id` values and the
+  required candidate fields.
+- page 1/page 2 overlap was 0; after a >=3 second wait and reload, repeated
+  page 1 overlap was 10/10 with no new or removed IDs.
+- `created_at` was numeric Unix epoch milliseconds; page 2 was broadly older.
+
+No login was submitted and no cookie/credential/challenge value was retained.
+The candidate spec remains `specs/xueqiu.md` with `Status: CANDIDATE`.
+Bootstrap/incremental semantics and the production browser/session contract
+remain Reviewer decisions. No production files were modified.
+
+Detailed final evidence: `runs/xueqiu-source-probe/final-browser-network-probe.md`,
+`runs/xueqiu-source-probe/final-browser-network-evidence.md`, and
+`runs/xueqiu-source-probe/final-handoff.md`.
+
+Next Role: Reviewer
