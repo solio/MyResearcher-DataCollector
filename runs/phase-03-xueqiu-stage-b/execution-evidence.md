@@ -3,6 +3,7 @@
 - Production baseline: `bdbdc58c1f8d0a929ad4402c0de90631255be968`
 - Tester worktree branch: `test/xueqiu-final-acceptance`
 - Network/browser: offline only; deterministic transports and sanitized fixtures
+- Tester-owned Stage B additions: `tests/integration/test_xueqiu_stage_b_reviewer.py`
 - Production files modified by Tester: NONE
 
 ## Required gates
@@ -12,8 +13,8 @@
 | `git diff --check` | PASS |
 | `PYTHONPYCACHEPREFIX=/tmp/myresearcher-datacollector-pyc python -m compileall -q src tests` | PASS |
 | `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest tests/acceptance -q` | 55 passed, 1 approved xfail |
-| `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest tests/integration -q` | 19 passed |
-| `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q` | 160 passed, 1 approved xfail |
+| `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest tests/integration -q` | 21 passed |
+| `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q` | 162 passed, 1 approved xfail |
 
 ## Xueqiu coverage
 
@@ -21,6 +22,7 @@
 - XQ-021 and XQ-022 browser/persistence supplement: PASS
 - XQ-023 repeated new page: `PARTIAL_COLLECTION`, safe frontier NULL, checkpoint unchanged: PASS
 - XQ-024 historical drift version 2, identical repeat does not create version 3, checkpoint unchanged: PASS
+- Tester-owned independent XQ-023/XQ-024 reviewer tests: 2 passed
 - Fake/injected browser transport, page/last_id continuity, sanitized raw evidence and secret redaction: PASS
 
 ## Regression coverage
