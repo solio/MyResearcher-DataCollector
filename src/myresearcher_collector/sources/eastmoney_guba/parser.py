@@ -16,6 +16,9 @@ SCHEMA_VERSION = "eastmoney_guba.raw.v1"
 SHANGHAI = timezone(timedelta(hours=8))
 _ID_RE = re.compile(r"^[0-9]+$")
 _HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
+_ACCESS_TITLE_RE = re.compile(r"<title[^>]*>\s*([^<]+?)\s*</title>", re.IGNORECASE)
+_ACCESS_TITLES = {"身份核实", "访问验证", "安全验证", "人机验证"}
+_ACCESS_MARKERS = ("fd_guba_validate", "em_capt.js", "validate.js")
 
 
 class GubaParseError(ValueError):
@@ -28,6 +31,23 @@ class GubaSchemaMismatch(GubaParseError):
 
 class GubaDetailMismatch(GubaSchemaMismatch):
     """List identity and detail identity disagree."""
+
+
+def is_access_block_page(html: str) -> bool:
+    """Recognize the observed Eastmoney identity-verification HTML shell.
+
+    This intentionally requires both a known verification title and a
+    source-specific verification marker. A generic HTTP-200 HTML response
+    without ``article_list`` therefore remains a schema mismatch.
+    """
+    if not isinstance(html, str) or not html:
+        return False
+    title_match = _ACCESS_TITLE_RE.search(html)
+    if title_match is None:
+        return False
+    title = " ".join(title_match.group(1).split())
+    lowered = html.lower()
+    return title in _ACCESS_TITLES and any(marker in lowered for marker in _ACCESS_MARKERS)
 
 
 @dataclass(frozen=True)

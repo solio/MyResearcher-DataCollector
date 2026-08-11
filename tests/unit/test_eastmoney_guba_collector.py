@@ -287,6 +287,57 @@ def test_first_page_schema_failure_is_spec_mismatch() -> None:
     assert len(store.snapshots) == 1
 
 
+def test_http200_verification_retries_then_normal_article_list_succeeds() -> None:
+    page1, page2, _, detail1 = urls()
+    run, transport = collector(
+        {
+            page1: [response("verification_page.html"), response("list_page_1.html")],
+            page2: response("empty_page.html"),
+            detail1: response("detail_1001.html"),
+        }
+    )
+
+    result = run.collect("600001", max_pages=2, bootstrap=False)
+
+    assert result.status is CollectionStatus.SUCCESS
+    assert result.stop_reason == "empty_page"
+    assert result.counters.requests_total == 4
+    assert result.counters.requests_failed == 1
+    assert result.counters.requests_success == 3
+    assert transport.calls == [page1, page1, detail1, page2]
+
+
+def test_http200_verification_twice_is_collection_failed_on_first_page() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector(
+        {page1: [response("verification_page.html"), response("verification_page.html")]}
+    )
+
+    result = run.collect("600001", max_pages=1, bootstrap=False)
+
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.stop_reason == "page_failure"
+    assert result.failures == ["page 1: access_block"]
+    assert result.counters.requests_total == 2
+    assert result.counters.requests_failed == 2
+    assert result.counters.requests_success == 0
+    assert transport.calls == [page1, page1]
+
+
+def test_http200_ordinary_malformed_html_remains_spec_mismatch() -> None:
+    page1, _, _, _ = urls()
+    run, transport = collector({page1: response("malformed_page.html")})
+
+    result = run.collect("600001", max_pages=1, bootstrap=False)
+
+    assert result.status is CollectionStatus.SPEC_MISMATCH
+    assert result.stop_reason == "schema_mismatch"
+    assert result.counters.requests_total == 1
+    assert result.counters.requests_failed == 0
+    assert result.counters.requests_success == 1
+    assert transport.calls == [page1]
+
+
 def test_valid_empty_page_is_no_new_data() -> None:
     page1, _, _, _ = urls()
     run, _ = collector({page1: response("empty_page.html")})

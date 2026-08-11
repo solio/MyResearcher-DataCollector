@@ -28,6 +28,7 @@ from .parser import (
     merge_list_and_detail,
     parse_detail_page,
     parse_list_page,
+    is_access_block_page,
 )
 
 
@@ -241,6 +242,16 @@ class EastmoneyGubaCollector:
                 raise FetchFailure("transport", "request raised an unexpected error") from exc
 
             if status == 200:
+                if is_access_block_page(text):
+                    counters.requests_failed += 1
+                    attempts = self.config.access_block_attempts
+                    if attempt >= min(self.config.max_attempts, attempts):
+                        raise FetchFailure(
+                            "access_block",
+                            "source returned an identity-verification page",
+                        )
+                    self._backoff(attempt, headers)
+                    continue
                 counters.requests_success += 1
                 return text, body, headers, final_url or url
 

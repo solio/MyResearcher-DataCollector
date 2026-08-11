@@ -19,6 +19,7 @@ from .sources.eastmoney_guba.collector import (
     EastmoneyGubaCollector,
     Transport,
 )
+from .sources.eastmoney_guba.parser import is_access_block_page
 from .sources.xueqiu.browser_transport import XueqiuTransport, redact_xueqiu_url
 from .sources.xueqiu.collector import (
     CollectorConfig as XueqiuCollectorConfig,
@@ -103,10 +104,15 @@ class _CapturingTransport:
 
         status, body, headers, final_url = _response_parts(response)
         published = self.raw_store.publish(self.run_id, ordinal, body)
+        access_block = status == 200 and is_access_block_page(
+            body.decode("utf-8", errors="replace")
+        )
         self.events.append(
             _RequestEvent(
                 ordinal, url, self._kind(url), retry_number, started, self.clock(),
                 status, headers, final_url, body, published=published,
+                error_class="access_block" if access_block else None,
+                error_message="identity-verification page" if access_block else None,
             )
         )
         return response
@@ -235,6 +241,8 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
 
 
 def _attempt_outcome(event: _RequestEvent) -> str:
+    if event.error_class == "access_block":
+        return "http_error"
     if event.status == 200:
         return "success"
     if event.status is not None:
@@ -351,7 +359,11 @@ def execute_and_persist_collection(
                     finished_at=event.finished_at,
                     outcome=_attempt_outcome(event),
                     retry_number=event.retry_number,
-                    retry_budget=config.access_block_attempts if event.status == 403 else config.max_attempts,
+                    retry_budget=(
+                        config.access_block_attempts
+                        if event.status == 403 or event.error_class == "access_block"
+                        else config.max_attempts
+                    ),
                     http_status=event.status,
                     retry_after_seconds=_retry_after(event.headers),
                     error_class=event.error_class or (None if event.status == 200 else f"http_{event.status}"),
@@ -473,7 +485,11 @@ def execute_and_persist_backfill_collection(
                     request_kind=event.request_kind, request_url=event.url,
                     started_at=event.started_at, finished_at=event.finished_at,
                     outcome=_attempt_outcome(event), retry_number=event.retry_number,
-                    retry_budget=config.access_block_attempts if event.status == 403 else config.max_attempts,
+                    retry_budget=(
+                        config.access_block_attempts
+                        if event.status == 403 or event.error_class == "access_block"
+                        else config.max_attempts
+                    ),
                     http_status=event.status, retry_after_seconds=_retry_after(event.headers),
                     error_class=event.error_class or (None if event.status == 200 else f"http_{event.status}"),
                     error_message=event.error_message,
