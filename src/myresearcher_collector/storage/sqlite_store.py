@@ -411,6 +411,17 @@ class SQLitePersistence:
             (source, scope_key),
         ).fetchone()
 
+    def known_item_ids(self, source: str, scope_key: str) -> set[str]:
+        """Return source identities already observed in a requested scope."""
+        rows = self.conn.execute(
+            """SELECT DISTINCT o.source_item_id
+               FROM source_item_observations AS o
+               JOIN observation_scopes AS s ON s.observation_id = o.observation_id
+               WHERE o.source=? AND s.scope_key=?""",
+            (source, scope_key),
+        ).fetchall()
+        return {row[0] for row in rows}
+
     def verify_evidence(self, evidence_id: str) -> Path:
         row = self.conn.execute(
             "SELECT filesystem_path, content_sha256, byte_size FROM raw_evidence WHERE evidence_id=?",
