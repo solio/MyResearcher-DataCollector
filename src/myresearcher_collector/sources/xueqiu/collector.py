@@ -374,7 +374,12 @@ class XueqiuCollector:
             return CollectionResult(status, items, counters, failures, stop_reason, None, None)
         if boundary_reached:
             status = CollectionStatus.NO_NEW_DATA if not items else CollectionStatus.SUCCESS
-            return CollectionResult(status, items, counters, failures, stop_reason, watermark, watermark)
+            # A completed incremental boundary proves the whole accepted
+            # prefix, including new items collected before the boundary.
+            # Partial collection never reaches this branch and therefore
+            # cannot advance the committed checkpoint.
+            frontier = max([watermark, *frontier_values], default=watermark)
+            return CollectionResult(status, items, counters, failures, stop_reason, frontier, frontier)
         if stop_reason == "max_pages":
             return CollectionResult(CollectionStatus.PARTIAL_COLLECTION, items, counters, failures, stop_reason, None, None)
         return CollectionResult(CollectionStatus.SUCCESS if items else CollectionStatus.NO_NEW_DATA, items, counters, failures, stop_reason, watermark, None)
