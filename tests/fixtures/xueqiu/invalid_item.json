@@ -1,0 +1,17 @@
+{
+  "list": [
+    {
+      "description": "missing source identity",
+      "title": "invalid synthetic item",
+      "created_at": 1700000000000,
+      "target": "https://xueqiu.com/invalid",
+      "user": {"id": 810099, "screen_name": "synthetic-author-invalid"},
+      "fav_count": 0,
+      "reply_count": 0,
+      "retweet_count": 0
+    }
+  ],
+  "count": 1,
+  "maxPage": 2,
+  "page": 1
+}

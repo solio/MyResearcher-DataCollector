@@ -1,0 +1,29 @@
+{
+  "list": [
+    {
+      "id": 910001,
+      "description": "<p>synthetic body one 😀</p>",
+      "title": "synthetic title one",
+      "created_at": 1700000000000,
+      "target": "https://xueqiu.com/910001",
+      "user": {"id": 810001, "screen_name": "synthetic-author-1"},
+      "fav_count": 1,
+      "reply_count": 2,
+      "retweet_count": 3
+    },
+    {
+      "id": 910002,
+      "description": "body two with <em>source HTML</em>",
+      "title": null,
+      "created_at": 1699999000000,
+      "target": "https://xueqiu.com/910002",
+      "user": {"id": 810002, "screen_name": "synthetic-author-2"},
+      "fav_count": 0,
+      "reply_count": 0,
+      "retweet_count": 0
+    }
+  ],
+  "count": 2,
+  "maxPage": 2,
+  "page": 1
+}
