@@ -47,11 +47,12 @@ class RuntimeCounters:
 
 
 @dataclass(frozen=True)
-class GubaSourceItem:
-    """An accepted standard Guba top-level post.
+class SourceItem:
+    """An accepted source item at the shared raw persistence boundary.
 
-    ``raw_ref`` is deliberately an opaque mapping. The memory store used in
-    this round is replaceable when OQ-02 is decided.
+    The column-shaped fields are retained for compatibility with the frozen
+    SQLite schema.  Source adapters may leave source-irrelevant fields null;
+    ``raw_ref`` remains an opaque mapping owned by the adapter/integration.
     """
 
     source: str
@@ -88,10 +89,20 @@ class GubaSourceItem:
         return self.source, self.source_item_id
 
 
+@dataclass(frozen=True)
+class GubaSourceItem(SourceItem):
+    """An accepted standard Eastmoney Guba top-level post."""
+
+
+@dataclass(frozen=True)
+class XueqiuSourceItem(SourceItem):
+    """An accepted Xueqiu top-level discussion post."""
+
+
 @dataclass
 class CollectionResult:
     status: CollectionStatus
-    items: list[GubaSourceItem] = field(default_factory=list)
+    items: list[SourceItem] = field(default_factory=list)
     counters: RuntimeCounters = field(default_factory=RuntimeCounters)
     failures: list[str] = field(default_factory=list)
     stop_reason: str | None = None

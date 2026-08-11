@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from myresearcher_collector.models import GubaSourceItem, RuntimeCounters
+from myresearcher_collector.models import RuntimeCounters, SourceItem
 
 from .models import PublishedRaw, SafeFrontier
 from .raw_store import RawEvidenceStore
@@ -50,7 +50,7 @@ def _utc_order(value: str) -> datetime:
     return datetime.fromisoformat(value[:-1] + "+00:00")
 
 
-def _item_fingerprint(item: GubaSourceItem) -> str:
+def _item_fingerprint(item: SourceItem) -> str:
     metadata = dict(item.source_metadata)
     metadata.pop("final_urls", None)
     canonical = {
@@ -232,7 +232,7 @@ class SQLitePersistence:
     def record_observation(
         self,
         run_id: str,
-        item: GubaSourceItem,
+        item: SourceItem,
         *,
         scope_key: str,
         evidence_links: Iterable[tuple[str, str]],
@@ -373,7 +373,7 @@ class SQLitePersistence:
     def persist_result(
         self,
         run_id: str,
-        observations: Iterable[tuple[GubaSourceItem, str, Iterable[tuple[str, str]]]],
+        observations: Iterable[tuple[SourceItem, str, Iterable[tuple[str, str]]]],
         *,
         status: str,
         finished_at: datetime | str,

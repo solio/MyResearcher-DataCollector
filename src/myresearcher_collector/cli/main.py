@@ -15,7 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from myresearcher_collector.integration import execute_and_persist_collection
+from myresearcher_collector.integration import (
+    execute_and_persist_collection,
+    execute_and_persist_xueqiu_collection,
+)
 from myresearcher_collector.batch import (
     BatchConfigError,
     execute_batch_collection,
@@ -31,6 +34,11 @@ from myresearcher_collector.sources.eastmoney_guba import (
     UrllibTransport,
 )
 from myresearcher_collector.sources.eastmoney_guba.collector import Transport
+from myresearcher_collector.sources.xueqiu import (
+    CollectorConfig as XueqiuCollectorConfig,
+    XUEQIU_BOOTSTRAP_MIN_PAGES,
+    symbol_for,
+)
 
 
 DEFAULT_USER_AGENT = "MyResearcher-DataCollector/eastmoney_guba-live-smoke"
@@ -136,6 +144,22 @@ def build_parser() -> argparse.ArgumentParser:
     batch_mode.add_argument(
         "--confirm-live", action="store_true",
         help="explicitly allow real sequential HTTPS requests",
+    )
+    xueqiu = subparsers.add_parser(
+        "xueqiu",
+        help="collect Xueqiu top-level A-share discussions through a browser-managed session",
+    )
+    xueqiu.add_argument("stock_code", help="six-digit A-share stock code")
+    xueqiu.add_argument("--data-dir", type=Path, required=True)
+    xueqiu.add_argument("--max-pages", type=int, default=XUEQIU_BOOTSTRAP_MIN_PAGES)
+    xueqiu.add_argument("--timeout", type=float, default=20.0)
+    xueqiu.add_argument("--min-interval", type=float, default=3.0)
+    xueqiu_mode = xueqiu.add_mutually_exclusive_group(required=True)
+    xueqiu_mode.add_argument("--plan-only", action="store_true")
+    xueqiu_mode.add_argument(
+        "--confirm-live",
+        action="store_true",
+        help="acknowledge a future browser-managed live run",
     )
     return parser
 
@@ -327,6 +351,61 @@ def execute_batch_cli(args: argparse.Namespace) -> dict[str, object]:
     return summary.as_dict()
 
 
+def xueqiu_plan(args: argparse.Namespace) -> dict[str, object]:
+    if args.max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+    if args.min_interval < 3.0:
+        raise ValueError("Xueqiu min_interval must be at least 3.0 seconds")
+    symbol = symbol_for(args.stock_code)
+    data_dir = args.data_dir.expanduser().resolve()
+    return {
+        "mode": "PLAN_ONLY",
+        "network_execution": False,
+        "source": "xueqiu",
+        "access": "BROWSER_MANAGED_ANONYMOUS_SESSION",
+        "entry_url": f"https://xueqiu.com/S/{symbol}",
+        "stock_code": args.stock_code,
+        "symbol": symbol,
+        "max_pages": args.max_pages,
+        "bootstrap_min_pages": XUEQIU_BOOTSTRAP_MIN_PAGES,
+        "min_interval_seconds": args.min_interval,
+        "data_dir": str(data_dir),
+        "secrets_required": "NONE",
+    }
+
+
+def execute_xueqiu_run(
+    args: argparse.Namespace,
+    *,
+    transport=None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    run_id: str | None = None,
+) -> dict[str, object]:
+    """Execute only with an injected browser transport; CLI never fabricates one."""
+    if transport is None:
+        raise RuntimeError("browser-managed Xueqiu transport must be supplied by the host")
+    data_dir = args.data_dir.expanduser().resolve()
+    result = execute_and_persist_xueqiu_collection(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        stock_code=args.stock_code,
+        transport=transport,
+        run_id=run_id,
+        collector_config=XueqiuCollectorConfig(
+            max_pages=args.max_pages,
+            timeout_seconds=args.timeout,
+            min_interval_seconds=args.min_interval,
+        ),
+        sleep_fn=sleep_fn,
+        max_pages=args.max_pages,
+    )
+    return summarize_run(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        run_id=result.run_id,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "collect-batch":
@@ -342,6 +421,18 @@ def main(argv: list[str] | None = None) -> int:
         if summary["stop_reason"] is not None:
             return 2
         return 0 if summary["targets_failed"] == 0 and summary["targets_partial"] == 0 else 1
+
+    if args.command == "xueqiu":
+        try:
+            if args.plan_only:
+                print(json.dumps(xueqiu_plan(args), ensure_ascii=False, indent=2))
+                return 0
+            # A real browser Page is intentionally owned by the caller/runtime;
+            # this CLI safety gate does not silently fall back to plain HTTP.
+            raise RuntimeError("browser-managed Xueqiu transport must be supplied by the host")
+        except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            print(f"xueqiu error: {exc}", file=sys.stderr)
+            return 2
 
     if args.command == "eastmoney-guba-persistent":
         try:
