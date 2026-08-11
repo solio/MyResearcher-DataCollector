@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from .models import CollectionResult, CollectionStatus
 from .sources.eastmoney_guba.collector import (
+    BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
     EastmoneyGubaCollector,
     Transport,
@@ -202,8 +203,9 @@ def execute_and_persist_collection(
     clock: Callable[[], datetime] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_pages: int | None = None,
+    bootstrap_if_no_checkpoint: bool = True,
 ) -> PersistentCollection:
-    """Run the existing Collector once and persist its execution atomically."""
+    """Run one persistent collection, bootstrapping any NULL checkpoint scope."""
     run_id = run_id or uuid.uuid4().hex
     clock = clock or (lambda: datetime.now(timezone.utc))
     db_path = Path(db_path)
@@ -216,6 +218,13 @@ def execute_and_persist_collection(
     known_ids = store.known_item_ids("eastmoney_guba", scope_key)
     started_at = clock()
     config = collector_config or CollectorConfig()
+    page_limit = max_pages if max_pages is not None else config.max_pages
+    bootstrap = bootstrap_if_no_checkpoint and watermark_before is None
+    if bootstrap and page_limit < BOOTSTRAP_MIN_PAGES:
+        store.close()
+        raise ValueError(
+            f"bootstrap requires max_pages >= {BOOTSTRAP_MIN_PAGES}"
+        )
     capture = _CapturingTransport(transport, raw_store, run_id, clock)
     evidence_store = _CapturingEvidenceStore(capture)
     try:
@@ -241,6 +250,7 @@ def execute_and_persist_collection(
             existing_ids=known_ids,
             watermark=watermark_before,
             max_pages=max_pages,
+            bootstrap=bootstrap,
         )
         evidence_ids: dict[int, str] = {}
         attempt_ids: dict[int, str] = {}
