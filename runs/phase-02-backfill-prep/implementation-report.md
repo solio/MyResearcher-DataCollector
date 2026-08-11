@@ -40,3 +40,16 @@ The review blockers were corrected without schema or source-contract changes:
 
 Correction validation: 207 tests collected; full suite `206 passed, 1
 xfail`. Real network remained NOT EXECUTED.
+
+## Final failure-classification correction
+
+When all requested candidate details are attempted and every detail fails,
+the runtime now returns `COLLECTION_FAILED` with
+`stop_reason=all_candidate_details_failed`. A mixed result remains
+`PARTIAL_COLLECTION`; a safely completed range with zero candidates remains
+`SUCCESS`. BF-020 covers the all-failed case, including persisted failure and
+raw-evidence lineage. The CLI `--days` help now states the fixed
+Asia/Shanghai calendar semantics.
+
+Final correction validation: 209 tests collected; full suite `208 passed, 1
+xfail`. Real network remained NOT EXECUTED.

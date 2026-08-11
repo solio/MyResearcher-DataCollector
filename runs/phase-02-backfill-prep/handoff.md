@@ -17,3 +17,6 @@ any DataClean integration.
 The correction regression cases are BF-016 through BF-019. The exact-tree
 suite must remain the authority for independent review; Developer tests do not
 close the prior review by themselves.
+
+BF-020 adds the required all-candidate-detail failure classification and
+Persistence evidence check.

@@ -125,3 +125,49 @@ def test_backfill_detail_schema_mismatch_persists_evidence_and_failure(tmp_path:
         assert store.checkpoint("eastmoney_guba", "stock:600001") is None
     finally:
         store.close()
+
+
+def test_backfill_all_candidate_details_failed_persists_failure_and_keeps_checkpoint(
+    tmp_path: Path,
+) -> None:
+    class AllDetailsFailedTransport:
+        def get(self, url: str, *, timeout: float) -> HttpResponse:
+            del timeout
+            if ",f.html" in url:
+                from tests.unit.test_backfill import synthetic_page
+                return synthetic_page(
+                    ("1001", "2026-08-10 10:00:00"),
+                    ("1002", "2026-08-10 09:00:00"),
+                    ("1003", "2026-08-10 08:00:00"),
+                )
+            if ",f_2.html" in url:
+                from tests.unit.test_backfill import synthetic_page
+                return synthetic_page(("1004", "2026-08-07 08:00:00"))
+            return HttpResponse(503, b"retry exhausted", {})
+
+    execution = execute_and_persist_backfill_collection(
+        db_path=tmp_path / "collector.db", raw_data_dir=tmp_path / "data",
+        stock_code="600001", from_time=datetime(2026, 8, 8, tzinfo=timezone.utc),
+        to_time=datetime(2026, 8, 11, tzinfo=timezone.utc), transport=AllDetailsFailedTransport(),
+        run_id="backfill-all-details-failed", collector_config=config(),
+        clock=lambda: datetime(2026, 8, 11, tzinfo=timezone.utc), sleep_fn=lambda _: None, max_pages=2,
+    )
+    result = execution.execution.result
+    assert result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.stop_reason == "all_candidate_details_failed"
+    assert result.counters.details_requested == 3
+    assert result.counters.details_success == 0
+    assert result.counters.details_failed == 3
+    assert execution.checkpoint_before is None
+    assert execution.checkpoint_after is None
+    store = SQLitePersistence(tmp_path / "collector.db", RawEvidenceStore(tmp_path / "data", source="eastmoney_guba"))
+    try:
+        assert store.conn.execute(
+            "SELECT count(*) FROM collection_failures WHERE run_id=?", (execution.run_id,)
+        ).fetchone()[0] == 3
+        assert store.conn.execute(
+            "SELECT count(*) FROM raw_evidence WHERE run_id=?", (execution.run_id,)
+        ).fetchone()[0] >= 4
+        assert store.checkpoint("eastmoney_guba", "stock:600001") is None
+    finally:
+        store.close()

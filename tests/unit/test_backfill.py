@@ -92,6 +92,8 @@ def test_bf_001_range_success_and_bf_003_in_range_details() -> None:
     routes = {
         p1: synthetic_page(("1001", "2026-08-10 10:00:00")),
         p2: synthetic_page(("1002", "2026-08-09 10:00:00")),
+        "https://guba.eastmoney.com/news,600001,1001.html": synthetic_detail("1001", "2026-08-10 10:00:00"),
+        "https://guba.eastmoney.com/news,600001,1002.html": synthetic_detail("1002", "2026-08-09 10:00:00"),
         p3: synthetic_page(("1003", "2026-08-07 10:00:00")),
         d1: synthetic_detail("1001", "2026-08-10 10:00:00"),
         d2: synthetic_detail("1002", "2026-08-09 10:00:00"),
@@ -136,6 +138,8 @@ def test_bf_005_known_ids_do_not_stop_and_bf_009_cap_is_partial() -> None:
     routes = {
         p1: synthetic_page(("1001", "2026-08-10 10:00:00")),
         p2: synthetic_page(("1002", "2026-08-09 10:00:00")),
+        "https://guba.eastmoney.com/news,600001,1001.html": synthetic_detail("1001", "2026-08-10 10:00:00"),
+        "https://guba.eastmoney.com/news,600001,1002.html": synthetic_detail("1002", "2026-08-09 10:00:00"),
     }
     collector, transport = make_collector(routes)
     result = collector.collect_backfill(
@@ -248,3 +252,32 @@ def test_bf_019_detail_counters_reconcile_success_and_failure() -> None:
     assert counters.details_success == 2
     assert counters.details_failed == 1
     assert counters.details_requested == counters.details_success + counters.details_failed
+
+
+def test_bf_020_all_candidate_details_failed_is_collection_failed() -> None:
+    p1 = EastmoneyGubaCollector.list_url("600001", 1)
+    p2 = EastmoneyGubaCollector.list_url("600001", 2)
+    routes: dict[str, object] = {
+        p1: synthetic_page(
+            ("1001", "2026-08-10 10:00:00"),
+            ("1002", "2026-08-10 09:00:00"),
+            ("1003", "2026-08-10 08:00:00"),
+        ),
+        p2: synthetic_page(("1004", "2026-08-07 08:00:00")),
+    }
+    for item_id in ("1001", "1002", "1003"):
+        routes[f"https://guba.eastmoney.com/news,600001,{item_id}.html"] = [
+            HttpResponse(503, b"retry exhausted", {})
+        ] * 3
+    collector, _transport = make_collector(routes)
+    result = collector.collect_backfill(
+        "600001", from_time=datetime(2026, 8, 8, tzinfo=timezone.utc),
+        to_time=datetime(2026, 8, 11, tzinfo=timezone.utc), max_pages=2,
+    )
+    counters = result.result.counters
+    assert counters.details_requested == 3
+    assert counters.details_success == 0
+    assert counters.details_failed == 3
+    assert result.result.status is CollectionStatus.COLLECTION_FAILED
+    assert result.result.stop_reason == "all_candidate_details_failed"
+    assert result.range_complete is False

@@ -849,6 +849,13 @@ class EastmoneyGubaCollector:
             status = CollectionStatus.CANCELLED
         elif stop_reason == "schema_mismatch":
             status = CollectionStatus.SPEC_MISMATCH
+        elif (
+            counters.details_requested > 0
+            and counters.details_success == 0
+            and counters.details_failed == counters.details_requested
+        ):
+            status = CollectionStatus.COLLECTION_FAILED
+            stop_reason = "all_candidate_details_failed"
         elif stop_reason in {"source_failure", "pagination_failure"}:
             status = CollectionStatus.COLLECTION_FAILED if counters.pages_success == 0 else CollectionStatus.PARTIAL_COLLECTION
         elif range_complete and counters.records_failed == 0:

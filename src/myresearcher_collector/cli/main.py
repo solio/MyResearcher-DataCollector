@@ -155,7 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--stock", required=True, help="six-digit A-share stock code")
     range_group = backfill.add_mutually_exclusive_group(required=False)
     range_group.add_argument("--from", dest="from_value", help="inclusive ISO date/timestamp")
-    range_group.add_argument("--days", type=int, help="look back from the current UTC date boundary")
+    range_group.add_argument("--days", type=int, help="look back N inclusive Asia/Shanghai calendar days")
     backfill.add_argument("--to", dest="to_value", help="inclusive ISO date/timestamp")
     backfill.add_argument("--data-dir", type=Path, required=True)
     backfill.add_argument("--max-pages", type=int, default=100)
