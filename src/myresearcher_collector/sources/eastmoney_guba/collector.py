@@ -384,6 +384,7 @@ class EastmoneyGubaCollector:
         any_page_failure = False
         completed_page_frontier: datetime | None = None
         safe_prefix_open = True
+        safe_frontier_valid = True
 
         for page_number in range(1, page_limit + 1):
             if self.cancel_check and self.cancel_check():
@@ -470,6 +471,9 @@ class EastmoneyGubaCollector:
                     counters.records_failed += 1
                     page_detail_failure = True
                     safe_prefix_open = False
+                    if completed_page_frontier is None or row.published_at <= completed_page_frontier:
+                        completed_page_frontier = None
+                        safe_frontier_valid = False
                     failures.append(f"detail {row.source_item_id}: schema_mismatch")
                     return CollectionResult(CollectionStatus.SPEC_MISMATCH, items, counters, failures, "detail_schema_mismatch", watermark)
                 except (GubaDetailMismatch, GubaParseError, FetchFailure) as exc:
@@ -477,6 +481,9 @@ class EastmoneyGubaCollector:
                     counters.records_failed += 1
                     page_detail_failure = True
                     safe_prefix_open = False
+                    if completed_page_frontier is None or row.published_at <= completed_page_frontier:
+                        completed_page_frontier = None
+                        safe_frontier_valid = False
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
 
@@ -593,6 +600,7 @@ class EastmoneyGubaCollector:
             status is CollectionStatus.PARTIAL_COLLECTION
             and not any_page_failure
             and counters.details_failed > 0
+            and safe_frontier_valid
         ):
             safe_frontier = completed_page_frontier
         return CollectionResult(status, items, counters, failures, stop_reason, new_watermark, safe_frontier)

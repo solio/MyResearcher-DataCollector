@@ -227,14 +227,17 @@ def test_partial_runtime_safe_prefix_advances_checkpoint_exactly_to_prefix(tmp_p
 
     new_page = synthetic_list_page([synthetic_row("1003", "2026-08-10 12:00:00")])
     new_detail = synthetic_detail("1003", "2026-08-10 12:00:00")
+    later_page = synthetic_list_page([synthetic_row("1004", "2026-08-10 13:00:00")])
+    later_detail = synthetic_detail("1004", "2026-08-10 13:00:00", status=503)
     new_page_url = EastmoneyGubaCollector.list_url("600001", 1)
     second_page_url = EastmoneyGubaCollector.list_url("600001", 2)
     detail_url = "https://guba.eastmoney.com/news,600001,1003.html"
     transport = MappingTransport({
         new_page_url: new_page,
-        second_page_url: new_page,
+        second_page_url: later_page,
         detail_url: [new_detail, synthetic_detail("1003", "2026-08-10 12:00:00", status=503)]
         + [synthetic_detail("1003", "2026-08-10 12:00:00", status=503)] * 2,
+        "https://guba.eastmoney.com/news,600001,1004.html": [later_detail] * 3,
     })
     partial = run_one(tmp_path, "run-partial-safe", transport, max_pages=2)
     assert partial.result.status is CollectionStatus.PARTIAL_COLLECTION
