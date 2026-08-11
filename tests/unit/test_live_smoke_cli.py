@@ -8,7 +8,9 @@ from pathlib import Path
 from myresearcher_collector.cli.main import (
     build_parser,
     execute_live_smoke,
+    execute_persistent_run,
     main,
+    persistent_run_plan,
 )
 from myresearcher_collector.sources.eastmoney_guba import HttpResponse
 
@@ -40,6 +42,20 @@ def live_args(data_dir: Path, mode: str) -> list[str]:
         str(data_dir),
         "--max-pages",
         "1",
+        "--min-interval",
+        "3.0",
+        mode,
+    ]
+
+
+def persistent_args(data_dir: Path, mode: str) -> list[str]:
+    return [
+        "eastmoney-guba-persistent",
+        "601012",
+        "--data-dir",
+        str(data_dir),
+        "--max-pages",
+        "3",
         "--min-interval",
         "3.0",
         mode,
@@ -118,6 +134,50 @@ def test_injected_fixture_transport_exercises_real_persistence_and_summary(
     }
     assert (data_dir / "collector.db").is_file()
     assert len(list((data_dir / "raw" / "eastmoney_guba").glob("*.body"))) == 2
+
+
+def test_persistent_runner_bootstraps_then_uses_incremental_checkpoint(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "persistent"
+    args = build_parser().parse_args(
+        persistent_args(data_dir, "--confirm-live")
+    )
+
+    assert persistent_run_plan(
+        build_parser().parse_args(persistent_args(data_dir, "--plan-only"))
+    )["collection_mode"] == "BOOTSTRAP_PENDING"
+    first_transport = FixtureTransport()
+    first = execute_persistent_run(
+        args,
+        transport=first_transport,
+        sleep_fn=lambda _: None,
+        run_id="persistent-bootstrap",
+    )
+
+    assert first["status"] == "SUCCESS"
+    assert first["checkpoint_before"] is None
+    assert first["checkpoint_after"] == "2026-08-10T02:00:00.000000Z"
+    assert len(first_transport.calls) == 6
+    plan = persistent_run_plan(
+        build_parser().parse_args(persistent_args(data_dir, "--plan-only"))
+    )
+    assert plan["collection_mode"] == "INCREMENTAL"
+    assert plan["checkpoint"] == first["checkpoint_after"]
+
+    second_transport = FixtureTransport()
+    second = execute_persistent_run(
+        args,
+        transport=second_transport,
+        sleep_fn=lambda _: None,
+        run_id="persistent-incremental",
+    )
+
+    assert second["status"] == "NO_NEW_DATA"
+    assert second["checkpoint_before"] == first["checkpoint_after"]
+    assert second["checkpoint_after"] == first["checkpoint_after"]
+    assert len(second_transport.calls) == 2
+    assert all("/list," in url for url in second_transport.calls)
 
 
 def test_inspect_run_reads_the_same_persisted_authority(

@@ -51,13 +51,14 @@ Do not include credentials, cookie values, authorization headers or unnecessary 
 - ordering: `,f` is the source UI's “最新发帖” sort. Use `post_publish_time` for boundary comparisons; never use default “最新评论”/last-update ordering for the Phase 1 incremental path.
 - overlap behavior: overlap is permitted and expected. Two IDs overlapped across observed latest-post pages 1 and 2 while new posts arrived.
 - page integrity: every requested page produces a page outcome and counts for received, parsed and failed rows. Duplicate IDs across pages are not parse failures.
-- stop condition for bounded runs: stop at configured `max_pages`, a valid empty page, or the incremental boundary rule in section 13. A failed/malformed page is not an empty page and must not be used as a normal stop.
+- stop condition for bounded/incremental runs: stop at configured `max_pages`, a valid empty page, or the incremental boundary rule in section 13. The fresh-checkpoint bootstrap exception is the fixed three-page window in section 13; it does not stop early on an empty page. A failed/malformed page is not an empty page and must not be used as a normal stop.
 - evidence/status: `APPROVED` for routes, start, observed size and moving-page overlap; historical maximum page/depth is `UNKNOWN`.
 
 ## 5. Historical Coverage
 
 - earliest observable: `UNKNOWN`; this round did not crawl to the historical tail.
 - range limitation: page-number traversal exists and the source reports a large total count, but neither value proves every historical post remains available.
+- bootstrap coverage: the fresh-checkpoint window in section 13 establishes only a forward-looking incremental baseline. It is not a historical backfill and does not claim that every item before the initial checkpoint was acquired.
 - deletion/expiry behavior: `UNKNOWN`; deleted/inaccessible detail pages must remain observable failures against previously listed IDs.
 - Phase 1 guarantee: only the explicitly requested pages and their per-page outcomes are claimed. Do not claim full-history completeness.
 - evidence/status: `APPROVED WITH EXPLICIT LIMITATION` — no historical backfill guarantee is authorized.
@@ -133,6 +134,7 @@ Field mismatch rule: when list and detail disagree on ID, author, canonical bar,
 
 Terminal outcomes for this source are frozen as follows:
 
+- bootstrap `SUCCESS`: the complete fresh-checkpoint window in section 13 may return `SUCCESS` with `stop_reason=bootstrap_complete` without historical-tail traversal. This is the narrow exception to the established-checkpoint/bounded success wording below.
 - `SUCCESS`: at least one new accepted in-scope item and every claimed request/page/row/detail completed or was explicitly in-scope/out-of-scope accounted for without failure.
 - `NO_NEW_DATA`: the incremental boundary completed, no new accepted in-scope ID exists, and no request/page/row/detail failure occurred.
 - `PARTIAL_COLLECTION`: some source evidence was acquired but any claimed page, in-scope row or required detail failed, or the run hit its coverage cap before the confirmation boundary.
@@ -182,6 +184,17 @@ Terminal outcomes for this source are frozen as follows:
 - evidence/status: `APPROVED`; alternate types and cross-bar rows were observed, deletion behavior remains `UNKNOWN`.
 
 ## 13. Incremental Strategy
+
+### Fresh-checkpoint bootstrap
+
+- bootstrap state: a requested scope whose committed checkpoint is `NULL` is `BOOTSTRAP_PENDING`, even when earlier partial/smoke attempts already left raw evidence, observations or known IDs.
+- bounded window: request pages 1, 2 and 3, in that order, with one request in flight. `BOOTSTRAP_MIN_PAGES = 3`; a configured `max_pages < 3` is invalid and must not silently establish a shorter baseline. A larger cap does not extend this Phase 1 bootstrap window.
+- completion: after all three list requests succeed, every in-scope row is parsed/accounted for, every required detail succeeds, and no cancellation, unresolved eligible work or schema/spec mismatch remains, return `SUCCESS` with `stop_reason=bootstrap_complete`. Completion does not traverse or claim the historical tail.
+- initial safe frontier: the runtime declares the maximum valid `published_at` among every successfully resolved in-scope item in the complete bootstrap window. Integration may translate that declaration, and persistence may validate/commit it; neither layer may invent or infer it from observations or row counts.
+- failure/retry: any required page/detail failure, parse failure, schema/spec mismatch or cancellation prevents an initial checkpoint. A later attempt with checkpoint still `NULL` restarts the complete window at page 1; no bootstrap resume cursor is defined.
+- checkpoint meaning: the committed initial frontier is optimization state and a forward incremental baseline, never proof of historical completeness. Unknown IDs remain eligible even when `published_at <= checkpoint`.
+
+### Established-checkpoint incremental collection
 
 - cursor/timestamp/page boundary: no opaque cursor is available. Begin at page 1 in latest-post ordering every run and traverse sequentially.
 - stable ordering assumption: do not assume immutable page membership or globally monotonic numeric IDs. Use valid `post_publish_time` plus observed IDs for stopping and idempotency.
@@ -234,3 +247,4 @@ Developer acceptance must include deterministic offline fixtures/tests for: page
 |---|---|---|---|
 | 2026-08-10 | Approved Phase 1 top-level-post source semantics and explicit exclusions | `runs/phase-01-round-01/research-evidence.md` | Source Researcher / Phase 1 Research Lead |
 | 2026-08-10 | Narrowed incremental observation semantics: no required historical detail refresh at/before watermark; preserve drift when source-item/detail facts are actually acquired | `runs/phase-01-round-05/evidence.md`, `runs/phase-01-round-06/decision.md` | Source Researcher / Phase 1 Spec Correction |
+| 2026-08-11 | Added the Reviewer-approved fixed three-page fresh-checkpoint bootstrap and forward-baseline semantics without changing established-checkpoint incremental behavior | `runs/phase-02-bootstrap-alignment/` | Developer / Bootstrap Runtime Alignment |
