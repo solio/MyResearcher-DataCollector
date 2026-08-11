@@ -1,276 +1,280 @@
-# Source Spec: xueqiu
-
-Status: CANDIDATE
-
-Owner: Source Researcher / Xueqiu Source Probe
-Observed at: 2026-08-11 UTC
-Evidence location: runs/xueqiu-source-probe/probe.md and runs/xueqiu-source-probe/sanitized-evidence.md
-
-This is an evidence-backed candidate only. It is not approved and does not authorize a production Xueqiu adapter.
-
-## 1. Identity and Scope
-
-- source_name: xueqiu
-- source_type: stock-scoped investment discussion source
-- source_home: https://xueqiu.com/
-- candidate scope: A-share stock-scoped top-level discussion posts
-- observed primary symbol: SH600519
-- out of scope: post replies, user profiles, news, announcements, hot feed, HK/US markets, ETF/fund/index expansion and historical full backfill
-- status: CANDIDATE; current live evidence is blocked/unresolved
-
-## 2. Entry Point
-
-- observed public entry page: https://xueqiu.com/S/SH600519
-- candidate discussion API: https://xueqiu.com/query/v1/symbol/search/status
-- method: GET
-- candidate query parameters used: symbol=SH600519, count=20, page=1, sort=time
-- direct HTTP observation: HTTP 200 text/html WAF challenge, not JSON
-- browser observation: public stock/discussion HTML rendered once; the underlying discussion request was not identified
-- approved entry point: UNRESOLVED
-
-## 3. Request and Access Contract
-
-- non-secret headers used: descriptive User-Agent, Accept: application/json,text/plain,*/*, Referer: stock page
-- direct HTTP cookie names: acw_tc only
-- xq_a_token in direct HTTP: NO
-- browser cookie/session requirement: UNRESOLVED; browser cookie state was not inspected
-- browser requirement: YES for the observed public HTML rendering; requirement for the candidate JSON endpoint is UNRESOLVED
-- login requirement: UNRESOLVED
-- credentials, authorization headers and cookie values: not used or retained
-- redirects: final URL remained on xueqiu.com in both direct HTTP responses
-
-## 4. Pagination
-
-- candidate page parameter: page
-- candidate count parameter: count=20
-- candidate sort parameter: sort=time
-- page=1/page=2 JSON advancement: UNRESOLVED; page=2 was not requested after WAF challenge
-- page1/page2 overlap: UNRESOLVED
-- duplicate behavior: UNRESOLVED
-- moving-page observation: UNRESOLVED
-- page controls 1..100 and 下一页 were visible in one browser-rendered HTML page, but no page navigation was performed
-- bootstrap policy: UNRESOLVED
-- incremental policy: UNRESOLVED
-- no Eastmoney page/bootstrap/confirmation semantics are copied here
+# Xueqiu SOURCE_SPEC
 
-## 5. Historical Coverage
+Status: APPROVED
 
-- earliest observable item: UNRESOLVED
-- historical full backfill: OUT OF SCOPE
-- current evidence proves only one bounded browser page rendering, not historical availability or completeness
-
-## 6. Item Identity
-
-- candidate source identity: item.id if confirmed in a successful JSON response
-- current identity evidence: NOT OBSERVED in JSON
-- URL/path IDs visible in browser HTML are not promoted to the JSON contract
-- source_item_id mapping: UNRESOLVED
-- no fallback hash/title/URL identity is authorized
-
-## 7. Fields
-
-Only fields returned by a successful JSON response may be promoted. Current candidate mapping:
-
-| Candidate field | Observed source field | Status |
-|---|---|---|
-| source | constant xueqiu | CANDIDATE |
-| stock_code | symbol/request scope | UNRESOLVED |
-| source_item_id | item.id | UNRESOLVED |
-| author_id | user.id | UNRESOLVED |
-| author_name | user.screen_name | UNRESOLVED |
-| title | title | UNRESOLVED |
-| content | description | UNRESOLVED |
-| published_at | created_at | UNRESOLVED |
-| url | item URL/target | UNRESOLVED |
-| like_count | fav_count | UNRESOLVED |
-| reply_count | reply_count | UNRESOLVED |
-| forward_count | retweet_count | UNRESOLVED |
-| raw_ref | retained raw response reference | CANDIDATE repository contract |
-| source_metadata | remaining observed source fields | UNRESOLVED |
-
-Required JSON field checks id, description, title, created_at, target, user.id, user.screen_name, fav_count, reply_count and retweet_count: NOT OBSERVED.
-
-## 8. Time Semantics
-
-- candidate source field: created_at
-- representation: UNRESOLVED; no JSON value was observed
-- publication versus update meaning: UNRESOLVED
-- timezone: UNRESOLVED
-- browser relative labels are not accepted as source timestamps
-- no timestamp conversion or fallback is authorized
-
-## 9. Error and Access-Failure Behavior
+Approved by: Reviewer
 
-Observed:
+Approval basis: commit `41a2e3bd11883438410e0b0a5e043a64aa22c3fa`
 
-- HTTP 200 with text/html WAF challenge body
-- JSON decoding failure
-- direct response type: WAF_CHALLENGE / HTML_INSTEAD_OF_JSON
-- cookie name acw_tc without xq_a_token
+本文件是当前唯一生效的 Xueqiu source contract。早期探测过程和原始阻断
+结果保留在 `runs/xueqiu-source-probe/`；早期 plain-HTTP WAF 或探测环境
+限制不得覆盖 Final Browser Network Gate 已确认的事实。
 
-These outcomes are access/source failures, never NO_NEW_DATA.
+## 1. Source 与范围
+
+```text
+source_name: xueqiu
+scope: A-share stock-scoped top-level discussion posts
+```
+
+入口页面：`https://xueqiu.com/S/{symbol}`
 
-Required classifications 401, 403, CAPTCHA, invalid session and non-2xx behavior: UNRESOLVED in this probe unless separately observed.
+OUT OF SCOPE：post replies、user profile crawling、news、announcements、
+hot feed、HK/US markets、historical full backfill。
+
+## 2. Approved Access Route
+
+生产 v0.1 使用：
 
-A future adapter must distinguish access failure, transport failure, invalid body and no-data only after a reviewed spec.
+```text
+browser-managed anonymous session
+browser-managed context required: YES
+login required: NO for the approved observed path
+```
+
+“login required: NO”只表示 Final Gate 观察到的 v0.1 路径无需登录取得
+该 JSON；不表示雪球所有接口永远无需登录。
 
-## 10. Retry Policy
+页面自身产生的 discussion request：
+
+```text
+GET https://xueqiu.com/query/v1/symbol/search/status.json
+```
 
-- source retryability: UNRESOLVED
-- probe policy used: no retry after explicit WAF challenge
-- no retry, bypass, proxy rotation or challenge solving is approved by this candidate
-- any future retry policy requires fresh evidence and Reviewer approval
+已观察的非敏感参数：
 
-## 11. Rate Limiting
+```text
+symbol
+count=10
+comment=0
+hl=0
+source=all
+sort=time
+page
+q=
+type=11
+```
 
-- probe concurrency: 1
-- probe interval policy: at least 3 seconds when sequential page probing is possible
-- source numeric rate limit: UNRESOLVED
-- conservative candidate policy: concurrency=1 and minimum interval >=3 seconds
-- this is a probe safety policy, not a source guarantee
+后续页还必须沿 browser/page 实际生成的 pagination chain 传递 `last_id`。
+参数顺序和其它由页面运行时产生的参数不得被硬编码为独立 crawler 协议。
 
-## 12. Abnormal Cases
+## 3. Challenge / Signature 与安全
+
+```text
+challenge/signature generation: BROWSER_OWNED
+```
 
-- WAF challenge HTML: access failure, not empty data
-- CAPTCHA: UNRESOLVED; if observed, stop and classify source access as blocked
-- login page/controls: visible in browser, but login requirement remains UNRESOLVED
-- missing fields: remain NOT OBSERVED/nullable until JSON evidence exists
-- replies, user profiles, alternate markets and other non-scope surfaces: out of scope
-- no content cleaning, spam filtering, emoji removal or semantic normalization is authorized
+Collector 必须让正常 browser/page runtime 自己产生所需 session 和
+challenge request state。Developer 不得逆向算法、自己生成或硬编码
+signature、保存 signature value、绕过 WAF，或实施 CAPTCHA bypass、proxy
+rotation、account rotation、stealth、fingerprint spoofing。
 
-## 13. Incremental and Bootstrap Strategy
+不得保存 cookie values、credentials、authorization headers 或 challenge/
+signature values。运行输出也不得泄露这些值。
 
-- bootstrap policy: UNRESOLVED
-- incremental policy: UNRESOLVED
-- page overlap and moving-page evidence are missing because plain HTTP was blocked
-- do not copy Eastmoney BOOTSTRAP_MIN_PAGES, confirmation-page rules, watermark semantics or safe-frontier semantics
-- Reviewer must freeze any future policy only after Xueqiu-specific page and moving-page evidence
+## 4. Response Shape
 
-## 14. Content Rule
+```text
+top-level item path: list
+pagination fields: count, maxPage, page
+```
 
-Collector must preserve acquired source material. If a future successful JSON response shows description containing HTML, the source representation must be retained; semantic cleaning belongs to MyResearcher-DataClean. No HTML stripping, emoji removal, spam filtering, sentiment cleaning or text normalization is authorized in the source adapter.
+Final Gate 观察到 page 1、page 2 和重复 page 1 均为 HTTP 200
+`application/json` XHR，每页 10 items。Observed item fields：
 
-## 15. Evidence and Reproduction
+```text
+id
+description
+title
+created_at
+target
+user.id
+user.screen_name
+fav_count
+reply_count
+retweet_count
+```
 
-- Python stdlib anonymous homepage request:
-  - 200 text/html, 110310 bytes, SHA-256 fb13f7cd0b5528dd230f627c9711e177349a9041c971b9fa65843aa3730f8743
-  - cookie name acw_tc; xq_a_token absent
-- Python stdlib anonymous candidate endpoint request:
-  - 200 text/html, 110310 bytes, SHA-256 32c4164aff94c5c923d5ffe42dba6760bb43251bf596cb693668ebf9faa33df7
-  - cookie name acw_tc; xq_a_token absent
-- browser comparison:
-  - one navigation to https://xueqiu.com/S/SH600519
-  - public stock/discussion HTML visible; 10 article nodes and page controls observed
-  - no login, CAPTCHA or WAF challenge interaction
-- full response bodies and cookie values are intentionally not stored
+## 5. Identity 与 Field Mapping
 
-## 16. Candidate Acceptance Criteria
+冻结映射：
 
-Before any production adapter is authorized, Reviewer must require:
+```text
+source           = "xueqiu"
+stock_code       = requested A-share stock scope
+source_item_id   = str(item.id)
+author_id        = item.user.id
+author_name      = item.user.screen_name
+title            = item.title
+content          = item.description
+published_at     = item.created_at
+url              = item.target
+like_count       = item.fav_count
+reply_count      = item.reply_count
+forward_count    = item.retweet_count
+```
 
-1. a successful authorized response or an explicitly accepted blocked-source decision;
-2. confirmed JSON top-level item path and pagination fields;
-3. observed item identity and field mapping;
-4. verified created_at representation and timezone semantics;
-5. page=1/page=2 overlap and moving-page evidence;
-6. explicit access/login/browser classification;
-7. sanitized fixtures and deterministic tests;
-8. a reviewed transition from CANDIDATE to APPROVED.
+`item.id` 必须非空且可转换为字符串；缺失或非法 `id` 是
+`schema/item failure`。不得使用 content hash、URL hash 或 author+time
+fallback 生成身份。
 
-Until then, no Xueqiu Collector implementation may be started.
+`title` 在 source 返回 null 或缺失时可 nullable；其余 required source
+fields 缺失或结构非法时按 schema/item failure 处理。其它 source fields
+按现有 repository contract 保存至 `source_metadata`，不得扩大采集 user
+profile。
 
-## 17. Round 2 Browser/API Access Resolution
+## 6. Content 与时间
 
-Round 2 tested only the two requested browser/API paths and did not repeat the
-known anonymous plain-HTTP WAF requests.
+`content = item.description` 按 source 返回值原样保存。即使其中包含
+HTML，Collector 也不得 strip HTML、删除 emoji、spam filtering、sentiment
+cleaning 或 semantic normalization；这些属于 MyResearcher-DataClean。
 
-### Path A: browser-context same-origin fetch
+```text
+published_at source field: created_at
+representation: Unix epoch milliseconds
+```
 
-- Browser origin page: https://xueqiu.com/S/SH600519
-- Request: GET https://xueqiu.com/query/v1/symbol/search/status
-- Parameters: symbol=SH600519, count=20, page=1, sort=time
-- credentials: include
-- headers: Accept JSON/text and X-Requested-With XMLHttpRequest
-- result: BROWSER_CORS_BLOCKED
-- readable JSON: NO
-- page=2 and repeat page=1: NOT RUN because page=1 JSON was unavailable
+Collector 将其转换为 repository canonical timezone-aware timestamp；不得
+用 browser relative-time label 替代。原始 publish time、collection time 和
+update time（若有）是不同事实，不得互相替代。
 
-The browser page itself rendered public HTML, but the browser context could not
-return the same-origin fetch result to the probe. This does not establish the
-source endpoint response shape.
+## 7. Pagination 与速率
 
-### Path B: api.xueqiu.com
+```text
+ordering: newest-first
+pagination: sequential only
+concurrency: 1
+minimum request/page interaction interval: >= 3 seconds
+```
 
-- URL: https://api.xueqiu.com/query/v1/symbol/search/status.json
-- Parameters: symbol_id=SH600519, symbol=SH600519, source=user, count=20,
-  page=1, sort=time, comment=0, hl=0
-- result: BROWSER_CLIENT_BLOCKED
-- browser error: net::ERR_BLOCKED_BY_CLIENT
-- source HTTP status/content-type/body: NOT OBSERVED
+第一页使用 `page=1`。后续页面必须沿 browser/page 产生的 `page` +
+`last_id` continuity 前进；不得丢弃 `last_id`。
 
-The browser-client error is not interpreted as an API 401, 403 or WAF response.
-No parameter grid or alternate-host loop was attempted.
+若 page 不推进、last_id chain 无效、或整页重复且无法推进，不得解释为
+`NO_NEW_DATA`，必须按 source/runtime failure 或 incomplete collection
+处理。
 
-### Round 2 access decision
+## 8. Bootstrap
 
-- public HTML browser path: HTML_BROWSER_PATH_CANDIDATE
-- usable JSON collection path: NO
-- production browser requirement: UNRESOLVED
-- login requirement: UNRESOLVED
-- API session requirement: UNRESOLVED
-- JSON top-level list path and field mapping: UNRESOLVED
-- page overlap and moving-page behavior: UNRESOLVED
+```text
+XUEQIU_BOOTSTRAP_MIN_PAGES = 2
+```
 
-The HTML browser path has visible discussion nodes, post URL/id links and page
-controls, but it is not approved for a production Collector and no browser
-crawler is authorized. Round 2 therefore leaves this candidate spec in
-CANDIDATE status and routes the route decision to Reviewer.
+Fresh state（`checkpoint == NULL`）进入 `BOOTSTRAP_PENDING`，依次执行：
 
-Round 2 evidence: runs/xueqiu-source-probe/round-02-probe.md and
-runs/xueqiu-source-probe/round-02-sanitized-evidence.md
+```text
+page1 -> page2 using approved browser pagination
+```
 
-## 18. Final Browser Network Feasibility Gate
+两页全部成功，并且所有 required items 已 accounted for、没有 unresolved
+access/schema failure，才可产生：
 
-Final route: `XUEQIU_FINAL_FEASIBILITY: JSON_API_READY_FOR_SPEC_APPROVAL`
+```text
+SUCCESS
+stop_reason=bootstrap_complete
+```
 
-The final gate used a temporary local Google Chrome profile with DevTools/CDP
-Network observation against `https://xueqiu.com/S/SH600519`. No login was
-submitted, and no cookie value, credential, full response body or challenge
-signature value was retained.
+初始 checkpoint 为成功解析且属于 scope 的 bootstrap items 中最大的合法
+`created_at`。checkpoint 只是 forward incremental baseline，不是 historical
+completeness proof。
 
-The page's own traffic exposed this JSON request:
+若任一 required page、item、access 或 schema step 失败：
 
-`GET https://xueqiu.com/query/v1/symbol/search/status.json`
+```text
+checkpoint remains NULL
+```
 
-Observed non-secret parameters were `symbol=SH600519`, `count=10`,
-`comment=0`, `hl=0`, `source=all`, `sort=time`, `page=1`, `q=`, and `type=11`.
-The page-2 request advanced to `page=2` and also carried
-`last_id=404539054`. The browser appended a challenge/signature parameter;
-its name and value are intentionally omitted.
+下一次仍从 page 1 重新 Bootstrap。
 
-For page 1, page 2, and a repeated page 1, the response was HTTP 200
-`application/json` XHR with top-level keys including `list`, `count`,
-`maxPage`, and `page`; each observed list contained 10 items. Required
-candidate fields were present: `id`, `description`, `title`, `created_at`,
-`target`, `user.id`, `user.screen_name`, `fav_count`, `reply_count`, and
-`retweet_count`.
+## 9. Incremental
 
-Candidate mapping evidence is now available: `source_item_id = str(item.id)`;
-IDs were non-empty and unique within each page, page 1/page 2 had zero overlap,
-and the repeated page 1 had 10/10 ID overlap with no additions or removals.
-`created_at` was numeric Unix epoch milliseconds, and page 2 was broadly older
-than page 1. Description HTML representation remains UNRESOLVED because raw
-content values were not copied or normalized.
+存在 checkpoint 后进入 `ordinary incremental mode`，从 page 1 开始顺序扫描。
 
-This bounded flow establishes JSON availability and observed
-pagination/moving-page behavior, but does not freeze bootstrap or incremental
-algorithms. The browser-managed session/access mechanism and challenge
-parameter handling remain Reviewer decisions. Earlier plain-HTTP WAF and
-in-app-browser limitations remain environment-specific observations.
+- Unknown ID 始终 eligible；即使 `created_at <= checkpoint` 也不能仅凭
+  timestamp suppress。
+- Known historical item（known ID 且 `created_at <= checkpoint`）无需为
+  mutable metadata 强制 historical refetch。
+- 正常 authorized acquisition 观察到 metadata/content drift 时，按
+  repository 既有 observation/version contract 处理。
 
-Evidence: `runs/xueqiu-source-probe/final-browser-network-probe.md`,
-`runs/xueqiu-source-probe/final-browser-network-evidence.md`, and
-`runs/xueqiu-source-probe/final-handoff.md`.
+当出现完整 page，且：
 
-Status remains `CANDIDATE`; no production adapter or source semantics were
-modified.
+```text
+all source_item_id already known
+AND all created_at <= committed checkpoint
+```
+
+即为 `KNOWN_BOUNDARY_REACHED`，可以停止继续向历史扫描。Xueqiu 不复制
+Eastmoney confirmation page 或其它 Eastmoney safe-frontier semantics。
+
+## 10. Coverage Cap 与终态
+
+保留 runtime safety cap：`max_pages`。
+
+若达到 `max_pages` 且 `KNOWN_BOUNDARY_REACHED == false`：
+
+```text
+PARTIAL_COLLECTION
+```
+
+Xueqiu v0.1 下 `PARTIAL_COLLECTION` 不推进 committed checkpoint；第一版
+不实现复杂 partial safe-prefix advancement。
+
+只有同时满足以下条件才允许 `NO_NEW_DATA`：
+
+```text
+checkpoint exists
+AND known boundary safely reached
+AND no new accepted source item/observation
+```
+
+401、403、WAF challenge、CAPTCHA、browser session failure、invalid JSON、
+missing required list、challenge/session failure、pagination failure 或其它
+access/schema failure 都不得转换为 `NO_NEW_DATA`。
+
+## 11. Access Failure
+
+以下均为 source/access failure：401、403、WAF challenge、CAPTCHA、browser
+session failure、invalid JSON、missing required list、challenge/session failure
+和 pagination failure。禁止任何 bypass 或规避行为。Collector 必须区分
+access failure、transport failure、schema/item failure、partial collection
+和 no-data。
+
+## 12. Raw Evidence 与 Provenance
+
+保存 existing RawEvidence contract 要求的：
+
+```text
+response bytes / equivalent captured source response
+request provenance
+source URL
+collection time
+SHA
+```
+
+Browser transport 不得破坏 replay/audit requirement。原始来源材料必须可追
+溯；清洗和语义转换不属于 Collector。
+
+## 13. Evidence 与历史说明
+
+最终依据：
+
+- `runs/xueqiu-source-probe/final-browser-network-probe.md`
+- `runs/xueqiu-source-probe/final-browser-network-evidence.md`
+- `runs/xueqiu-source-probe/final-handoff.md`
+- Reviewer 已审阅 commit `41a2e3bd11883438410e0b0a5e043a64aa22c3fa`
+
+Final Gate 观察到 page 1/page 2 overlap 为 0；page 2 使用 page 2 +
+`last_id` 且整体更旧。等待至少 3 秒并 reload 后，重复 page 1 与首次 page 1
+为 10/10 overlap，无新增或删除，最新 `created_at` 未改变。
+
+Earlier probe attempts were blocked by plain-HTTP WAF or probe-environment
+limitations; see `runs/xueqiu-source-probe/`. 这些历史结果不再作为当前
+approved contract 状态。
+
+## 14. Production Boundary
+
+本 SOURCE_SPEC 现在授权 Developer 按本文件实现 Xueqiu v0.1 adapter，但本
+次 SOURCE_SPEC finalization 本身不实现 adapter。除本文件和必要 handoff
+artifact 外，本轮不得修改 `src/`、`tests/`、Persistence、Eastmoney 或
+Batch。
