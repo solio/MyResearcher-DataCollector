@@ -16,4 +16,6 @@ Known limitation: this round intentionally does not launch Chrome or make live X
 
 - Incremental success after a known boundary now advances `safe_frontier` to `max(checkpoint, accepted published_at)`; no-new-data retains the committed checkpoint and partial collection remains non-advancing.
 - `XueqiuBrowserTransport` validates sanitized response `symbol`, `page`, and page>1 `last_id` continuity while dropping unsafe challenge/signature query fields from provenance.
-- Correction regression tests: XQ-021 and XQ-022A-D.
+- Incremental repeated pages containing IDs first seen in the current run cannot satisfy the committed-known boundary and become pagination failure/incomplete.
+- Normal incremental observation now loads latest persisted facts; observed historical drift is versioned through the existing SQLite fingerprint/version contract, while fact-equivalent observations remain duplicates.
+- Correction regression tests: XQ-021, XQ-022A-D, XQ-023 and XQ-024.

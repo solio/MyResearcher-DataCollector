@@ -13,6 +13,6 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest tests/acceptance/test_
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m pytest -q  PASS
 ```
 
-Correction results: XQ-021 incremental frontier/SQLite checkpoint advancement and XQ-022A-D browser-page pagination/redaction tests pass. Full suite after correction: `150 passed, 1 xfailed`. The approved PST-017 mapping-note xfail remains unchanged.
+Correction results: XQ-021 incremental frontier/SQLite checkpoint advancement, XQ-022A-D browser-page pagination/redaction, XQ-023 repeated incremental page classification, and XQ-024 historical drift versioning tests pass. Full suite after correction: `160 passed, 1 xfailed`. The approved PST-017 mapping-note xfail remains unchanged.
 
 No real Xueqiu or other live network request was executed.

@@ -197,6 +197,41 @@ class XueqiuCollector:
                 raise XueqiuTransportFailure("browser transport raised an unexpected error") from exc
         raise XueqiuTransportFailure("browser transport failed")
 
+    @staticmethod
+    def _fact_equivalent(current: SourceItem, prior: SourceItem) -> bool:
+        current_metadata = dict(current.source_metadata)
+        prior_metadata = dict(prior.source_metadata)
+        # SQLite adds this nullable compatibility field while persisting an
+        # observation; it is not a source fact for Xueqiu drift detection.
+        if current_metadata.get("source_post_id") is None:
+            current_metadata.pop("source_post_id", None)
+        if prior_metadata.get("source_post_id") is None:
+            prior_metadata.pop("source_post_id", None)
+        return (
+            current.source == prior.source
+            and current.source_item_id == prior.source_item_id
+            and current.requested_bar_code == prior.requested_bar_code
+            and current.canonical_bar_code == prior.canonical_bar_code
+            and current.canonical_bar_name == prior.canonical_bar_name
+            and current.author_id == prior.author_id
+            and current.author_name == prior.author_name
+            and current.title == prior.title
+            and current.content == prior.content
+            and current.published_at == prior.published_at
+            and current.last_updated_at == prior.last_updated_at
+            and current.display_time == prior.display_time
+            and current.url == prior.url
+            and current.post_type == prior.post_type
+            and current.post_state == prior.post_state
+            and current.post_top_status == prior.post_top_status
+            and current.read_count == prior.read_count
+            and current.reply_count == prior.reply_count
+            and current.like_count == prior.like_count
+            and current.forward_count == prior.forward_count
+            and current.source_times_raw == prior.source_times_raw
+            and current_metadata == prior_metadata
+        )
+
     def collect(
         self,
         stock_code: str,
@@ -273,14 +308,11 @@ class XueqiuCollector:
 
             page_ids: set[str] = set()
             page_items = []
-            page_had_new = False
             page_all_known_old = bool(parsed.items)
+            repeated_uncommitted_id = False
             for row in parsed.items:
                 try:
                     parsed_item_id = str(row.get("id")) if row.get("id") is not None else ""
-                    if parsed_item_id in page_ids or parsed_item_id in run_ids:
-                        counters.duplicate_records += 1
-                        continue
                     item = parse_item(
                         row,
                         stock_code,
@@ -293,16 +325,33 @@ class XueqiuCollector:
                     failures.append(f"item {row.get('id', '<missing>')}: schema_mismatch")
                     stop_reason = "item_schema_failure"
                     break
-                page_ids.add(item.source_item_id)
-                run_ids.add(item.source_item_id)
                 already_known = item.source_item_id in seen_ids
                 prior_item = (existing_observations or {}).get(item.source_item_id)
                 historical_known = already_known and watermark is not None and item.published_at <= watermark
-                if historical_known:
+                committed_historical = (
+                    item.source_item_id in (existing_ids or set())
+                    and watermark is not None
+                    and item.published_at <= watermark
+                )
+                if not committed_historical:
+                    page_all_known_old = False
+                duplicate_in_run = item.source_item_id in run_ids or item.source_item_id in page_ids
+                if duplicate_in_run:
                     counters.duplicate_records += 1
+                    if not committed_historical:
+                        repeated_uncommitted_id = True
                     continue
-                page_all_known_old = False
-                page_had_new = True
+                page_ids.add(item.source_item_id)
+                run_ids.add(item.source_item_id)
+                if historical_known:
+                    if prior_item is None or self._fact_equivalent(item, prior_item):
+                        counters.duplicate_records += 1
+                        continue
+                    # The normal page scan actually observed a known
+                    # historical item whose facts drifted.  Preserve it for
+                    # the existing SQLite fingerprint/version contract.
+                    counters.identity_content_drifts += 1
+                    item = replace(item, observation_version=prior_item.observation_version + 1)
                 seen_ids.add(item.source_item_id)
                 if prior_item is not None:
                     item = replace(item, observation_version=prior_item.observation_version + 1)
@@ -311,6 +360,10 @@ class XueqiuCollector:
                 counters.records_parsed += 1
 
             if stop_reason == "item_schema_failure":
+                break
+            if repeated_uncommitted_id and not page_items:
+                failures.append(f"page {page_number}: pagination_failure")
+                stop_reason = "pagination_failure"
                 break
             if bootstrap and page_number > 1 and not page_items:
                 failures.append(f"page {page_number}: pagination_failure")
@@ -328,7 +381,7 @@ class XueqiuCollector:
             if not parsed.items:
                 break
 
-            if not page_items and not bootstrap and watermark is not None and page_all_known_old:
+            if not bootstrap and watermark is not None and page_all_known_old:
                 boundary_reached = True
                 stop_reason = "known_boundary_reached"
                 break

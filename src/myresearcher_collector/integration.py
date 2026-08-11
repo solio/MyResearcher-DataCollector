@@ -430,7 +430,8 @@ def execute_and_persist_xueqiu_collection(
     scope_key = f"stock:{stock_code}"
     checkpoint = store.checkpoint("xueqiu", scope_key)
     watermark_before = _watermark(checkpoint[0] if checkpoint else None)
-    known_ids = store.known_item_ids("xueqiu", scope_key)
+    existing_observations = store.latest_observations("xueqiu", scope_key)
+    known_ids = set(existing_observations)
     started_at = clock()
     config = collector_config or XueqiuCollectorConfig()
     page_limit = max_pages if max_pages is not None else config.max_pages
@@ -463,6 +464,7 @@ def execute_and_persist_xueqiu_collection(
         result = collector.collect(
             stock_code,
             existing_ids=known_ids,
+            existing_observations=existing_observations,
             watermark=watermark_before,
             max_pages=max_pages,
             bootstrap=bootstrap,

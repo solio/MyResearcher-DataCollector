@@ -422,6 +422,64 @@ class SQLitePersistence:
         ).fetchall()
         return {row[0] for row in rows}
 
+    def latest_observations(self, source: str, scope_key: str) -> dict[str, SourceItem]:
+        """Load latest source facts for one scope without changing the schema."""
+        rows = self.conn.execute(
+            """SELECT o.source_item_id, o.observation_version,
+                      o.observed_at_utc, o.published_at_utc,
+                      o.source_updated_at_utc, o.display_time_utc,
+                      o.author_id, o.author_name, o.title, o.content, o.url,
+                      o.canonical_bar_code, o.canonical_bar_name,
+                      o.post_type, o.post_state, o.post_top_status,
+                      o.read_count, o.reply_count, o.like_count, o.forward_count,
+                      o.source_times_raw_json, o.source_metadata_json,
+                      o.schema_version, s.requested_bar_code
+                 FROM source_item_observations AS o
+                 JOIN observation_scopes AS s ON s.observation_id = o.observation_id
+                WHERE o.source=? AND s.scope_key=?
+                ORDER BY o.source_item_id, o.observation_version DESC""",
+            (source, scope_key),
+        ).fetchall()
+        result: dict[str, SourceItem] = {}
+        for row in rows:
+            source_item_id = str(row[0])
+            if source_item_id in result:
+                continue
+            to_dt = lambda value: None if value is None else _utc_order(value)
+            metadata = json.loads(row[21])
+            if not isinstance(metadata, dict):
+                raise PersistenceError("observation metadata is not an object")
+            result[source_item_id] = SourceItem(
+                source=source,
+                schema_version=row[22],
+                source_item_id=source_item_id,
+                requested_bar_code=row[23],
+                canonical_bar_code=row[11],
+                canonical_bar_name=row[12],
+                author_id=row[6],
+                author_name=row[7],
+                title=row[8],
+                content=row[9],
+                published_at=_utc_order(row[3]),
+                last_updated_at=to_dt(row[4]),
+                display_time=to_dt(row[5]),
+                url=row[10],
+                post_type=row[13],
+                post_state=row[14],
+                post_top_status=row[15],
+                read_count=row[16],
+                reply_count=row[17],
+                like_count=row[18],
+                forward_count=row[19],
+                source_post_id=metadata.get("source_post_id"),
+                collected_at=_utc_order(row[2]),
+                source_times_raw=json.loads(row[20]),
+                source_metadata=metadata,
+                raw_ref={},
+                observation_version=row[1],
+            )
+        return result
+
     def verify_evidence(self, evidence_id: str) -> Path:
         row = self.conn.execute(
             "SELECT filesystem_path, content_sha256, byte_size FROM raw_evidence WHERE evidence_id=?",

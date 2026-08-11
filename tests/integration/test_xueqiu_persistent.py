@@ -159,3 +159,121 @@ def test_xq021_incremental_boundary_advances_checkpoint_to_new_frontier(tmp_path
         assert checkpoint[0] == before[1]
     finally:
         store.close()
+
+
+def test_xq023_incremental_repeated_new_page_is_incomplete_and_does_not_advance(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    seed = execute_and_persist_xueqiu_collection(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        stock_code="600519",
+        transport=FixtureTransport(["page_1.json", "page_2.json"]),
+        run_id="xq023-seed",
+        collector_config=CollectorConfig(max_pages=2, min_interval_seconds=3.0),
+        clock=lambda: NOW,
+        sleep_fn=lambda _: None,
+        max_pages=2,
+    )
+    assert seed.result.status.value == "SUCCESS"
+    repeated_page = {
+        "list": [
+            {"id": 930001, "description": "new A", "title": "A", "created_at": 1801000000000,
+             "target": "https://xueqiu.com/930001", "user": {"id": 830001, "screen_name": "a"},
+             "fav_count": 0, "reply_count": 0, "retweet_count": 0},
+            {"id": 930002, "description": "new B", "title": "B", "created_at": 1800999000000,
+             "target": "https://xueqiu.com/930002", "user": {"id": 830002, "screen_name": "b"},
+             "fav_count": 0, "reply_count": 0, "retweet_count": 0},
+        ],
+        "count": 2, "maxPage": 100, "page": 1,
+    }
+    repeated_page_two = dict(repeated_page)
+    repeated_page_two["page"] = 2
+
+    class JsonTransport:
+        def __init__(self) -> None:
+            self.values = iter([repeated_page, repeated_page_two])
+
+        def get(self, url: str, *, timeout: float):
+            del url, timeout
+            return XueqiuResponse(
+                200, json.dumps(next(self.values)).encode(),
+                {"content-type": "application/json"},
+                "https://xueqiu.com/query/v1/symbol/search/status.json",
+            )
+
+    result = execute_and_persist_xueqiu_collection(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        stock_code="600519",
+        transport=JsonTransport(),
+        run_id="xq023-repeated",
+        collector_config=CollectorConfig(max_pages=3, min_interval_seconds=3.0),
+        clock=lambda: NOW,
+        sleep_fn=lambda _: None,
+        max_pages=3,
+    )
+    assert result.result.status.value == "PARTIAL_COLLECTION"
+    assert result.result.stop_reason == "pagination_failure"
+    assert result.result.safe_frontier is None
+    store = SQLitePersistence(data_dir / "collector.db", RawEvidenceStore(data_dir, source="xueqiu"))
+    try:
+        checkpoint = store.checkpoint("xueqiu", "stock:600519")
+        assert checkpoint[0] == "2023-11-14T22:13:20.000000Z"
+    finally:
+        store.close()
+
+
+def test_xq024_observed_historical_drift_versions_and_unchanged_is_duplicate(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    seed = execute_and_persist_xueqiu_collection(
+        db_path=data_dir / "collector.db",
+        raw_data_dir=data_dir,
+        stock_code="600519",
+        transport=FixtureTransport(["page_1.json", "page_2.json"]),
+        run_id="xq024-seed",
+        collector_config=CollectorConfig(max_pages=2, min_interval_seconds=3.0),
+        clock=lambda: NOW,
+        sleep_fn=lambda _: None,
+        max_pages=2,
+    )
+    assert seed.result.status.value == "SUCCESS"
+    changed = json.loads((FIXTURES / "page_1.json").read_text())
+    changed["list"][0]["description"] = "observed historical drift"
+    changed["list"][0]["reply_count"] = 99
+
+    class JsonTransport:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def get(self, url: str, *, timeout: float):
+            del url, timeout
+            return XueqiuResponse(
+                200, json.dumps(self.payload).encode(),
+                {"content-type": "application/json"},
+                "https://xueqiu.com/query/v1/symbol/search/status.json",
+            )
+
+    drift = execute_and_persist_xueqiu_collection(
+        db_path=data_dir / "collector.db", raw_data_dir=data_dir, stock_code="600519",
+        transport=JsonTransport(changed), run_id="xq024-drift",
+        collector_config=CollectorConfig(max_pages=1, min_interval_seconds=3.0),
+        clock=lambda: NOW, sleep_fn=lambda _: None, max_pages=1,
+    )
+    assert drift.result.status.value == "SUCCESS"
+    unchanged = execute_and_persist_xueqiu_collection(
+        db_path=data_dir / "collector.db", raw_data_dir=data_dir, stock_code="600519",
+        transport=JsonTransport(changed), run_id="xq024-unchanged",
+        collector_config=CollectorConfig(max_pages=1, min_interval_seconds=3.0),
+        clock=lambda: NOW, sleep_fn=lambda _: None, max_pages=1,
+    )
+    assert unchanged.result.status.value == "NO_NEW_DATA"
+    store = SQLitePersistence(data_dir / "collector.db", RawEvidenceStore(data_dir, source="xueqiu"))
+    try:
+        versions = store.conn.execute(
+            "SELECT source_item_id, observation_version, content, reply_count FROM source_item_observations WHERE source='xueqiu' AND source_item_id='910001' ORDER BY observation_version"
+        ).fetchall()
+        assert versions == [("910001", 1, "<p>synthetic body one 😀</p>", 2), ("910001", 2, "observed historical drift", 99)]
+        checkpoint = store.checkpoint("xueqiu", "stock:600519")
+        assert checkpoint[0] == "2023-11-14T22:13:20.000000Z"
+    finally:
+        store.close()
