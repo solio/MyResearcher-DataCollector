@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 UTC_GLOB = "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]Z'"
 
@@ -69,6 +69,15 @@ CREATE TABLE raw_evidence (
     byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
     filesystem_path TEXT NOT NULL CHECK (length(trim(filesystem_path)) > 0),
     storage_version TEXT NOT NULL CHECK (length(trim(storage_version)) > 0)
+);
+
+CREATE TABLE raw_body_state (
+    source TEXT NOT NULL CHECK (length(trim(source)) > 0),
+    content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    body_state TEXT NOT NULL CHECK (body_state IN ('PRESENT','PURGED')),
+    purged_at_utc TEXT CHECK (purged_at_utc IS NULL OR (length(purged_at_utc) = 27 AND purged_at_utc GLOB {UTC_GLOB})),
+    updated_at_utc TEXT NOT NULL CHECK (length(updated_at_utc) = 27 AND updated_at_utc GLOB {UTC_GLOB}),
+    PRIMARY KEY(source, content_sha256)
 );
 
 CREATE TABLE source_item_observations (
@@ -159,6 +168,7 @@ MIGRATION_CHECKSUM = hashlib.sha256(MIGRATION_SQL.encode("utf-8")).hexdigest()
 
 TABLES = {
     "schema_migrations", "collection_runs", "collection_attempts", "raw_evidence",
+    "raw_body_state",
     "source_item_observations", "observation_evidence", "observation_scopes",
     "collection_failures", "collector_checkpoints",
 }
@@ -251,6 +261,7 @@ def validate_schema(conn: sqlite3.Connection) -> None:
         "collection_runs": {"run_id", "source", "scope_key", "status", "started_at_utc", "finished_at_utc", "collector_version", "parser_version", "schema_version", "watermark_before_utc", "watermark_after_utc", "safe_frontier_utc", "counters_json"},
         "collection_attempts": {"attempt_id", "run_id", "attempt_ordinal", "request_kind", "request_url", "started_at_utc", "finished_at_utc", "outcome", "http_status", "retry_after_seconds", "retry_number", "retry_budget", "error_class", "error_message"},
         "raw_evidence": {"evidence_id", "run_id", "attempt_id", "evidence_kind", "request_url", "final_url", "fetched_at_utc", "http_status", "content_type", "content_sha256", "byte_size", "filesystem_path", "storage_version"},
+        "raw_body_state": {"source", "content_sha256", "body_state", "purged_at_utc", "updated_at_utc"},
         "source_item_observations": {"observation_id", "source", "source_item_id", "observation_version", "observed_at_utc", "published_at_utc", "source_updated_at_utc", "display_time_utc", "author_id", "author_name", "title", "content", "content_sha256", "url", "canonical_bar_code", "canonical_bar_name", "post_type", "post_state", "post_top_status", "read_count", "reply_count", "like_count", "forward_count", "source_times_raw_json", "source_metadata_json", "fact_fingerprint", "schema_version", "collector_version", "parser_version", "drift_from_observation_id"},
         "observation_evidence": {"observation_id", "evidence_id", "evidence_role"},
         "observation_scopes": {"observation_id", "scope_key", "requested_bar_code"},
@@ -263,6 +274,35 @@ def validate_schema(conn: sqlite3.Connection) -> None:
             raise SchemaError(f"schema columns drifted for {table}")
 
 
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Add retention state without rewriting existing evidence/observations."""
+    now = utc_text(datetime.now(timezone.utc))
+    with conn:
+        conn.execute(
+            """CREATE TABLE raw_body_state (
+                source TEXT NOT NULL CHECK (length(trim(source)) > 0),
+                content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+                body_state TEXT NOT NULL CHECK (body_state IN ('PRESENT','PURGED')),
+                purged_at_utc TEXT CHECK (purged_at_utc IS NULL OR (length(purged_at_utc) = 27 AND purged_at_utc GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]Z')),
+                updated_at_utc TEXT NOT NULL CHECK (length(updated_at_utc) = 27 AND updated_at_utc GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]Z'),
+                PRIMARY KEY(source, content_sha256)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO raw_body_state(source, content_sha256, body_state, purged_at_utc, updated_at_utc)
+               SELECT r.source, e.content_sha256, 'PRESENT', NULL, ?
+                 FROM raw_evidence AS e
+                 JOIN collection_runs AS r ON r.run_id = e.run_id
+                GROUP BY r.source, e.content_sha256""",
+            (now,),
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at_utc, checksum) VALUES (?,?,?)",
+            (SCHEMA_VERSION, now, MIGRATION_CHECKSUM),
+        )
+        conn.execute("PRAGMA user_version = 2")
+
+
 def connect_database(path: str | Path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -273,11 +313,13 @@ def connect_database(path: str | Path) -> sqlite3.Connection:
         if not existed:
             with conn:
                 conn.executescript(MIGRATION_SQL)
-                conn.execute("PRAGMA user_version = 1")
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 conn.execute(
                     "INSERT INTO schema_migrations(version, applied_at_utc, checksum) VALUES (?,?,?)",
                     (SCHEMA_VERSION, utc_text(datetime.now(timezone.utc)), MIGRATION_CHECKSUM),
                 )
+        elif conn.execute("PRAGMA user_version").fetchone()[0] == 1:
+            _migrate_v1_to_v2(conn)
         validate_schema(conn)
         return conn
     except Exception:

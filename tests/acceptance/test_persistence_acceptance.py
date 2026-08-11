@@ -207,6 +207,7 @@ def test_pst001_fresh_migration_schema_history_constraints_and_indexes(tmp_path:
         "collection_runs",
         "collection_attempts",
         "raw_evidence",
+        "raw_body_state",
         "source_item_observations",
         "observation_evidence",
         "observation_scopes",
@@ -225,7 +226,7 @@ def test_pst001_fresh_migration_schema_history_constraints_and_indexes(tmp_path:
         >= {"version", "checksum"}
     ]
     assert len(history) == 1
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     assert conn.execute(f"SELECT count(*) FROM {history[0]}").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM collection_runs").fetchone()[0] == 0
 
@@ -282,7 +283,7 @@ def test_pst003_unknown_version_missing_index_and_checksum_fail_closed(tmp_path:
         (
             "checksum",
             lambda conn: conn.execute(
-                "UPDATE schema_migrations SET checksum='bad-checksum' WHERE version=1"
+                "UPDATE schema_migrations SET checksum='bad-checksum' WHERE version=2"
             ),
         ),
     ]

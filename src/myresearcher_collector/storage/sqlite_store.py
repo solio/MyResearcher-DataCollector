@@ -13,7 +13,7 @@ from typing import Any, Iterable, Mapping
 from myresearcher_collector.models import RuntimeCounters, SourceItem
 
 from .models import PublishedRaw, SafeFrontier
-from .raw_store import RawEvidenceStore
+from .raw_store import RawBodyPurged, RawEvidenceStore
 from .schema import connect_database, utc_text
 
 
@@ -190,7 +190,10 @@ class SQLitePersistence:
         self.raw_store.verify(str(published.relative_path), published.sha256, published.byte_size)
         with self._write():
             attempt = self.conn.execute(
-                "SELECT run_id FROM collection_attempts WHERE attempt_id = ?",
+                """SELECT a.run_id, r.source
+                   FROM collection_attempts AS a
+                   JOIN collection_runs AS r ON r.run_id=a.run_id
+                  WHERE a.attempt_id = ?""",
                 (attempt_id,),
             ).fetchone()
             if attempt is None or attempt[0] != run_id:
@@ -205,6 +208,15 @@ class SQLitePersistence:
                  final_url, utc_text(fetched_at), http_status, content_type,
                  published.sha256, published.byte_size, published.relative_path,
                  storage_version),
+            )
+            now = utc_text(fetched_at)
+            self.conn.execute(
+                """INSERT INTO raw_body_state(
+                       source, content_sha256, body_state, purged_at_utc, updated_at_utc
+                   ) VALUES (?,?, 'PRESENT', NULL, ?)
+                   ON CONFLICT(source, content_sha256) DO UPDATE SET
+                       body_state='PRESENT', purged_at_utc=NULL, updated_at_utc=excluded.updated_at_utc""",
+                (published.source, published.sha256, now),
             )
 
     def record_failure(
@@ -482,12 +494,22 @@ class SQLitePersistence:
 
     def verify_evidence(self, evidence_id: str) -> Path:
         row = self.conn.execute(
-            "SELECT filesystem_path, content_sha256, byte_size FROM raw_evidence WHERE evidence_id=?",
+            """SELECT r.source, e.filesystem_path, e.content_sha256, e.byte_size,
+                      s.body_state
+                 FROM raw_evidence AS e
+                 JOIN collection_runs AS r ON r.run_id=e.run_id
+                 LEFT JOIN raw_body_state AS s
+                   ON s.source=r.source AND s.content_sha256=e.content_sha256
+                WHERE e.evidence_id=?""",
             (evidence_id,),
         ).fetchone()
         if row is None:
             raise PersistenceError("evidence row does not exist")
+        if row[4] == "PURGED":
+            raise RawBodyPurged("raw body no longer retained")
+        if row[4] != "PRESENT":
+            raise PersistenceError("raw body state is missing")
         try:
-            return self.raw_store.verify(row[0], row[1], row[2])
+            return self.raw_store.verify(row[1], row[2], row[3])
         except Exception as exc:
             raise PersistenceError("referenced raw evidence failed integrity check") from exc

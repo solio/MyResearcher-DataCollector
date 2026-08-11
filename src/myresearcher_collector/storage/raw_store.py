@@ -13,6 +13,10 @@ class RawStoreError(RuntimeError):
     """The raw store cannot prove safe publication or reference integrity."""
 
 
+class RawBodyPurged(RawStoreError):
+    """The evidence metadata remains, but its retained body has expired."""
+
+
 class RawEvidenceStore:
     """Publish immutable response bytes under a local data directory."""
 

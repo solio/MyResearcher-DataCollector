@@ -39,6 +39,7 @@ from myresearcher_collector.sources.xueqiu import (
     XUEQIU_BOOTSTRAP_MIN_PAGES,
     symbol_for,
 )
+from myresearcher_collector.storage import RAW_BODY_RETENTION_DAYS, purge_raw_bodies
 
 
 DEFAULT_USER_AGENT = "MyResearcher-DataCollector/eastmoney_guba-live-smoke"
@@ -161,6 +162,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="acknowledge a future browser-managed live run",
     )
+    retention = subparsers.add_parser(
+        "raw-retention",
+        help="report or explicitly purge expired local raw response bodies",
+    )
+    retention.add_argument("--data-dir", type=Path, required=True)
+    retention.add_argument("--retention-days", type=int, default=RAW_BODY_RETENTION_DAYS)
+    retention.add_argument("--dry-run", action="store_true", help="report eligible bodies without deleting")
+    retention.add_argument("--confirm", action="store_true", help="confirm physical body deletion")
     return parser
 
 
@@ -433,6 +442,23 @@ def main(argv: list[str] | None = None) -> int:
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"xueqiu error: {exc}", file=sys.stderr)
             return 2
+
+    if args.command == "raw-retention":
+        try:
+            if args.dry_run and args.confirm:
+                raise ValueError("dry_run and confirm are mutually exclusive")
+            report = purge_raw_bodies(
+                db_path=args.data_dir.expanduser().resolve() / "collector.db",
+                raw_data_dir=args.data_dir.expanduser().resolve(),
+                retention_days=args.retention_days,
+                dry_run=not args.confirm,
+                confirm=args.confirm,
+            )
+        except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            print(f"raw-retention error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+        return 0 if not report.errors else 1
 
     if args.command == "eastmoney-guba-persistent":
         try:
