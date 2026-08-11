@@ -10,6 +10,9 @@ class BackfillConfigError(ValueError):
     """A backfill request is invalid before source access."""
 
 
+SHANGHAI = timezone(timedelta(hours=8))
+
+
 @dataclass(frozen=True)
 class BackfillRange:
     source: str
@@ -24,8 +27,7 @@ def _parse_bound(value: str, *, end_of_day: bool) -> datetime:
         if len(text) == 10:
             parsed_date = date.fromisoformat(text)
             local = datetime.combine(parsed_date, time.max if end_of_day else time.min)
-            local_zone = datetime.now().astimezone().tzinfo or timezone.utc
-            return local.replace(tzinfo=local_zone).astimezone(timezone.utc)
+            return local.replace(tzinfo=SHANGHAI).astimezone(timezone.utc)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise BackfillConfigError("range bounds must be ISO date or timestamp") from exc
@@ -52,12 +54,16 @@ def resolve_backfill_range(
     if days is not None:
         if isinstance(days, bool) or days < 1:
             raise BackfillConfigError("days must be a positive integer")
-        current = now or datetime.now().astimezone()
+        current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
-        current = current.astimezone(timezone.utc)
-        to_time = datetime.combine(current.date(), time.max, tzinfo=current.tzinfo).astimezone(timezone.utc)
-        from_time = to_time - timedelta(days=days)
+        local_date = current.astimezone(SHANGHAI).date()
+        from_local = datetime.combine(
+            local_date - timedelta(days=days - 1), time.min, tzinfo=SHANGHAI
+        )
+        to_local = datetime.combine(local_date, time.max, tzinfo=SHANGHAI)
+        from_time = from_local.astimezone(timezone.utc)
+        to_time = to_local.astimezone(timezone.utc)
     else:
         if from_value is None or to_value is None:
             raise BackfillConfigError("--from and --to must be supplied together")

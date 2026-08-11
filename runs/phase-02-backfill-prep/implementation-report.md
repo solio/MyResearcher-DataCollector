@@ -25,3 +25,18 @@ No schema or migration was added. No live network execution was performed.
 Validation evidence: `git diff --check`; compileall with
 `PYTHONPYCACHEPREFIX=/tmp/myresearcher-datacollector-pyc`; pytest collection
 reported 190 tests; full offline pytest reported `189 passed, 1 xfailed`.
+
+## Correction pass
+
+The review blockers were corrected without schema or source-contract changes:
+
+- overlap pages now deduplicate only IDs acquired in the current run; persisted
+  IDs never stop historical traversal;
+- required detail schema mismatch returns `SPEC_MISMATCH` with
+  `detail_schema_mismatch`, retaining captured list/detail evidence;
+- date-only and `--days` ranges use fixed `Asia/Shanghai` calendar semantics;
+- detail counters increment success/parsed only after fetch, parse and merge,
+  preserving `requested = success + failed`.
+
+Correction validation: 207 tests collected; full suite `206 passed, 1
+xfail`. Real network remained NOT EXECUTED.

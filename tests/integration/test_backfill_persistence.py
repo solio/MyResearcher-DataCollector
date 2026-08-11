@@ -69,6 +69,7 @@ def test_backfill_preserves_existing_forward_checkpoint_and_is_idempotent(tmp_pa
         checkpoint_before = store.checkpoint("eastmoney_guba", "stock:600001")
     finally:
         store.close()
+
     backfill = execute_and_persist_backfill_collection(
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path / "data",
         stock_code="600001",
@@ -94,5 +95,33 @@ def test_backfill_preserves_existing_forward_checkpoint_and_is_idempotent(tmp_pa
     try:
         assert store.checkpoint("eastmoney_guba", "stock:600001") == checkpoint_before
         assert store.conn.execute("SELECT count(*) FROM source_item_observations").fetchone()[0] == 2
+    finally:
+        store.close()
+
+
+def test_backfill_detail_schema_mismatch_persists_evidence_and_failure(tmp_path: Path) -> None:
+    class SchemaMismatchTransport:
+        def get(self, url: str, *, timeout: float) -> HttpResponse:
+            del timeout
+            if ",f.html" in url:
+                from tests.unit.test_backfill import synthetic_page
+                value = synthetic_page(("1001", "2026-08-10 10:00:00"))
+                return value
+            return HttpResponse(200, b"<script>var post_article={};</script>", {})
+
+    execution = execute_and_persist_backfill_collection(
+        db_path=tmp_path / "collector.db", raw_data_dir=tmp_path / "data",
+        stock_code="600001", from_time=datetime(2026, 8, 8, tzinfo=timezone.utc),
+        to_time=datetime(2026, 8, 11, tzinfo=timezone.utc), transport=SchemaMismatchTransport(),
+        run_id="backfill-schema-mismatch", collector_config=config(),
+        clock=lambda: datetime(2026, 8, 11, tzinfo=timezone.utc), sleep_fn=lambda _: None, max_pages=1,
+    )
+    assert execution.execution.result.status is CollectionStatus.SPEC_MISMATCH
+    assert execution.execution.result.stop_reason == "detail_schema_mismatch"
+    store = SQLitePersistence(tmp_path / "collector.db", RawEvidenceStore(tmp_path / "data", source="eastmoney_guba"))
+    try:
+        assert store.conn.execute("SELECT count(*) FROM raw_evidence WHERE run_id=?", (execution.run_id,)).fetchone()[0] == 2
+        assert store.conn.execute("SELECT count(*) FROM collection_failures WHERE run_id=?", (execution.run_id,)).fetchone()[0] == 1
+        assert store.checkpoint("eastmoney_guba", "stock:600001") is None
     finally:
         store.close()

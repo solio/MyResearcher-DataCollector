@@ -716,6 +716,7 @@ class EastmoneyGubaCollector:
         range_complete = False
         stop_reason: str | None = None
         previous_page_signature: tuple[str, ...] | None = None
+        run_seen_ids: set[str] = set()
 
         def build_item(merged: Mapping[str, Any], list_ref: str, detail_ref: str,
                        list_final_url: str, detail_final_url: str) -> GubaSourceItem:
@@ -793,10 +794,10 @@ class EastmoneyGubaCollector:
             for row in parsed_page.rows:
                 if row.published_at > to_time or row.published_at < from_time:
                     continue
+                if row.source_item_id in run_seen_ids:
+                    continue
                 records_in_range += 1
                 counters.details_requested += 1
-                counters.records_parsed += 1
-                counters.details_success += 1
                 try:
                     detail_html, raw_detail, _, detail_final_url = self._fetch(self.detail_url(row.url), counters)
                     detail_ref = self.evidence_store.put("detail", row.source_item_id, raw_detail)
@@ -805,18 +806,31 @@ class EastmoneyGubaCollector:
                 except GubaSchemaMismatch:
                     counters.details_failed += 1
                     counters.records_failed += 1
-                    counters.records_parsed -= 1
                     page_detail_failure = True
                     failures.append(f"detail {row.source_item_id}: schema_mismatch")
-                    continue
+                    result = CollectionResult(
+                        CollectionStatus.SPEC_MISMATCH, items, counters, failures,
+                        "detail_schema_mismatch", None, None,
+                    )
+                    return BackfillCollectionResult(
+                        result=result, pages_scanned=counters.pages_success,
+                        records_received=counters.records_received,
+                        records_in_range=records_in_range,
+                        records_failed=counters.records_failed,
+                        earliest_observed_at=earliest,
+                        latest_observed_at=latest,
+                        range_complete=False,
+                    )
                 except (GubaDetailMismatch, GubaParseError, FetchFailure) as exc:
                     counters.details_failed += 1
                     counters.records_failed += 1
-                    counters.records_parsed -= 1
                     page_detail_failure = True
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
                 items.append(build_item(merged, page_ref, detail_ref, page_final_url, detail_final_url))
+                run_seen_ids.add(row.source_item_id)
+                counters.details_success += 1
+                counters.records_parsed += 1
 
             if page_times and max(page_times) < from_time:
                 range_complete = True
