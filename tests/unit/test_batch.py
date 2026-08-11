@@ -15,7 +15,8 @@ from myresearcher_collector.batch import (
     make_batch_plan,
     validate_targets,
 )
-from myresearcher_collector.cli.main import main
+from myresearcher_collector.cli.main import build_parser, main
+from myresearcher_collector.sources.eastmoney_guba import BOOTSTRAP_MIN_PAGES
 from myresearcher_collector.storage import PersistenceError
 
 
@@ -58,6 +59,11 @@ def test_json_targets_and_plan_are_explicit_and_network_free(tmp_path: Path, cap
     assert main(["collect-batch", "--targets", str(config), "--data-dir", str(tmp_path / "data"), "--plan-only"]) == 0
     assert json.loads(capsys.readouterr().out)["network_execution"] is False
     assert not (tmp_path / "data").exists()
+    parsed = build_parser().parse_args([
+        "collect-batch", "--targets", str(config),
+        "--data-dir", str(tmp_path / "data"), "--plan-only",
+    ])
+    assert parsed.max_pages == BOOTSTRAP_MIN_PAGES == 3
 
 
 def test_batch_runs_in_order_without_concurrency_and_summarizes_isolated_scopes() -> None:
