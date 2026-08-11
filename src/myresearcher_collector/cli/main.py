@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Callable
 
 from myresearcher_collector.integration import execute_and_persist_collection
+from myresearcher_collector.batch import (
+    BatchConfigError,
+    execute_batch_collection,
+    load_targets,
+    make_batch_plan,
+)
 from myresearcher_collector.models import CollectionStatus
 from myresearcher_collector.run_report import summarize_run
 from myresearcher_collector.sources.eastmoney_guba import (
@@ -81,6 +87,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect_run.add_argument("--data-dir", type=Path, required=True)
     inspect_run.add_argument("--run-id", default=None, help="default: latest persisted run")
+
+    batch = subparsers.add_parser(
+        "collect-batch",
+        help="collect a static target set sequentially through the single-stock boundary",
+    )
+    batch.add_argument("--targets", type=Path, required=True, help="JSON target config")
+    batch.add_argument("--data-dir", type=Path, required=True)
+    batch.add_argument("--max-pages", type=int, default=2)
+    batch.add_argument("--timeout", type=float, default=20.0)
+    batch_mode = batch.add_mutually_exclusive_group(required=True)
+    batch_mode.add_argument(
+        "--plan-only", action="store_true",
+        help="print the sequential plan without constructing a transport",
+    )
+    batch_mode.add_argument(
+        "--confirm-live", action="store_true",
+        help="explicitly allow real sequential HTTPS requests",
+    )
     return parser
 
 
@@ -165,8 +189,37 @@ def execute_live_smoke(
     )
 
 
+def batch_plan(args: argparse.Namespace) -> dict[str, object]:
+    targets = load_targets(args.targets.expanduser().resolve())
+    return make_batch_plan(targets, args.data_dir).as_dict()
+
+
+def execute_batch_cli(args: argparse.Namespace) -> dict[str, object]:
+    targets = load_targets(args.targets.expanduser().resolve())
+    summary = execute_batch_collection(
+        targets,
+        data_root=args.data_dir.expanduser().resolve(),
+        collector_config=CollectorConfig(max_pages=args.max_pages, timeout_seconds=args.timeout),
+    )
+    return summary.as_dict()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "collect-batch":
+        try:
+            if args.plan_only:
+                print(json.dumps(batch_plan(args), ensure_ascii=False, indent=2))
+                return 0
+            summary = execute_batch_cli(args)
+        except (BatchConfigError, LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            print(f"batch error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        if summary["stop_reason"] is not None:
+            return 2
+        return 0 if summary["targets_failed"] == 0 and summary["targets_partial"] == 0 else 1
+
     if args.command == "eastmoney-guba-live-smoke":
         try:
             if args.plan_only:
