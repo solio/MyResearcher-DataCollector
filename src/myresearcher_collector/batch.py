@@ -12,7 +12,7 @@ from typing import Callable, Iterable, Mapping
 from .integration import PersistentCollection, execute_and_persist_collection
 from .models import CollectionStatus
 from .run_report import summarize_run
-from .sources.eastmoney_guba.collector import CollectorConfig, Transport, UrllibTransport
+from .sources.eastmoney_guba.collector import CollectorConfig, Transport
 from .storage import PersistenceError, RawStoreError, SchemaError
 
 
@@ -207,7 +207,9 @@ def execute_batch_collection(
     a real transport only after explicit live confirmation.
     """
     if transport_factory is None:
-        transport_factory = lambda _stock: UrllibTransport()
+        raise RuntimeError(
+            "browser-managed Eastmoney transport factory must be supplied by the host"
+        )
     data_root = Path(data_root)
     resolved_batch_id = batch_id or uuid.uuid4().hex
 

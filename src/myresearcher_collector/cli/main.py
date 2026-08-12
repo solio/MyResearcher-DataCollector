@@ -36,7 +36,12 @@ from myresearcher_collector.run_report import summarize_run
 from myresearcher_collector.sources.eastmoney_guba import (
     BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
+    EastmoneyBrowserSocketTransport,
     EastmoneyGubaCollector,
+)
+from myresearcher_collector.sources.eastmoney_guba.browser_host import (
+    BrowserHostConfigError,
+    serve_browser_host,
 )
 from myresearcher_collector.sources.eastmoney_guba.collector import Transport
 from myresearcher_collector.sources.xueqiu import (
@@ -48,6 +53,28 @@ from myresearcher_collector.storage import RAW_BODY_RETENTION_DAYS, purge_raw_bo
 
 
 DEFAULT_USER_AGENT = "MyResearcher-DataCollector/eastmoney_guba-live-smoke"
+DEFAULT_BROWSER_SOCKET = Path(
+    os.environ.get(
+        "MYRESEARCHER_EASTMONEY_BROWSER_SOCKET",
+        "/tmp/myresearcher-eastmoney-browser.sock",
+    )
+)
+DEFAULT_BROWSER_PROFILE = Path(
+    os.environ.get(
+        "MYRESEARCHER_EASTMONEY_BROWSER_PROFILE",
+        ".runtime/eastmoney-browser-profile",
+    )
+)
+EASTMONEY_LIVE_ACCESS = "BROWSER_HOST_EXPERIMENTAL_AVAILABILITY_BLOCKED"
+
+
+def _add_browser_socket_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--browser-socket",
+        type=Path,
+        default=DEFAULT_BROWSER_SOCKET,
+        help="Unix socket of a running eastmoney-browser-host",
+    )
 
 
 def _json_default(value: object) -> str:
@@ -58,6 +85,10 @@ def _json_default(value: object) -> str:
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
 
 
+def _browser_socket_transport(args: argparse.Namespace) -> Transport:
+    return EastmoneyBrowserSocketTransport(args.browser_socket)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="myresearcher-collector")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -65,6 +96,29 @@ def build_parser() -> argparse.ArgumentParser:
     guba.add_argument("stock_code", help="six-digit A-share stock code")
     guba.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     guba.add_argument("--timeout", type=float, default=20.0)
+    _add_browser_socket_argument(guba)
+
+    browser_host = subparsers.add_parser(
+        "eastmoney-browser-host",
+        help=(
+            "experimental long-lived Chrome host; Eastmoney may require "
+            "repeated human verification and unattended availability is blocked"
+        ),
+    )
+    browser_host.add_argument("--socket", type=Path, default=DEFAULT_BROWSER_SOCKET)
+    browser_host.add_argument("--profile-dir", type=Path, default=DEFAULT_BROWSER_PROFILE)
+    browser_host.add_argument("--channel", default="chrome")
+    browser_host.add_argument("--min-interval", type=float, default=3.0)
+    browser_host.add_argument("--preflight-stock", default="601012")
+    browser_host.add_argument(
+        "--operator-wait-seconds",
+        type=float,
+        default=0.0,
+        help="headful-only wait for a human to complete visible verification",
+    )
+    browser_host.add_argument(
+        "--headful", action="store_true", help="show Chrome instead of headless mode"
+    )
 
     live = subparsers.add_parser(
         "eastmoney-guba-live-smoke",
@@ -80,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--max-pages", type=int, choices=(1, 2), default=1)
     live.add_argument("--timeout", type=float, default=20.0)
     live.add_argument("--min-interval", type=float, default=3.0)
+    _add_browser_socket_argument(live)
     live.add_argument(
         "--user-agent",
         default=os.environ.get("MYRESEARCHER_EASTMONEY_USER_AGENT", DEFAULT_USER_AGENT),
@@ -111,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     persistent.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     persistent.add_argument("--timeout", type=float, default=20.0)
     persistent.add_argument("--min-interval", type=float, default=3.0)
+    _add_browser_socket_argument(persistent)
     persistent.add_argument(
         "--user-agent",
         default=os.environ.get("MYRESEARCHER_EASTMONEY_USER_AGENT", DEFAULT_USER_AGENT),
@@ -142,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--data-dir", type=Path, required=True)
     batch.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     batch.add_argument("--timeout", type=float, default=20.0)
+    _add_browser_socket_argument(batch)
     batch_mode = batch.add_mutually_exclusive_group(required=True)
     batch_mode.add_argument(
         "--plan-only", action="store_true",
@@ -160,6 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--max-pages", type=int, default=100)
     backfill.add_argument("--timeout", type=float, default=20.0)
     backfill.add_argument("--min-interval", type=float, default=3.0)
+    _add_browser_socket_argument(backfill)
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
     backfill_mode.add_argument("--plan-only", action="store_true")
     backfill_mode.add_argument("--confirm-live", action="store_true")
@@ -262,7 +320,8 @@ def live_smoke_plan(args: argparse.Namespace) -> dict[str, object]:
         "mode": "PLAN_ONLY",
         "network_execution": False,
         "source": "eastmoney_guba",
-        "source_access": "BROWSER_MANAGED_ANONYMOUS",
+        "source_access": EASTMONEY_LIVE_ACCESS,
+        "unattended_production_ready": False,
         "stock_code": args.stock_code,
         "max_pages": args.max_pages,
         "timeout_seconds": args.timeout,
@@ -288,7 +347,8 @@ def persistent_run_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": checkpoint,
         "max_pages": args.max_pages,
         "bootstrap_min_pages": BOOTSTRAP_MIN_PAGES,
-        "source_access": "BROWSER_MANAGED_ANONYMOUS",
+        "source_access": EASTMONEY_LIVE_ACCESS,
+        "unattended_production_ready": False,
         "data_dir": str(data_dir),
         "sqlite_location": str(data_dir / "collector.db"),
         "raw_evidence_location": str(data_dir / "raw" / "eastmoney_guba"),
@@ -371,15 +431,27 @@ def execute_persistent_run(
 
 def batch_plan(args: argparse.Namespace) -> dict[str, object]:
     targets = load_targets(args.targets.expanduser().resolve())
-    return make_batch_plan(targets, args.data_dir).as_dict()
+    return {
+        **make_batch_plan(targets, args.data_dir).as_dict(),
+        "source_access": EASTMONEY_LIVE_ACCESS,
+        "unattended_production_ready": False,
+    }
 
 
-def execute_batch_cli(args: argparse.Namespace) -> dict[str, object]:
+def execute_batch_cli(
+    args: argparse.Namespace,
+    *,
+    transport_factory: Callable[[str], Transport] | None = None,
+) -> dict[str, object]:
     targets = load_targets(args.targets.expanduser().resolve())
+    if transport_factory is None:
+        transport = _browser_socket_transport(args)
+        transport_factory = lambda _stock: transport
     summary = execute_batch_collection(
         targets,
         data_root=args.data_dir.expanduser().resolve(),
         collector_config=CollectorConfig(max_pages=args.max_pages, timeout_seconds=args.timeout),
+        transport_factory=transport_factory,
     )
     return summary.as_dict()
 
@@ -407,7 +479,12 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
         "data_dir": str(data_dir),
-        "source_access": "BROWSER_MANAGED_OFFLINE_ONLY" if args.source == "xueqiu" else "BROWSER_MANAGED_ANONYMOUS",
+        "source_access": (
+            "BROWSER_MANAGED_OFFLINE_ONLY"
+            if args.source == "xueqiu"
+            else EASTMONEY_LIVE_ACCESS
+        ),
+        "unattended_production_ready": False,
     }
 
 
@@ -518,6 +595,22 @@ def execute_xueqiu_run(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "eastmoney-browser-host":
+        try:
+            serve_browser_host(
+                socket_path=args.socket,
+                profile_dir=args.profile_dir,
+                channel=args.channel,
+                headless=not args.headful,
+                min_interval_seconds=args.min_interval,
+                preflight_stock=args.preflight_stock,
+                operator_wait_seconds=args.operator_wait_seconds,
+            )
+        except (BrowserHostConfigError, OSError, RuntimeError, ValueError) as exc:
+            print(f"browser host error: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
     if args.command == "collect-batch":
         try:
             if args.plan_only:
@@ -537,7 +630,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.plan_only:
                 print(json.dumps(backfill_plan(args), ensure_ascii=False, indent=2, default=_json_default))
                 return 0
-            summary = execute_backfill_cli(args)
+            summary = execute_backfill_cli(args, transport=_browser_socket_transport(args))
         except (BackfillConfigError, LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"backfill error: {exc}", file=sys.stderr)
             return 2
@@ -578,7 +671,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.plan_only:
                 print(json.dumps(persistent_run_plan(args), ensure_ascii=False, indent=2))
                 return 0
-            summary = execute_persistent_run(args)
+            summary = execute_persistent_run(
+                args, transport=_browser_socket_transport(args)
+            )
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"persistent run error: {exc}", file=sys.stderr)
             return 2
@@ -590,7 +685,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.plan_only:
                 print(json.dumps(live_smoke_plan(args), ensure_ascii=False, indent=2))
                 return 0
-            summary = execute_live_smoke(args)
+            summary = execute_live_smoke(
+                args, transport=_browser_socket_transport(args)
+            )
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"live smoke error: {exc}", file=sys.stderr)
             return 2
@@ -615,9 +712,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         result = EastmoneyGubaCollector(
+            transport=_browser_socket_transport(args),
             config=CollectorConfig(max_pages=args.max_pages, timeout_seconds=args.timeout)
         ).collect(args.stock_code)
-    except ValueError as exc:
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"invalid request: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(asdict(result), ensure_ascii=False, default=_json_default, indent=2))

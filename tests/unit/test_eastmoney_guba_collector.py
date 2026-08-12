@@ -621,6 +621,11 @@ def test_minimum_interval_cannot_be_disabled() -> None:
         raise AssertionError("interval below policy minimum was accepted")
 
 
+def test_collector_has_no_plain_http_fallback() -> None:
+    with pytest.raises(RuntimeError, match="must be supplied explicitly"):
+        EastmoneyGubaCollector()
+
+
 def test_redirect_final_url_outside_source_boundary_fails_closed() -> None:
     page1, _, _, _ = urls()
     run, transport = collector({page1: response("empty_page.html", final_url="https://example.invalid/redirect")})

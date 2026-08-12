@@ -27,3 +27,4 @@ data/
 # Credentials and browser state are never fixtures.
 cookies*.json
 credentials*.json
+.runtime/

@@ -1,8 +1,18 @@
 # Eastmoney Live Access Expert Record
 
-Status: `EASTMONEY_BROWSER_ACCESS: PASS`
+Status: `SOURCE_SEMANTICS: PASS; UNATTENDED_LIVE_ACCESS: BLOCKED`
 
 Observed at: `2026-08-11T09:42:30Z` / `2026-08-11T17:42:30+08:00`
+
+Revalidated at: `2026-08-12` (Asia/Shanghai)
+
+> 2026-08-12 correction: the browser adapter remains a valid implementation
+> boundary, but a normal browser context is not a stable access solution.
+> Fresh contexts were frequently challenged and graphical verification recurred
+> inside one manually verified detail sequence. See
+> [2026-08-12-retry-report.md](2026-08-12-retry-report.md). The historical
+> one-list/one-detail success below remains evidence of page semantics, not an
+> unattended production PASS.
 
 ## Problem
 
@@ -35,7 +45,7 @@ Eastmoney currently routes plain urllib/curl traffic to access verification
 while a normal browser-managed context receives the approved HTML payload.
 The exact private risk signal is not observable and is not imitated.
 
-## Resolution
+## 2026-08-11 implementation
 
 - Added `EastmoneyBrowserTransport`, a narrow adapter over a caller-owned
   synchronous Playwright-like Page.
@@ -47,6 +57,11 @@ The exact private risk signal is not observable and is not imitated.
   the same Collector/parser/RawEvidence/SQLite path without rewriting it.
 - Updated the SOURCE_SPEC access contract from plain urllib to normal
   browser-managed anonymous HTML navigation.
+
+The 2026-08-12 revalidation narrows the last statement: the supported runtime
+is now an explicit experimental/operator-assisted browser host, and unattended
+live availability is blocked until a complete normal workload succeeds without
+recurring verification.
 
 The standalone CLI now fails closed instead of silently falling back to the
 known-blocked urllib path.  A browser-owning host must inject:

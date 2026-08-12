@@ -3,6 +3,7 @@
 from .browser_transport import (
     EastmoneyBrowserBoundaryError,
     EastmoneyBrowserResponse,
+    EastmoneyBrowserSocketTransport,
     EastmoneyBrowserTransport,
     EastmoneyBrowserTransportError,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "CollectorConfig",
     "EastmoneyBrowserBoundaryError",
     "EastmoneyBrowserResponse",
+    "EastmoneyBrowserSocketTransport",
     "EastmoneyBrowserTransport",
     "EastmoneyBrowserTransportError",
     "EastmoneyGubaCollector",

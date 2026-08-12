@@ -1,16 +1,17 @@
 # Eastmoney Live Access Success Playbook
 
-This records both the successful 2026-08-11 browser-managed solution and a
-reproducible non-GUI diagnostic. It is intentionally bounded to normal public
-browser access.
+This records the successful 2026-08-11 page-semantics proof and a reproducible
+non-GUI diagnostic. Revalidation on 2026-08-12 proved that the browser transport
+is a sound integration boundary but not a stable unattended access solution.
+It is intentionally bounded to normal public browser access.
 
-## What actually fixed the failure
+## What the browser adapter fixed—and did not fix
 
 The URL, pagination, parser and Backfill logic were not the original failure.
 The same approved URL returned an HTTP-200 identity-verification shell through
 plain urllib/curl but returned `article_list` in a normal anonymous browser.
 
-The stable boundary is therefore:
+The correct implementation boundary is:
 
 ```text
 standard browser navigation
@@ -72,6 +73,11 @@ fingerprint, use a stealth plugin/proxy, solve a challenge, or read/export
 cookies or browser storage.  The default budget is exactly two navigations:
 one list and one detail.
 
+`PASS` here means only that this bounded diagnostic was accepted at that time.
+It does not promote Eastmoney to unattended-production-ready. The 2026-08-12
+matrix includes fresh-context first-page blocks and recurrent graphical
+verification after manual verification.
+
 A source-accepted run returns `status: PASS`, all visited URLs, the captured page
 title, source counts, the parsed post list, and a strict detail identity proof.
 It deliberately does not persist raw HTML or full post bodies.
@@ -95,9 +101,9 @@ returned the real page. See `HEADLESS-VALIDATION.md`. Consequently, headless
 mode is a useful deployable option only when the source accepts that context;
 it is not the production success criterion by itself.
 
-## Bounded Playwright transport sample
+## Bounded Playwright diagnostic sample
 
-This complete sample exercises the production `EastmoneyBrowserTransport` with
+This complete sample exercises `EastmoneyBrowserTransport` with
 the same two-navigation budget as the successful proof. `headless=True` is the
 requested non-GUI option; if it returns a verification page, stop and report
 `ACCESS_BLOCK` rather than bypassing the challenge or claiming success:
@@ -168,6 +174,11 @@ The adapter accepts only approved Eastmoney HTTPS hosts, rejects unsafe final
 URLs, returns the main-document response to the existing Collector, and does
 not export `Set-Cookie`.
 
+For the user-executable long-lived host and Collector commands, see
+[2026-08-12-retry-report.md](2026-08-12-retry-report.md). Those commands are
+explicitly experimental/operator-assisted and fail closed; they are not a
+recipe for unattended production.
+
 ## Re-validation checklist
 
 1. Run `reproduce_headless.py` with its default one-page/two-request budget.
@@ -190,3 +201,8 @@ python -m compileall -q \
 
 The already captured successful page evidence and exact 80-row list remain in
 `page-evidence.json` and `post-list.md`.
+
+8. Do not start normal collection or Backfill merely because the two-request
+   diagnostic passed. First require a complete, representative normal workload
+   to finish without human verification. If verification recurs, stop and mark
+   live availability blocked.

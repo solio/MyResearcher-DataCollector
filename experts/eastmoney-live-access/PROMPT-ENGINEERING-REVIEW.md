@@ -14,6 +14,13 @@ budget and explicit verification/repeated-page diagnostics.  Do not adopt
 `curl_cffi` browser impersonation, UA rotation, randomized page order, or the
 table-based data model.
 
+2026-08-12 follow-up: the repository's own logs directly refute the stronger
+claim that TLS impersonation is a success prerequisite. Two explicitly
+`curl_cffi`-enabled 601012 runs were challenged on page 1; minutes later an
+ordinary path completed pages 1–10. Its detail handler also accepts any HTTP
+200 without verification-page or post-ID checks. See
+[CURL-CFFI-AUDIT.md](CURL-CFFI-AUDIT.md) for exact lines and the upstream FAQ.
+
 Standard Chrome/Chromium headless is the only accepted non-GUI experiment in
 this boundary. It has the deployment benefit the user identified while
 remaining a real browser runtime rather than synthesizing one part of a
@@ -50,16 +57,18 @@ evasion behavior:
 - optional full ordered-ID signature comparison for page 1 versus page 2;
 - no claim that HTTP 200 means valid data.
 
-## Why headless Chrome is the better fit
+## Why Chrome is the better integration fit, not an access cure
 
 `curl_cffi` supplies a browser-like network fingerprint but is not a browser:
 it does not give the browser-owned navigation boundary now required by the
 SOURCE_SPEC. Standard Chrome headless is still non-GUI, can run on servers, and
 can be owned either through the no-extra-Python-package `--dump-dom` diagnostic or
-through Playwright for production injection.  The same strict parser then
+through Playwright for experimental host injection.  The same strict parser then
 validates `article_list`, `post_article`, URLs, timestamps, nullable counters,
 post type, and list/detail identity.
 
 This does not claim a private Eastmoney risk rule or promise that a clean
 headless profile will be accepted. Any verification response is
 reported as `ACCESS_BLOCK`, never bypassed and never converted to “no data”.
+The 2026-08-12 recurrent challenge after manual verification means unattended
+live availability is currently blocked for Chrome as well.

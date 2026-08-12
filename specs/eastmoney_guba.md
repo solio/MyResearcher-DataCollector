@@ -1,12 +1,12 @@
 # Source Spec: `eastmoney_guba`
 
-Status: `APPROVED`
+Status: `SEMANTICS APPROVED; UNATTENDED LIVE ACCESS BLOCKED`
 
 Owner: Source Researcher / Phase 1 Research Lead
 
 Observed at: 2026-08-10, Asia/Shanghai
 
-Access amended at: 2026-08-11, Asia/Shanghai
+Access amended at: 2026-08-11 and revalidated 2026-08-12, Asia/Shanghai
 
 Evidence location: `runs/phase-01-round-01/research-evidence.md`
 
@@ -32,20 +32,20 @@ Do not include credentials, cookie values, authorization headers or unnecessary 
 - method: `GET`.
 - approved list payload: the `var article_list=<JSON>;` assignment embedded in HTML. Do not derive precise time or identity from display-only table text when the structured object is present.
 - approved detail payload: the `var post_article=<JSON>;` assignment embedded in the exact detail HTML.
-- current availability: the public list and standard detail HTML still expose usable embedded data, but on 2026-08-11 anonymous Python urllib and direct curl received an identity-verification response while a normal anonymous browser navigation returned `article_list` and `post_article` from the same approved URLs.
-- evidence/status: `APPROVED WITH ACCESS AMENDMENT` — `experts/eastmoney-live-access/`; internal JSON APIs referenced by source scripts remain unapproved entry points.
+- current availability: the public list and standard detail HTML still expose usable embedded data in some established browser contexts. Revalidation on 2026-08-12 showed that fresh headless/headful Chrome contexts could be challenged immediately, a persistent context could pass once and fail after restart, and a manually verified long-lived context could be challenged again between otherwise successful detail requests.
+- evidence/status: `SEMANTICS APPROVED; UNATTENDED LIVE ACCESS BLOCKED` — `experts/eastmoney-live-access/2026-08-12-retry-report.md`; internal JSON APIs referenced by source scripts remain unapproved entry points.
 
 ## 3. Request
 
 - parameters: six-digit requested `stock_code`; integer `page >= 1`.
-- access mode: a normal browser-managed page/context is the approved live transport while plain HTTP clients receive verification. The caller owns the browser; Collector receives only the main-document response bytes and sanitized response metadata.
+- access mode: a caller-owned, long-lived normal browser page/context is the only supported experimental live transport. It is an integration boundary, not evidence of reliable source availability. The Collector receives only the main-document response bytes and sanitized response metadata.
 - required non-secret headers: browser-owned. Do not reproduce a browser fingerprint in urllib/curl and do not synthesize challenge parameters.
 - cookies required: `UNKNOWN`; browser state was not inspected. Any session state remains browser-owned and is never exported to Collector evidence or logs.
 - authentication required: `NO` for the observed approved surfaces.
 - secret injection mechanism: none.
 - redirects: follow only HTTPS redirects to source-owned Eastmoney hosts; record the final URL.
-- verification behavior: an HTTP-200 identity-verification page is `access_block`, not valid content and not no-data. The browser transport must not solve or bypass a CAPTCHA/WAF page.
-- evidence/status: `APPROVED WITH ACCESS AMENDMENT` — bounded normal-browser list and one standard detail observation succeeded without login; exact low-level risk signal remains `UNKNOWN`.
+- verification behavior: an HTTP-200 identity-verification page is `access_block`, not valid content and not no-data. The browser transport must not solve or bypass a CAPTCHA/WAF page. A human may complete a visible challenge only in an explicitly operator-assisted experiment; this does not make the source unattended-production-ready because a challenge may recur on later detail requests.
+- evidence/status: `LIVE AVAILABILITY BLOCKED` — bounded normal-browser observations succeeded, but no tested fresh or manually verified session completed the required normal Collector workload without intermittent verification. Exact low-level risk signal remains `UNKNOWN`.
 
 ## 4. Pagination
 
@@ -224,7 +224,8 @@ Terminal outcomes for this source are frozen as follows:
 - sanitized response sample/reference: structural facts, byte sizes and SHA-256 values in `runs/phase-01-round-01/research-evidence.md`. Live bodies are not committed.
 - observations: list and detail returned HTTP 200; latest pages contained 80 items each; two IDs overlapped in sequential observations; exact publish and last-update fields were distinct.
 - evidence limitations: one stock, a short observation window, no load test, no forced 403/429/5xx, no historical-tail crawl, no verified reply response.
-- 2026-08-11 access amendment evidence: `experts/eastmoney-live-access/` records the urllib/curl verification split, a normal-browser `article_list` page with 80 rows and one matching standard `post_article` detail. No cookies, browser storage, full live HTML, content body or credentials are committed.
+- 2026-08-11 access amendment evidence: `experts/eastmoney-live-access/` records the urllib/curl verification split, a normal-browser `article_list` page with 80 rows and one matching standard `post_article` detail.
+- 2026-08-12 revalidation evidence: `experts/eastmoney-live-access/2026-08-12-retry-report.md` records the context matrix and an operator-assisted partial run: one real 80-row list response, 31 strictly parsed detail responses, and an identity-verification shell at detail-list position 13 before later details resumed. The operator observed another later graphical challenge, so the run was stopped and seven-day Backfill was not attempted. No cookies or browser storage were inspected/exported, and full live bodies are not committed.
 
 ## 15. Acceptance Criteria
 
@@ -254,3 +255,4 @@ Developer acceptance must include deterministic offline fixtures/tests for: page
 | 2026-08-10 | Narrowed incremental observation semantics: no required historical detail refresh at/before watermark; preserve drift when source-item/detail facts are actually acquired | `runs/phase-01-round-05/evidence.md`, `runs/phase-01-round-06/decision.md` | Source Researcher / Phase 1 Spec Correction |
 | 2026-08-11 | Added the Reviewer-approved fixed three-page fresh-checkpoint bootstrap and forward-baseline semantics without changing established-checkpoint incremental behavior | `runs/phase-02-bootstrap-alignment/` | Developer / Bootstrap Runtime Alignment |
 | 2026-08-11 | Amended live access to a browser-managed anonymous HTML transport after urllib/curl verification responses and successful normal-browser list/detail observations | `experts/eastmoney-live-access/` | Source access investigation / user-authorized resolution |
+| 2026-08-12 | Reclassified unattended live availability as blocked after fresh-context failures and recurrent graphical verification inside one manually verified detail sequence; retained the browser host only as an experimental/operator-assisted boundary | `experts/eastmoney-live-access/2026-08-12-retry-report.md` | Expert Developer revalidation |

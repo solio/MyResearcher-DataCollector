@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import pytest
+
+import myresearcher_collector.sources.eastmoney_guba.browser_transport as transport_module
 
 from myresearcher_collector.sources.eastmoney_guba import (
     EastmoneyBrowserBoundaryError,
+    EastmoneyBrowserSocketTransport,
     EastmoneyBrowserTransport,
     EastmoneyBrowserTransportError,
 )
@@ -90,3 +95,79 @@ def test_browser_transport_requires_main_document_response() -> None:
     url = "https://guba.eastmoney.com/list,601012,f.html"
     with pytest.raises(EastmoneyBrowserTransportError):
         EastmoneyBrowserTransport(FakePage(None)).get(url, timeout=1.0)
+
+
+def test_socket_transport_returns_sanitized_browser_host_response(monkeypatch) -> None:
+    url = "https://guba.eastmoney.com/list,601012,f.html"
+    body = b"<html><script>var article_list={};</script></html>"
+    wire_response = json.dumps({
+        "ok": True,
+        "status_code": 200,
+        "body_base64": base64.b64encode(body).decode(),
+        "headers": {
+            "content-type": "text/html",
+            "set-cookie": "must-not-leave-host",
+        },
+        "final_url": url,
+    }).encode() + b"\n"
+
+    class FakeSocket:
+        def __init__(self) -> None:
+            self.sent = b""
+            self.connected = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def connect(self, path):
+            self.connected = path
+
+        def sendall(self, value):
+            self.sent += value
+
+        def recv(self, _size):
+            value, self.response = self.response, b""
+            return value
+
+    fake = FakeSocket()
+    fake.response = wire_response
+    monkeypatch.setattr(transport_module.socket, "socket", lambda *_args: fake)
+
+    response = EastmoneyBrowserSocketTransport("/tmp/em-browser.sock").get(
+        url, timeout=2.5
+    )
+
+    assert json.loads(fake.sent) == {"method": "GET", "url": url, "timeout": 2.5}
+    assert fake.connected == "/private/tmp/em-browser.sock"
+    assert response.body == body
+    assert response.status_code == 200
+    assert response.final_url == url
+    assert response.headers == {"content-type": "text/html"}
+
+
+def test_socket_transport_fails_closed_when_host_is_missing(monkeypatch) -> None:
+    class MissingSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            return None
+
+        def connect(self, _path):
+            raise FileNotFoundError
+
+    monkeypatch.setattr(
+        transport_module.socket, "socket", lambda *_args: MissingSocket()
+    )
+    transport = EastmoneyBrowserSocketTransport("/tmp/missing.sock")
+    with pytest.raises(EastmoneyBrowserTransportError, match="host is unavailable"):
+        transport.get("https://guba.eastmoney.com/list,601012,f.html", timeout=1.0)

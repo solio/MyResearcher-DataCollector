@@ -170,7 +170,11 @@ class EastmoneyGubaCollector:
         jitter_fn: Callable[[float, float], float] = random.uniform,
         cancel_check: Callable[[], bool] | None = None,
     ) -> None:
-        self.transport = transport or UrllibTransport()
+        if transport is None:
+            raise RuntimeError(
+                "Eastmoney transport must be supplied explicitly; no plain-HTTP fallback"
+            )
+        self.transport = transport
         self.evidence_store = evidence_store or InMemoryRawEvidenceStore()
         self.config = config or CollectorConfig()
         self.sleep_fn = sleep_fn

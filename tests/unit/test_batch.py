@@ -57,7 +57,10 @@ def test_json_targets_and_plan_are_explicit_and_network_free(tmp_path: Path, cap
         "network_execution": False,
     }
     assert main(["collect-batch", "--targets", str(config), "--data-dir", str(tmp_path / "data"), "--plan-only"]) == 0
-    assert json.loads(capsys.readouterr().out)["network_execution"] is False
+    cli_plan = json.loads(capsys.readouterr().out)
+    assert cli_plan["network_execution"] is False
+    assert cli_plan["source_access"] == "BROWSER_HOST_EXPERIMENTAL_AVAILABILITY_BLOCKED"
+    assert cli_plan["unattended_production_ready"] is False
     assert not (tmp_path / "data").exists()
     parsed = build_parser().parse_args([
         "collect-batch", "--targets", str(config),

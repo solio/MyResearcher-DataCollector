@@ -9,12 +9,17 @@ storage, challenge values or credentials.
 from __future__ import annotations
 
 import math
+import base64
+import json
+import socket
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 
 _ALLOWED_HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
+_MAX_SOCKET_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 class EastmoneyBrowserTransportError(OSError):
@@ -92,4 +97,90 @@ class EastmoneyBrowserTransport:
         except Exception as exc:
             raise EastmoneyBrowserTransportError(
                 "browser navigation did not yield an Eastmoney response"
+            ) from exc
+
+
+class EastmoneyBrowserSocketTransport:
+    """Request navigation from a long-lived local browser host.
+
+    The Unix socket contains no browser cookies or storage.  Each response is
+    the same sanitized main-document shape returned by
+    :class:`EastmoneyBrowserTransport`.
+    """
+
+    def __init__(self, socket_path: str | Path) -> None:
+        resolved = Path(socket_path).expanduser().resolve()
+        if len(str(resolved).encode()) >= 100:
+            raise ValueError("browser socket path is too long")
+        self.socket_path = resolved
+
+    def get(self, url: str, *, timeout: float) -> EastmoneyBrowserResponse:
+        _validate_browser_url(url)
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be finite and positive")
+        request = json.dumps(
+            {"method": "GET", "url": url, "timeout": timeout},
+            separators=(",", ":"),
+        ).encode() + b"\n"
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(timeout + 5.0)
+                client.connect(str(self.socket_path))
+                client.sendall(request)
+                response_bytes = bytearray()
+                while b"\n" not in response_bytes:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    response_bytes.extend(chunk)
+                    if len(response_bytes) > _MAX_SOCKET_RESPONSE_BYTES:
+                        raise EastmoneyBrowserTransportError(
+                            "browser host response exceeded the size limit"
+                        )
+        except EastmoneyBrowserTransportError:
+            raise
+        except (OSError, TimeoutError) as exc:
+            raise EastmoneyBrowserTransportError(
+                "browser host is unavailable or navigation timed out"
+            ) from exc
+        if b"\n" not in response_bytes:
+            raise EastmoneyBrowserTransportError(
+                "browser host returned an incomplete response"
+            )
+        try:
+            payload = json.loads(bytes(response_bytes).split(b"\n", 1)[0])
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EastmoneyBrowserTransportError(
+                "browser host returned an invalid response"
+            ) from exc
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            message = (
+                payload.get("error")
+                if isinstance(payload, dict) and isinstance(payload.get("error"), str)
+                else "browser host navigation failed"
+            )
+            raise EastmoneyBrowserTransportError(message)
+        try:
+            final_url = payload.get("final_url")
+            if not isinstance(final_url, str):
+                raise ValueError("missing final URL")
+            _validate_browser_url(final_url)
+            body = base64.b64decode(payload["body_base64"], validate=True)
+            headers = payload.get("headers")
+            if not isinstance(headers, dict):
+                raise ValueError("invalid headers")
+            sanitized_headers = {
+                str(key).lower(): str(value)
+                for key, value in headers.items()
+                if str(key).lower() != "set-cookie"
+            }
+            return EastmoneyBrowserResponse(
+                status_code=int(payload["status_code"]),
+                body=body,
+                headers=sanitized_headers,
+                final_url=final_url,
+            )
+        except (KeyError, TypeError, ValueError, base64.binascii.Error) as exc:
+            raise EastmoneyBrowserTransportError(
+                "browser host response has an invalid shape"
             ) from exc

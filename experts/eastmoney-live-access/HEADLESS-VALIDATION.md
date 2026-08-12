@@ -38,10 +38,11 @@ not a reliable replacement for the already proven browser-managed context in
 the current source environment. “Non-GUI” improves deployment convenience;
 it does not guarantee source acceptance.
 
-The reusable success is therefore two-part:
+The reusable implementation is therefore two-part:
 
-- production: inject a caller-owned normal browser Page through
-  `EastmoneyBrowserTransport`;
+- integration: inject a caller-owned normal browser Page through
+  `EastmoneyBrowserTransport`, without claiming this makes the source
+  unattended-production-ready;
 - diagnosis/server experimentation: use `reproduce_headless.py`, which always
   reports `PASS`, `ACCESS_BLOCK`, schema mismatch, transport failure, or
   repeated pagination explicitly and never attempts a bypass.
