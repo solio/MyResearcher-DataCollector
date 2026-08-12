@@ -22,6 +22,7 @@ from myresearcher_collector.integration import (
     execute_and_persist_collection,
     execute_and_persist_xueqiu_collection,
 )
+from myresearcher_collector.detail_enrichment import execute_detail_enrichment
 from myresearcher_collector.backfill import (
     BackfillConfigError,
     range_as_dict,
@@ -251,6 +252,16 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
     backfill_mode.add_argument("--plan-only", action="store_true")
     backfill_mode.add_argument("--confirm-live", action="store_true")
+    enrich = subparsers.add_parser("enrich-details", help="fill missing content for 40-character Eastmoney titles")
+    enrich.add_argument("--source", choices=("eastmoney_guba",), required=True)
+    enrich.add_argument("--stock", required=True)
+    enrich.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
+    enrich.add_argument("--min-delay", type=float, default=3.0)
+    enrich.add_argument("--max-delay", type=float, default=10.0)
+    _add_eastmoney_acquisition_argument(enrich)
+    enrich_mode = enrich.add_mutually_exclusive_group(required=True)
+    enrich_mode.add_argument("--plan-only", action="store_true")
+    enrich_mode.add_argument("--confirm-live", action="store_true")
     batch_mode.add_argument(
         "--confirm-live", action="store_true",
         help="explicitly allow real sequential HTTPS requests",
@@ -717,6 +728,27 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(summary, ensure_ascii=False, indent=2, default=_json_default))
         return 0 if summary["status"] == "SUCCESS" else 1
+
+    if args.command == "enrich-details":
+        try:
+            if args.source != "eastmoney_guba" or args.acquisition_method != "existing-chrome-dom":
+                raise ValueError("detail enrichment requires existing-chrome-dom")
+            if len(args.stock) != 6 or not args.stock.isdigit():
+                raise ValueError("stock must be six decimal digits")
+            if args.min_delay < 3.0 or args.max_delay < args.min_delay:
+                raise ValueError("delay must be 3..10 seconds")
+            if args.plan_only:
+                print(json.dumps({"mode":"PLAN_ONLY","source":args.source,"stock":args.stock,
+                                  "data_dir":str(args.data_dir.expanduser().resolve())}, indent=2))
+                return 0
+            report = execute_detail_enrichment(
+                db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
+                transport=EastmoneyExistingChromeDomTransport(), min_delay=args.min_delay, max_delay=args.max_delay)
+        except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            print(f"detail enrichment error: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=_json_default))
+        return 0 if not report["stopped"] else 1
 
     if args.command == "xueqiu":
         try:
