@@ -1,6 +1,6 @@
 # Eastmoney Live Access Expert Record
 
-Status: `SOURCE_SEMANTICS: PASS; UNATTENDED_LIVE_ACCESS: BLOCKED`
+Status: `SOURCE_SEMANTICS: PASS; STANDALONE_EXISTING_CHROME_BOUNDED: PASS; BULK: NOT VALIDATED`
 
 Observed at: `2026-08-11T09:42:30Z` / `2026-08-11T17:42:30+08:00`
 
@@ -13,6 +13,13 @@ Revalidated at: `2026-08-12` (Asia/Shanghai)
 > [2026-08-12-retry-report.md](2026-08-12-retry-report.md). The historical
 > one-list/one-detail success below remains evidence of page semantics, not an
 > unattended production PASS.
+
+> Later on 2026-08-12, a standalone Python process successfully controlled the
+> user's already-running Google Chrome session through macOS Apple Events and
+> completed page1, page2+detail and page3+detail with random 3–10 second delays.
+> This uses no Codex browser and no new profile. See
+> [2026-08-12-existing-chrome-success.md](2026-08-12-existing-chrome-success.md).
+> Full-page detail collection and 30-stock/100-day Backfill remain unvalidated.
 
 ## Problem
 

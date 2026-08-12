@@ -1,6 +1,6 @@
 # Source Spec: `eastmoney_guba`
 
-Status: `SEMANTICS APPROVED; UNATTENDED LIVE ACCESS BLOCKED`
+Status: `SEMANTICS APPROVED; BOUNDED EXISTING-CHROME ACCESS PASSED; BULK NOT VALIDATED`
 
 Owner: Source Researcher / Phase 1 Research Lead
 
@@ -32,20 +32,20 @@ Do not include credentials, cookie values, authorization headers or unnecessary 
 - method: `GET`.
 - approved list payload: the `var article_list=<JSON>;` assignment embedded in HTML. Do not derive precise time or identity from display-only table text when the structured object is present.
 - approved detail payload: the `var post_article=<JSON>;` assignment embedded in the exact detail HTML.
-- current availability: the public list and standard detail HTML still expose usable embedded data in some established browser contexts. Revalidation on 2026-08-12 showed that fresh headless/headful Chrome contexts could be challenged immediately, a persistent context could pass once and fail after restart, and a manually verified long-lived context could be challenged again between otherwise successful detail requests.
-- evidence/status: `SEMANTICS APPROVED; UNATTENDED LIVE ACCESS BLOCKED` — `experts/eastmoney-live-access/2026-08-12-retry-report.md`; internal JSON APIs referenced by source scripts remain unapproved entry points.
+- current availability: the public list and standard detail HTML expose usable embedded data in established browser contexts. Revalidation on 2026-08-12 showed fresh profiles could be challenged, but a later standalone Python process controlling the user's already-running Google Chrome session passed page1, page2+detail and page3+detail with random 3–10 second delays and no operator intervention.
+- evidence/status: `BOUNDED EXISTING-CHROME ACCESS PASSED; BULK NOT VALIDATED` — `experts/eastmoney-live-access/2026-08-12-existing-chrome-success.md`; internal JSON APIs referenced by source scripts remain unapproved entry points.
 
 ## 3. Request
 
 - parameters: six-digit requested `stock_code`; integer `page >= 1`.
-- access mode: a caller-owned, long-lived normal browser page/context is the only supported experimental live transport. It is an integration boundary, not evidence of reliable source availability. The Collector receives only the main-document response bytes and sanitized response metadata.
+- access mode: a caller-owned, long-lived normal browser page/context is required. The currently successful bounded path controls a dedicated tab in the user's already-running macOS Google Chrome through Apple Events, without opening/copying the profile or exporting browser state. This remains an integration proof, not yet a bulk availability guarantee.
 - required non-secret headers: browser-owned. Do not reproduce a browser fingerprint in urllib/curl and do not synthesize challenge parameters.
 - cookies required: `UNKNOWN`; browser state was not inspected. Any session state remains browser-owned and is never exported to Collector evidence or logs.
 - authentication required: `NO` for the observed approved surfaces.
 - secret injection mechanism: none.
 - redirects: follow only HTTPS redirects to source-owned Eastmoney hosts; record the final URL.
 - verification behavior: an HTTP-200 identity-verification page is `access_block`, not valid content and not no-data. The browser transport must not solve or bypass a CAPTCHA/WAF page. A human may complete a visible challenge only in an explicitly operator-assisted experiment; this does not make the source unattended-production-ready because a challenge may recur on later detail requests.
-- evidence/status: `LIVE AVAILABILITY BLOCKED` — bounded normal-browser observations succeeded, but no tested fresh or manually verified session completed the required normal Collector workload without intermittent verification. Exact low-level risk signal remains `UNKNOWN`.
+- evidence/status: `BOUNDED LIVE PATH PASSED; FULL WORKLOAD NOT VALIDATED` — the existing-user Chrome path completed two paginated list/detail pairs without verification; it has not yet completed every detail on a representative page or the requested Backfill workload. Exact low-level risk signal remains `UNKNOWN`.
 
 ## 4. Pagination
 
@@ -256,3 +256,4 @@ Developer acceptance must include deterministic offline fixtures/tests for: page
 | 2026-08-11 | Added the Reviewer-approved fixed three-page fresh-checkpoint bootstrap and forward-baseline semantics without changing established-checkpoint incremental behavior | `runs/phase-02-bootstrap-alignment/` | Developer / Bootstrap Runtime Alignment |
 | 2026-08-11 | Amended live access to a browser-managed anonymous HTML transport after urllib/curl verification responses and successful normal-browser list/detail observations | `experts/eastmoney-live-access/` | Source access investigation / user-authorized resolution |
 | 2026-08-12 | Reclassified unattended live availability as blocked after fresh-context failures and recurrent graphical verification inside one manually verified detail sequence; retained the browser host only as an experimental/operator-assisted boundary | `experts/eastmoney-live-access/2026-08-12-retry-report.md` | Expert Developer revalidation |
+| 2026-08-12 | Added a later bounded PASS: standalone Python controlled the already-running user Google Chrome session through Apple Events and completed page1, page2+detail and page3+detail with random 3–10 second delays; bulk workload remains unvalidated | `experts/eastmoney-live-access/2026-08-12-existing-chrome-success.md` | Expert Developer revalidation |

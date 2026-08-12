@@ -1,5 +1,13 @@
 # 东方财富 Live Access 重试报告（2026-08-12）
 
+> 后续更新：同日已经找到并实测通过一个脱离 Codex 的有界路径——独立 Python
+> 进程通过 macOS Apple Events 控制用户已经运行的日常 Google Chrome 会话，按
+> 随机 3–10 秒完成 page1、page2+详情、page3+详情，全部严格解析通过且未出现
+> 验证。见 [2026-08-12-existing-chrome-success.md](2026-08-12-existing-chrome-success.md)。
+> 本报告下文的 `UNATTENDED_LIVE_ACCESS = BLOCKED` 是该成功之前针对新 profile /
+> 独立 Playwright host 的阶段性结论；当前修订为“有界独立路径 PASS，批量 Backfill
+> 尚未验证”。
+
 ## 结论
 
 页面 URL、`article_list` / `post_article` 数据语义和严格解析器均已再次验证；
