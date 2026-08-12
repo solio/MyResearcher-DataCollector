@@ -12,6 +12,11 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS posts (
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
  PRIMARY KEY(source, source_item_id));
 CREATE INDEX IF NOT EXISTS idx_posts_stock_published ON posts(stock_code,published_at);"""
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS backfill_state (
+ source TEXT NOT NULL, stock_code TEXT NOT NULL, last_successful_page INTEGER NOT NULL,
+ PRIMARY KEY(source, stock_code)
+);"""
 
 def _now(): return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00","Z")
 
@@ -44,3 +49,10 @@ class SimplePostStore:
     def rows(self, source, stock_code):
         self.conn.row_factory=sqlite3.Row
         return self.conn.execute("SELECT * FROM posts WHERE source=? AND stock_code=? ORDER BY published_at,source_item_id",(source,stock_code)).fetchall()
+    def last_successful_page(self, source: str, stock_code: str) -> int:
+        row = self.conn.execute("SELECT last_successful_page FROM backfill_state WHERE source=? AND stock_code=?", (source, stock_code)).fetchone()
+        return int(row[0]) if row else 0
+    def mark_page(self, source: str, stock_code: str, page: int) -> None:
+        self.conn.execute("""INSERT INTO backfill_state(source,stock_code,last_successful_page) VALUES(?,?,?)
+            ON CONFLICT(source,stock_code) DO UPDATE SET last_successful_page=max(last_successful_page,excluded.last_successful_page)""", (source, stock_code, page))
+        self.conn.commit()

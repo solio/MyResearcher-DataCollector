@@ -18,6 +18,7 @@ from typing import Callable
 
 from myresearcher_collector.integration import (
     execute_and_persist_backfill_collection,
+    execute_and_persist_simple_backfill_collection,
     execute_and_persist_collection,
     execute_and_persist_xueqiu_collection,
 )
@@ -566,24 +567,25 @@ def execute_backfill_cli(
         to_value=args.to_value, days=args.days,
     )
     data_dir = args.data_dir.expanduser().resolve()
+    from myresearcher_collector.simple_store import SimplePostStore
+    post_store = SimplePostStore(data_dir / "collector.db")
     start_page = args.start_page or (
-        _last_successful_backfill_page(data_dir, args.source, args.stock) + 1
+        post_store.last_successful_page(args.source, args.stock) + 1
         if getattr(args, "list_only", False)
         else 1
     )
+    post_store.close()
     try:
-        execution = execute_and_persist_backfill_collection(
-            db_path=data_dir / "collector.db", raw_data_dir=data_dir,
+        execution = execute_and_persist_simple_backfill_collection(
+            db_path=data_dir / "collector.db",
             stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
             transport=transport,
-            include_details=False,
             start_page=start_page,
             collector_config=CollectorConfig(
                 timeout_seconds=args.timeout,
                 min_interval_seconds=args.min_interval,
                 randomize_pacing=True,
             ),
-            max_pages=None,
         )
     finally:
         close = getattr(transport, "close", None)

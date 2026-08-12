@@ -30,6 +30,7 @@ from .sources.xueqiu.collector import (
 )
 from .storage import PersistenceError, RawEvidenceStore, SafeFrontier, SQLitePersistence
 from .storage.models import PublishedRaw
+from .simple_store import SimplePostStore
 
 
 @dataclass
@@ -154,6 +155,47 @@ class _CapturingEvidenceStore:
     def put(self, kind: str, source_item_id: str | None, payload: bytes) -> str:
         del source_item_id
         return self.transport.consume_success(kind, payload)
+
+
+class _NoopEvidenceStore:
+    """Collector protocol adapter for the post-centric path; no disk writes."""
+    def put(self, kind: str, source_item_id: str | None, payload: bytes) -> str:
+        return f"noop://{kind}/{source_item_id or 'page'}"
+
+
+def execute_and_persist_simple_backfill_collection(
+    *, db_path: str | Path, stock_code: str, from_time: datetime, to_time: datetime,
+    transport: Transport, collector_config: CollectorConfig | None = None,
+    clock: Callable[[], datetime] | None = None, sleep_fn: Callable[[float], None] = time.sleep,
+    start_page: int = 1,
+) -> PersistentBackfillCollection:
+    """Run list-only Eastmoney collection directly into one-row ``posts``."""
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    store = SimplePostStore(db_path)
+    if start_page < 1:
+        raise ValueError("start_page must be at least 1")
+    config = collector_config or CollectorConfig()
+    collector = EastmoneyGubaCollector(
+        transport, evidence_store=_NoopEvidenceStore(), config=config,
+        sleep_fn=sleep_fn, clock=clock,
+    )
+    try:
+        execution = collector.collect_backfill(
+            stock_code, from_time=from_time, to_time=to_time,
+            max_pages=None, include_details=False, start_page=start_page,
+        )
+        for item in execution.result.items:
+            store.upsert_source_item(item, stock_code=stock_code, content=None)
+        if execution.pages_scanned:
+            store.mark_page("eastmoney_guba", stock_code, start_page + execution.pages_scanned - 1)
+        return PersistentBackfillCollection(
+            run_id="simple-" + uuid.uuid4().hex,
+            execution=execution, db_path=Path(db_path), raw_data_dir=Path(db_path).parent,
+            records_new=0, records_existing=0, records_versioned=0,
+            checkpoint_before=None, checkpoint_after=None,
+        )
+    finally:
+        store.close()
 
 
 @dataclass(frozen=True)

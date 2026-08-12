@@ -82,7 +82,7 @@ def test_backfill_host_can_inject_browser_owned_transport(
         )
 
     monkeypatch.setattr(
-        cli_main, "execute_and_persist_backfill_collection", fake_execute
+        cli_main, "execute_and_persist_simple_backfill_collection", fake_execute
     )
 
     report = execute_backfill_cli(args, transport=injected)
