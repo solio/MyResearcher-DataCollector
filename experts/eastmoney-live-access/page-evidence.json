@@ -1,0 +1,38 @@
+{
+  "captured_at_utc": "2026-08-11T09:42:30Z",
+  "source": "eastmoney_guba",
+  "stock_code": "601012",
+  "access": "normal_browser_managed_anonymous",
+  "cookies_inspected": false,
+  "storage_inspected": false,
+  "captcha_or_waf_bypass": false,
+  "list": {
+    "url": "https://guba.eastmoney.com/list,601012,f.html",
+    "final_url": "https://guba.eastmoney.com/list,601012,f.html",
+    "title": "隆基绿能(601012)股吧_隆基绿能怎么样_分析讨论社区—东方财富网",
+    "content_type": "text/html",
+    "html_characters": 230919,
+    "article_list_present": true,
+    "article_list_rc": 1,
+    "article_list_count_field": 663119,
+    "page_rows": 80,
+    "post_type_0_rows": 78,
+    "post_type_20_rows": 2
+  },
+  "detail_proof": {
+    "url": "https://guba.eastmoney.com/news,601012,1757445386.html",
+    "final_url": "https://guba.eastmoney.com/news,601012,1757445386.html",
+    "title": "通威股价会反超隆基这是趋势_隆基绿能(601012)股吧_东方财富网股吧",
+    "content_type": "text/html",
+    "post_article_present": true,
+    "post_id": "1757445386",
+    "published_at_source": "2026-08-11 17:08:33",
+    "content_characters": 316
+  },
+  "retention": {
+    "full_html_committed": false,
+    "post_body_committed": false,
+    "author_profile_fields_committed": false,
+    "sanitized_post_list": "post-list.md"
+  }
+}

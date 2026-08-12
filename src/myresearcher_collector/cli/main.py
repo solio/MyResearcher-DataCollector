@@ -37,7 +37,6 @@ from myresearcher_collector.sources.eastmoney_guba import (
     BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
     EastmoneyGubaCollector,
-    UrllibTransport,
 )
 from myresearcher_collector.sources.eastmoney_guba.collector import Transport
 from myresearcher_collector.sources.xueqiu import (
@@ -263,7 +262,7 @@ def live_smoke_plan(args: argparse.Namespace) -> dict[str, object]:
         "mode": "PLAN_ONLY",
         "network_execution": False,
         "source": "eastmoney_guba",
-        "source_access": "HTTPS_GET_ONLY",
+        "source_access": "BROWSER_MANAGED_ANONYMOUS",
         "stock_code": args.stock_code,
         "max_pages": args.max_pages,
         "timeout_seconds": args.timeout,
@@ -289,6 +288,7 @@ def persistent_run_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": checkpoint,
         "max_pages": args.max_pages,
         "bootstrap_min_pages": BOOTSTRAP_MIN_PAGES,
+        "source_access": "BROWSER_MANAGED_ANONYMOUS",
         "data_dir": str(data_dir),
         "sqlite_location": str(data_dir / "collector.db"),
         "raw_evidence_location": str(data_dir / "raw" / "eastmoney_guba"),
@@ -303,20 +303,20 @@ def execute_live_smoke(
     run_id: str | None = None,
 ) -> dict[str, object]:
     """Execute the existing Collector/persistence chain; tests inject transport."""
-    data_dir, user_agent = _validated_live_settings(args)
+    data_dir, _user_agent = _validated_live_settings(args)
     state = _data_dir_state(data_dir)
     if state not in {"absent", "empty"}:
         raise ValueError("live smoke data_dir must be a new or empty directory")
+    if transport is None:
+        raise RuntimeError(
+            "browser-managed Eastmoney transport must be supplied by the host"
+        )
     run_id = run_id or uuid.uuid4().hex
     execute_and_persist_collection(
         db_path=data_dir / "collector.db",
         raw_data_dir=data_dir,
         stock_code=args.stock_code,
-        transport=(
-            transport
-            if transport is not None
-            else UrllibTransport(user_agent=user_agent)
-        ),
+        transport=transport,
         run_id=run_id,
         collector_config=CollectorConfig(
             max_pages=args.max_pages,
@@ -342,17 +342,17 @@ def execute_persistent_run(
     run_id: str | None = None,
 ) -> dict[str, object]:
     """Execute one reusable scope; NULL checkpoint selects bounded bootstrap."""
-    data_dir, user_agent, _, _ = _validated_persistent_settings(args)
+    data_dir, _user_agent, _, _ = _validated_persistent_settings(args)
+    if transport is None:
+        raise RuntimeError(
+            "browser-managed Eastmoney transport must be supplied by the host"
+        )
     run_id = run_id or uuid.uuid4().hex
     execute_and_persist_collection(
         db_path=data_dir / "collector.db",
         raw_data_dir=data_dir,
         stock_code=args.stock_code,
-        transport=(
-            transport
-            if transport is not None
-            else UrllibTransport(user_agent=user_agent)
-        ),
+        transport=transport,
         run_id=run_id,
         collector_config=CollectorConfig(
             max_pages=args.max_pages,
@@ -407,17 +407,25 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
         "data_dir": str(data_dir),
-        "source_access": "BROWSER_MANAGED_OFFLINE_ONLY" if args.source == "xueqiu" else "HTTPS_GET_ONLY",
+        "source_access": "BROWSER_MANAGED_OFFLINE_ONLY" if args.source == "xueqiu" else "BROWSER_MANAGED_ANONYMOUS",
     }
 
 
-def execute_backfill_cli(args: argparse.Namespace) -> dict[str, object]:
+def execute_backfill_cli(
+    args: argparse.Namespace,
+    *,
+    transport: Transport | None = None,
+) -> dict[str, object]:
     if args.source != "eastmoney_guba":
         raise RuntimeError("xueqiu backfill live host is not wired; offline path is NOT_READY")
     if args.max_pages < 1:
         raise BackfillConfigError("max_pages must be at least 1")
     if args.min_interval < 2.5:
         raise BackfillConfigError("min_interval must be at least 2.5 seconds")
+    if transport is None:
+        raise RuntimeError(
+            "browser-managed Eastmoney transport must be supplied by the host"
+        )
     resolved = resolve_backfill_range(
         source=args.source, stock_code=args.stock, from_value=args.from_value,
         to_value=args.to_value, days=args.days,
@@ -426,7 +434,7 @@ def execute_backfill_cli(args: argparse.Namespace) -> dict[str, object]:
     execution = execute_and_persist_backfill_collection(
         db_path=data_dir / "collector.db", raw_data_dir=data_dir,
         stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
-        transport=UrllibTransport(),
+        transport=transport,
         collector_config=CollectorConfig(timeout_seconds=args.timeout, min_interval_seconds=args.min_interval, max_pages=args.max_pages),
         max_pages=args.max_pages,
     )

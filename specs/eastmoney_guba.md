@@ -6,6 +6,8 @@ Owner: Source Researcher / Phase 1 Research Lead
 
 Observed at: 2026-08-10, Asia/Shanghai
 
+Access amended at: 2026-08-11, Asia/Shanghai
+
 Evidence location: `runs/phase-01-round-01/research-evidence.md`
 
 This approval freezes the Phase 1 standard top-level-post (`post_type=0`) acquisition semantics below. It does not approve alternate post types, reply collection, DataClean implementation, sentiment processing, a storage backend or a second source.
@@ -30,18 +32,20 @@ Do not include credentials, cookie values, authorization headers or unnecessary 
 - method: `GET`.
 - approved list payload: the `var article_list=<JSON>;` assignment embedded in HTML. Do not derive precise time or identity from display-only table text when the structured object is present.
 - approved detail payload: the `var post_article=<JSON>;` assignment embedded in the exact detail HTML.
-- current availability: HTTP 200 with usable embedded data was reproduced anonymously for list page 1, page 2 and a standard detail page.
-- evidence/status: `APPROVED` — current observations and source-owned `list.js`/`news.js`; internal JSON APIs referenced by those scripts are not approved entry points in this spec.
+- current availability: the public list and standard detail HTML still expose usable embedded data, but on 2026-08-11 anonymous Python urllib and direct curl received an identity-verification response while a normal anonymous browser navigation returned `article_list` and `post_article` from the same approved URLs.
+- evidence/status: `APPROVED WITH ACCESS AMENDMENT` — `experts/eastmoney-live-access/`; internal JSON APIs referenced by source scripts remain unapproved entry points.
 
 ## 3. Request
 
 - parameters: six-digit requested `stock_code`; integer `page >= 1`.
-- required non-secret headers: a descriptive, configurable `User-Agent`; normal HTML `Accept` is allowed. No browser impersonation requirement was established.
-- cookies required: `NO` for the observed approved surfaces.
+- access mode: a normal browser-managed page/context is the approved live transport while plain HTTP clients receive verification. The caller owns the browser; Collector receives only the main-document response bytes and sanitized response metadata.
+- required non-secret headers: browser-owned. Do not reproduce a browser fingerprint in urllib/curl and do not synthesize challenge parameters.
+- cookies required: `UNKNOWN`; browser state was not inspected. Any session state remains browser-owned and is never exported to Collector evidence or logs.
 - authentication required: `NO` for the observed approved surfaces.
 - secret injection mechanism: none.
 - redirects: follow only HTTPS redirects to source-owned Eastmoney hosts; record the final URL.
-- evidence/status: `APPROVED` — bounded public observations succeeded without authentication. `UNKNOWN`: whether the source may introduce future cookie or header requirements.
+- verification behavior: an HTTP-200 identity-verification page is `access_block`, not valid content and not no-data. The browser transport must not solve or bypass a CAPTCHA/WAF page.
+- evidence/status: `APPROVED WITH ACCESS AMENDMENT` — bounded normal-browser list and one standard detail observation succeeded without login; exact low-level risk signal remains `UNKNOWN`.
 
 ## 4. Pagination
 
@@ -220,6 +224,7 @@ Terminal outcomes for this source are frozen as follows:
 - sanitized response sample/reference: structural facts, byte sizes and SHA-256 values in `runs/phase-01-round-01/research-evidence.md`. Live bodies are not committed.
 - observations: list and detail returned HTTP 200; latest pages contained 80 items each; two IDs overlapped in sequential observations; exact publish and last-update fields were distinct.
 - evidence limitations: one stock, a short observation window, no load test, no forced 403/429/5xx, no historical-tail crawl, no verified reply response.
+- 2026-08-11 access amendment evidence: `experts/eastmoney-live-access/` records the urllib/curl verification split, a normal-browser `article_list` page with 80 rows and one matching standard `post_article` detail. No cookies, browser storage, full live HTML, content body or credentials are committed.
 
 ## 15. Acceptance Criteria
 
@@ -248,3 +253,4 @@ Developer acceptance must include deterministic offline fixtures/tests for: page
 | 2026-08-10 | Approved Phase 1 top-level-post source semantics and explicit exclusions | `runs/phase-01-round-01/research-evidence.md` | Source Researcher / Phase 1 Research Lead |
 | 2026-08-10 | Narrowed incremental observation semantics: no required historical detail refresh at/before watermark; preserve drift when source-item/detail facts are actually acquired | `runs/phase-01-round-05/evidence.md`, `runs/phase-01-round-06/decision.md` | Source Researcher / Phase 1 Spec Correction |
 | 2026-08-11 | Added the Reviewer-approved fixed three-page fresh-checkpoint bootstrap and forward-baseline semantics without changing established-checkpoint incremental behavior | `runs/phase-02-bootstrap-alignment/` | Developer / Bootstrap Runtime Alignment |
+| 2026-08-11 | Amended live access to a browser-managed anonymous HTML transport after urllib/curl verification responses and successful normal-browser list/detail observations | `experts/eastmoney-live-access/` | Source access investigation / user-authorized resolution |

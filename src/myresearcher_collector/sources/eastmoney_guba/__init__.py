@@ -1,5 +1,11 @@
 """Approved Eastmoney Guba source adapter."""
 
+from .browser_transport import (
+    EastmoneyBrowserBoundaryError,
+    EastmoneyBrowserResponse,
+    EastmoneyBrowserTransport,
+    EastmoneyBrowserTransportError,
+)
 from .collector import (
     BOOTSTRAP_MIN_PAGES,
     BackfillCollectionResult,
@@ -22,6 +28,10 @@ __all__ = [
     "BOOTSTRAP_MIN_PAGES",
     "BackfillCollectionResult",
     "CollectorConfig",
+    "EastmoneyBrowserBoundaryError",
+    "EastmoneyBrowserResponse",
+    "EastmoneyBrowserTransport",
+    "EastmoneyBrowserTransportError",
     "EastmoneyGubaCollector",
     "GubaDetailMismatch",
     "GubaParseError",
