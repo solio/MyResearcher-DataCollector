@@ -67,6 +67,9 @@ DEFAULT_BROWSER_PROFILE = Path(
         ".runtime/eastmoney-browser-profile",
     )
 )
+DEFAULT_DATA_ROOT = Path(
+    os.environ.get("MYRESEARCHER_COLLECTOR_DATA_ROOT", "data")
+)
 EASTMONEY_LIVE_ACCESS = "EXISTING_USER_CHROME_DOM_OR_HTTP_BROWSER_HOST"
 
 
@@ -142,7 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument(
         "--data-dir",
         type=Path,
-        required=True,
+        default=DEFAULT_DATA_ROOT,
         help="new or empty local directory for collector.db and raw evidence",
     )
     live.add_argument("--max-pages", type=int, choices=(1, 2), default=1)
@@ -175,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     persistent.add_argument(
         "--data-dir",
         type=Path,
-        required=True,
+        default=DEFAULT_DATA_ROOT,
         help="persistent directory for collector.db and raw evidence",
     )
     persistent.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
@@ -203,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_run = subparsers.add_parser(
         "inspect-run", help="read a persisted run summary without modifying storage"
     )
-    inspect_run.add_argument("--data-dir", type=Path, required=True)
+    inspect_run.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     inspect_run.add_argument("--run-id", default=None, help="default: latest persisted run")
 
     batch = subparsers.add_parser(
@@ -211,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="collect a static target set sequentially through the single-stock boundary",
     )
     batch.add_argument("--targets", type=Path, required=True, help="JSON target config")
-    batch.add_argument("--data-dir", type=Path, required=True)
+    batch.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     batch.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     batch.add_argument("--timeout", type=float, default=20.0)
     _add_browser_socket_argument(batch)
@@ -230,7 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     range_group.add_argument("--from", dest="from_value", help="inclusive ISO date/timestamp")
     range_group.add_argument("--days", type=int, help="look back N inclusive Asia/Shanghai calendar days")
     backfill.add_argument("--to", dest="to_value", help="inclusive ISO date/timestamp")
-    backfill.add_argument("--data-dir", type=Path, required=True)
+    backfill.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     backfill.add_argument(
         "--start-page", type=int, default=None,
         help="explicit recovery page to request first; defaults to the next persisted page",
@@ -256,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="collect Xueqiu top-level A-share discussions through a browser-managed session",
     )
     xueqiu.add_argument("stock_code", help="six-digit A-share stock code")
-    xueqiu.add_argument("--data-dir", type=Path, required=True)
+    xueqiu.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     xueqiu.add_argument("--max-pages", type=int, default=XUEQIU_BOOTSTRAP_MIN_PAGES)
     xueqiu.add_argument("--timeout", type=float, default=20.0)
     xueqiu.add_argument("--min-interval", type=float, default=3.0)
@@ -271,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
         "raw-retention",
         help="report or explicitly purge expired local raw response bodies",
     )
-    retention.add_argument("--data-dir", type=Path, required=True)
+    retention.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     retention.add_argument("--retention-days", type=int, default=RAW_BODY_RETENTION_DAYS)
     retention.add_argument("--dry-run", action="store_true", help="report eligible bodies without deleting")
     retention.add_argument("--confirm", action="store_true", help="confirm physical body deletion")

@@ -44,3 +44,10 @@ python -m pytest -q
 # From a source checkout, exercise the source boundary without a package install:
 PYTHONPATH=src python -m myresearcher_collector.cli --help
 ```
+
+## Canonical Storage
+
+Normal collection and backfill commands use one shared collector data root
+(`data/` by default) and one `collector.db`. Sources, stocks, and runs are
+separated by metadata inside the database. Use `--data-dir` only for tests,
+smoke runs, or explicitly isolated experiments.
