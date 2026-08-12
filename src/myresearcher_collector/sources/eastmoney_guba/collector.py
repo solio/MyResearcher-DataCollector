@@ -138,6 +138,7 @@ class CollectorConfig:
     max_backoff_seconds: float = 30.0
     max_retry_after_seconds: float = 60.0
     min_interval_seconds: float = 3.0
+    randomize_pacing: bool = False
 
 
 @dataclass(frozen=True)
@@ -296,7 +297,10 @@ class EastmoneyGubaCollector:
     def _rate_limit(self) -> None:
         now = self.monotonic_fn()
         if self._last_request_at is not None:
-            remaining = self.config.min_interval_seconds - (now - self._last_request_at)
+            interval = self.config.min_interval_seconds
+            if self.config.randomize_pacing:
+                interval = self.jitter_fn(max(3.0, interval), 10.0)
+            remaining = interval - (now - self._last_request_at)
             if remaining > 0:
                 self.sleep_fn(remaining)
         self._last_request_at = self.monotonic_fn()
@@ -729,6 +733,7 @@ class EastmoneyGubaCollector:
         from_time: datetime,
         to_time: datetime,
         max_pages: int | None = None,
+        include_details: bool = True,
     ) -> BackfillCollectionResult:
         """Traverse newest-to-oldest pages for an inclusive historical range.
 
@@ -757,8 +762,36 @@ class EastmoneyGubaCollector:
         previous_page_signature: tuple[str, ...] | None = None
         run_seen_ids: set[str] = set()
 
-        def build_item(merged: Mapping[str, Any], list_ref: str, detail_ref: str,
-                       list_final_url: str, detail_final_url: str) -> GubaSourceItem:
+        def build_list_only_item(row: Any, list_ref: str, list_final_url: str) -> GubaSourceItem:
+            collected_at = self.clock()
+            if collected_at.tzinfo is None:
+                collected_at = collected_at.replace(tzinfo=timezone.utc)
+            metadata = dict(row.source_metadata)
+            metadata["final_urls"] = {"list": list_final_url}
+            metadata["content_source"] = "list_title"
+            return GubaSourceItem(
+                source=SOURCE, schema_version=SCHEMA_VERSION,
+                source_item_id=row.source_item_id,
+                requested_bar_code=row.requested_bar_code,
+                canonical_bar_code=row.canonical_bar_code,
+                canonical_bar_name=row.canonical_bar_name,
+                author_id=row.author_id, author_name=row.author_name,
+                title=row.title, content=row.title or "",
+                published_at=row.published_at,
+                last_updated_at=row.last_updated_at,
+                display_time=row.display_time, url=row.url,
+                post_type=row.post_type, post_state=row.post_state,
+                post_top_status=row.post_top_status,
+                read_count=row.read_count, reply_count=row.reply_count,
+                like_count=row.like_count, forward_count=row.forward_count,
+                source_post_id=row.source_post_id, collected_at=collected_at,
+                source_times_raw=row.source_times_raw, source_metadata=metadata,
+                raw_ref={"list": list_ref}, observation_version=1,
+                final_url=list_final_url,
+            )
+
+        def build_detail_item(merged: Mapping[str, Any], list_ref: str, detail_ref: str,
+                              list_final_url: str, detail_final_url: str) -> GubaSourceItem:
             collected_at = self.clock()
             if collected_at.tzinfo is None:
                 collected_at = collected_at.replace(tzinfo=timezone.utc)
@@ -766,17 +799,12 @@ class EastmoneyGubaCollector:
             metadata["final_urls"] = {"list": list_final_url, "detail": detail_final_url}
             return GubaSourceItem(
                 source=SOURCE, schema_version=SCHEMA_VERSION,
-                source_item_id=merged["source_item_id"],
-                requested_bar_code=merged["requested_bar_code"],
-                canonical_bar_code=merged["canonical_bar_code"],
-                canonical_bar_name=merged["canonical_bar_name"],
-                author_id=merged["author_id"], author_name=merged["author_name"],
-                title=merged["title"], content=merged["content"],
-                published_at=merged["published_at"],
-                last_updated_at=merged["last_updated_at"],
-                display_time=merged["display_time"], url=merged["url"],
-                post_type=merged["post_type"], post_state=merged["post_state"],
-                post_top_status=merged["post_top_status"],
+                source_item_id=merged["source_item_id"], requested_bar_code=merged["requested_bar_code"],
+                canonical_bar_code=merged["canonical_bar_code"], canonical_bar_name=merged["canonical_bar_name"],
+                author_id=merged["author_id"], author_name=merged["author_name"], title=merged["title"],
+                content=merged["content"], published_at=merged["published_at"],
+                last_updated_at=merged["last_updated_at"], display_time=merged["display_time"], url=merged["url"],
+                post_type=merged["post_type"], post_state=merged["post_state"], post_top_status=merged["post_top_status"],
                 read_count=merged["read_count"], reply_count=merged["reply_count"],
                 like_count=merged["like_count"], forward_count=merged["forward_count"],
                 source_post_id=merged["source_post_id"], collected_at=collected_at,
@@ -836,6 +864,11 @@ class EastmoneyGubaCollector:
                 if row.source_item_id in run_seen_ids:
                     continue
                 records_in_range += 1
+                if not include_details:
+                    items.append(build_list_only_item(row, page_ref, page_final_url))
+                    run_seen_ids.add(row.source_item_id)
+                    counters.records_parsed += 1
+                    continue
                 counters.details_requested += 1
                 try:
                     detail_html, raw_detail, _, detail_final_url = self._fetch(self.detail_url(row.url), counters)
@@ -847,26 +880,15 @@ class EastmoneyGubaCollector:
                     counters.records_failed += 1
                     page_detail_failure = True
                     failures.append(f"detail {row.source_item_id}: schema_mismatch")
-                    result = CollectionResult(
-                        CollectionStatus.SPEC_MISMATCH, items, counters, failures,
-                        "detail_schema_mismatch", None, None,
-                    )
-                    return BackfillCollectionResult(
-                        result=result, pages_scanned=counters.pages_success,
-                        records_received=counters.records_received,
-                        records_in_range=records_in_range,
-                        records_failed=counters.records_failed,
-                        earliest_observed_at=earliest,
-                        latest_observed_at=latest,
-                        range_complete=False,
-                    )
+                    result = CollectionResult(CollectionStatus.SPEC_MISMATCH, items, counters, failures, "detail_schema_mismatch", None, None)
+                    return BackfillCollectionResult(result=result, pages_scanned=counters.pages_success, records_received=counters.records_received, records_in_range=records_in_range, records_failed=counters.records_failed, earliest_observed_at=earliest, latest_observed_at=latest, range_complete=False)
                 except (GubaDetailMismatch, GubaParseError, FetchFailure) as exc:
                     counters.details_failed += 1
                     counters.records_failed += 1
                     page_detail_failure = True
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
-                items.append(build_item(merged, page_ref, detail_ref, page_final_url, detail_final_url))
+                items.append(build_detail_item(merged, page_ref, detail_ref, page_final_url, detail_final_url))
                 run_seen_ids.add(row.source_item_id)
                 counters.details_success += 1
                 counters.records_parsed += 1

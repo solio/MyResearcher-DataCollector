@@ -433,8 +433,7 @@ def execute_and_persist_collection(
             observations = []
             for item in result.items:
                 links = []
-                for role in ("list", "detail"):
-                    token = item.raw_ref.get(role)
+                for role, token in item.raw_ref.items():
                     if token is None or not token.startswith("capture://event/"):
                         raise PersistenceError("collector item has no persisted raw evidence token")
                     ordinal = int(token.rsplit("/", 1)[-1])
@@ -473,6 +472,7 @@ def execute_and_persist_backfill_collection(
     clock: Callable[[], datetime] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_pages: int | None = None,
+    include_details: bool = True,
 ) -> PersistentBackfillCollection:
     """Persist one Eastmoney backfill without ever advancing its checkpoint."""
     run_id = run_id or uuid.uuid4().hex
@@ -503,6 +503,7 @@ def execute_and_persist_backfill_collection(
         )
         execution = collector.collect_backfill(
             stock_code, from_time=from_time, to_time=to_time, max_pages=max_pages,
+            include_details=include_details,
         )
         result = execution.result
         evidence_ids: dict[int, str] = {}
@@ -549,8 +550,7 @@ def execute_and_persist_backfill_collection(
             observations = []
             for item in result.items:
                 links = []
-                for role in ("list", "detail"):
-                    token = item.raw_ref.get(role)
+                for role, token in item.raw_ref.items():
                     if token is None or not token.startswith("capture://event/"):
                         raise PersistenceError("collector item has no persisted raw evidence token")
                     ordinal = int(token.rsplit("/", 1)[-1])

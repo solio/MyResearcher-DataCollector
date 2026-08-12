@@ -364,9 +364,15 @@ def parse_detail_page(html: str) -> GubaDetail:
 def merge_list_and_detail(item: GubaListItem, detail: GubaDetail) -> dict[str, Any]:
     if item.source_item_id != detail.source_item_id:
         raise GubaDetailMismatch("list/detail source_item_id mismatch")
-    for name in ("author_id", "author_name", "canonical_bar_code", "title", "published_at"):
+    for name in ("author_id", "author_name", "canonical_bar_code", "published_at"):
         if getattr(item, name) != getattr(detail, name):
             raise GubaDetailMismatch(f"list/detail {name} mismatch")
+    # Historical DOM detail pages can omit a title even though the list row
+    # has it. An omitted detail title is not an identity contradiction; keep
+    # the richer list observation. If both surfaces provide titles, they must
+    # still agree exactly.
+    if item.title and detail.title and item.title != detail.title:
+        raise GubaDetailMismatch("list/detail title mismatch")
     source_metadata = {**item.source_metadata, **detail.source_metadata}
     source_metadata["extra"] = {
         **item.source_metadata.get("extra", {}),
@@ -384,7 +390,7 @@ def merge_list_and_detail(item: GubaListItem, detail: GubaDetail) -> dict[str, A
         "canonical_bar_name": detail.canonical_bar_name,
         "author_id": detail.author_id,
         "author_name": detail.author_name,
-        "title": detail.title,
+        "title": detail.title or item.title,
         "content": detail.content,
         "published_at": detail.published_at,
         "last_updated_at": detail.last_updated_at,

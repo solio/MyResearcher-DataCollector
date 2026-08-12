@@ -231,6 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--to", dest="to_value", help="inclusive ISO date/timestamp")
     backfill.add_argument("--data-dir", type=Path, required=True)
     backfill.add_argument("--max-pages", type=int, default=100)
+    backfill.add_argument(
+        "--list-only",
+        action="store_true",
+        help="historical Eastmoney mode: persist list rows and never navigate post details",
+    )
     backfill.add_argument("--timeout", type=float, default=20.0)
     backfill.add_argument("--min-interval", type=float, default=3.0)
     _add_browser_socket_argument(backfill)
@@ -496,6 +501,7 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
         "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
+        "collection_mode": "list-only",
         "data_dir": str(data_dir),
         "source_access": (
             "BROWSER_MANAGED_OFFLINE_ONLY"
@@ -531,7 +537,13 @@ def execute_backfill_cli(
             db_path=data_dir / "collector.db", raw_data_dir=data_dir,
             stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
             transport=transport,
-            collector_config=CollectorConfig(timeout_seconds=args.timeout, min_interval_seconds=args.min_interval, max_pages=args.max_pages),
+            include_details=False,
+            collector_config=CollectorConfig(
+                timeout_seconds=args.timeout,
+                min_interval_seconds=args.min_interval,
+                max_pages=args.max_pages,
+                randomize_pacing=True,
+            ),
             max_pages=args.max_pages,
         )
     finally:
@@ -543,6 +555,7 @@ def execute_backfill_cli(
     report = {
         **range_as_dict(resolved), "run_id": execution.run_id,
         "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
+        "collection_mode": "list-only",
         "status": result.status.value, "stop_reason": result.stop_reason,
         "pages_scanned": stats.pages_scanned,
         "records_received": stats.records_received,
@@ -551,6 +564,8 @@ def execute_backfill_cli(
         "records_existing": execution.records_existing,
         "records_versioned": execution.records_versioned,
         "records_failed": stats.records_failed,
+        "details_requested": getattr(getattr(result, "counters", None), "details_requested", 0),
+        "details_success": getattr(getattr(result, "counters", None), "details_success", 0),
         "earliest_observed_at": stats.earliest_observed_at,
         "latest_observed_at": stats.latest_observed_at,
         "checkpoint_before": execution.checkpoint_before,

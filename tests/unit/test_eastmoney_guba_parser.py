@@ -95,6 +95,16 @@ def test_detail_parser_and_merge_preserve_empty_body_without_title_fallback() ->
     assert merged["title"] == "synthetic post one"
 
 
+def test_detail_empty_title_uses_list_title_for_real_historical_shape() -> None:
+    page = parse_list_page(fixture("list_page_1.html"), "600001")
+    detail_html = fixture("detail_1001.html").replace(
+        '"post_title":"synthetic post one"', '"post_title":""', 1
+    )
+    merged = merge_list_and_detail(page.rows[0], parse_detail_page(detail_html))
+
+    assert merged["title"] == "synthetic post one"
+
+
 def test_malformed_embedded_payload_is_schema_mismatch() -> None:
     with pytest.raises(GubaSchemaMismatch):
         parse_list_page(fixture("malformed_page.html"), "600001")
