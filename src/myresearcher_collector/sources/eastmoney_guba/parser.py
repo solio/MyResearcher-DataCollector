@@ -121,7 +121,7 @@ class _LinkParser(HTMLParser):
         href = values.get("href")
         if not post_id and href:
             parsed = urlparse(urljoin("https://guba.eastmoney.com", href))
-            match = re.fullmatch(r"/news,[0-9]+,([0-9]+)\.html", parsed.path)
+            match = re.fullmatch(r"/news,[A-Za-z0-9]+,([0-9]+)\.html", parsed.path)
             if (
                 match is not None
                 and parsed.scheme == "https"

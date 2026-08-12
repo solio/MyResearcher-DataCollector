@@ -23,7 +23,7 @@ def test_backfill_plan_only_is_network_and_persistence_free(tmp_path: Path, caps
     data_dir = tmp_path / "data"
     code = main([
         "backfill", "--source", "eastmoney_guba", "--stock", "600001",
-        "--days", "7", "--data-dir", str(data_dir), "--max-pages", "10",
+            "--days", "7", "--data-dir", str(data_dir),
         "--plan-only",
     ])
     assert code == 0
@@ -52,7 +52,7 @@ def test_backfill_host_can_inject_browser_owned_transport(
     args = build_parser().parse_args([
         "backfill", "--source", "eastmoney_guba", "--stock", "600001",
         "--from", "2026-08-01", "--to", "2026-08-02",
-        "--data-dir", str(tmp_path / "data"), "--max-pages", "10",
+            "--data-dir", str(tmp_path / "data"),
         "--confirm-live",
     ])
     injected = object()
@@ -96,7 +96,7 @@ def test_backfill_live_fails_closed_without_browser_host(tmp_path: Path) -> None
     args = build_parser().parse_args([
         "backfill", "--source", "eastmoney_guba", "--stock", "600001",
         "--from", "2026-08-01", "--to", "2026-08-02",
-        "--data-dir", str(tmp_path / "data"), "--max-pages", "10",
+            "--data-dir", str(tmp_path / "data"),
         "--confirm-live",
     ])
     with pytest.raises(RuntimeError, match="browser-managed Eastmoney transport"):

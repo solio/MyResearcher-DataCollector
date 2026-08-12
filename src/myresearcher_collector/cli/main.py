@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import time
 import uuid
+import re
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -230,7 +231,10 @@ def build_parser() -> argparse.ArgumentParser:
     range_group.add_argument("--days", type=int, help="look back N inclusive Asia/Shanghai calendar days")
     backfill.add_argument("--to", dest="to_value", help="inclusive ISO date/timestamp")
     backfill.add_argument("--data-dir", type=Path, required=True)
-    backfill.add_argument("--max-pages", type=int, default=100)
+    backfill.add_argument(
+        "--start-page", type=int, default=None,
+        help="explicit recovery page to request first; defaults to the next persisted page",
+    )
     backfill.add_argument(
         "--list-only",
         action="store_true",
@@ -293,6 +297,32 @@ def _data_dir_state(data_dir: Path) -> str:
     if not data_dir.is_dir():
         return "not_a_directory"
     return "empty" if next(data_dir.iterdir(), None) is None else "nonempty"
+
+
+def _last_successful_backfill_page(data_dir: Path, source: str, stock_code: str) -> int:
+    """Return the highest successfully persisted list page for resumable backfill."""
+    db_path = data_dir / "collector.db"
+    if not db_path.is_file():
+        return 0
+    pattern = re.compile(r"/list,[^/]+,f(?:_(\d+))?\.html$")
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """SELECT a.request_url
+               FROM collection_attempts a
+               JOIN collection_runs r ON r.run_id = a.run_id
+               WHERE r.source=? AND r.scope_key=?
+                 AND a.request_kind='list' AND a.outcome='success'""",
+            (source, f"stock:{stock_code}"),
+        ).fetchall()
+    finally:
+        conn.close()
+    pages = []
+    for (url,) in rows:
+        match = pattern.search(str(url))
+        if match:
+            pages.append(int(match.group(1) or 1))
+    return max(pages, default=0)
 
 
 def _persistent_mode(
@@ -479,15 +509,16 @@ def execute_batch_cli(
 
 
 def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
-    if args.max_pages < 1:
-        raise BackfillConfigError("max_pages must be at least 1")
     if args.min_interval < 2.5:
         raise BackfillConfigError("min_interval must be at least 2.5 seconds")
+    if args.start_page is not None and args.start_page < 1:
+        raise BackfillConfigError("start_page must be at least 1")
     resolved = resolve_backfill_range(
         source=args.source, stock_code=args.stock, from_value=args.from_value,
         to_value=args.to_value, days=args.days,
     )
     data_dir = args.data_dir.expanduser().resolve()
+    start_page = args.start_page or (_last_successful_backfill_page(data_dir, args.source, args.stock) + 1)
     checkpoint = None
     db_path = data_dir / "collector.db"
     if db_path.is_file():
@@ -496,12 +527,12 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "mode": "PLAN_ONLY",
         "network_execution": False,
         **range_as_dict(resolved),
-        "max_pages": args.max_pages,
         "checkpoint": checkpoint,
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
         "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
         "collection_mode": "list-only",
+        "resume_from_page": start_page,
         "data_dir": str(data_dir),
         "source_access": (
             "BROWSER_MANAGED_OFFLINE_ONLY"
@@ -519,10 +550,10 @@ def execute_backfill_cli(
 ) -> dict[str, object]:
     if args.source != "eastmoney_guba":
         raise RuntimeError("xueqiu backfill live host is not wired; offline path is NOT_READY")
-    if args.max_pages < 1:
-        raise BackfillConfigError("max_pages must be at least 1")
     if args.min_interval < 2.5:
         raise BackfillConfigError("min_interval must be at least 2.5 seconds")
+    if args.start_page is not None and args.start_page < 1:
+        raise BackfillConfigError("start_page must be at least 1")
     if transport is None:
         raise RuntimeError(
             "browser-managed Eastmoney transport must be supplied by the host"
@@ -532,19 +563,24 @@ def execute_backfill_cli(
         to_value=args.to_value, days=args.days,
     )
     data_dir = args.data_dir.expanduser().resolve()
+    start_page = args.start_page or (
+        _last_successful_backfill_page(data_dir, args.source, args.stock) + 1
+        if getattr(args, "list_only", False)
+        else 1
+    )
     try:
         execution = execute_and_persist_backfill_collection(
             db_path=data_dir / "collector.db", raw_data_dir=data_dir,
             stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
             transport=transport,
             include_details=False,
+            start_page=start_page,
             collector_config=CollectorConfig(
                 timeout_seconds=args.timeout,
                 min_interval_seconds=args.min_interval,
-                max_pages=args.max_pages,
                 randomize_pacing=True,
             ),
-            max_pages=args.max_pages,
+            max_pages=None,
         )
     finally:
         close = getattr(transport, "close", None)
@@ -556,6 +592,7 @@ def execute_backfill_cli(
         **range_as_dict(resolved), "run_id": execution.run_id,
         "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
         "collection_mode": "list-only",
+        "resume_from_page": start_page,
         "status": result.status.value, "stop_reason": result.stop_reason,
         "pages_scanned": stats.pages_scanned,
         "records_received": stats.records_received,

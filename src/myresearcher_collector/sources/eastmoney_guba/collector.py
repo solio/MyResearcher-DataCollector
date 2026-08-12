@@ -734,6 +734,7 @@ class EastmoneyGubaCollector:
         to_time: datetime,
         max_pages: int | None = None,
         include_details: bool = True,
+        start_page: int = 1,
     ) -> BackfillCollectionResult:
         """Traverse newest-to-oldest pages for an inclusive historical range.
 
@@ -747,9 +748,11 @@ class EastmoneyGubaCollector:
             raise ValueError("backfill range requires timezone-aware datetimes")
         if from_time > to_time:
             raise ValueError("backfill from_time must be at or before to_time")
-        page_limit = max_pages if max_pages is not None else self.config.max_pages
-        if page_limit < 1:
+        page_limit = max_pages
+        if page_limit is not None and page_limit < 1:
             raise ValueError("max_pages must be at least 1")
+        if start_page < 1 or (page_limit is not None and start_page > page_limit + 1):
+            raise ValueError("start_page is outside the configured page range")
 
         counters = RuntimeCounters()
         items: list[GubaSourceItem] = []
@@ -813,7 +816,12 @@ class EastmoneyGubaCollector:
                 final_url=detail_final_url,
             )
 
-        for page_number in range(1, page_limit + 1):
+        page_numbers = (
+            range(start_page, page_limit + 1)
+            if page_limit is not None
+            else iter(int(n) for n in __import__("itertools").count(start_page))
+        )
+        for page_number in page_numbers:
             if self.cancel_check and self.cancel_check():
                 stop_reason = "cancelled"
                 break
@@ -921,7 +929,7 @@ class EastmoneyGubaCollector:
             status = CollectionStatus.COLLECTION_FAILED if counters.pages_success == 0 else CollectionStatus.PARTIAL_COLLECTION
         elif range_complete and counters.records_failed == 0:
             status = CollectionStatus.SUCCESS
-        elif counters.pages_success >= page_limit and not range_complete:
+        elif page_limit is not None and counters.pages_success > 0 and not range_complete:
             status = CollectionStatus.PARTIAL_COLLECTION
             stop_reason = "max_pages_reached"
         elif counters.records_failed:

@@ -473,6 +473,7 @@ def execute_and_persist_backfill_collection(
     sleep_fn: Callable[[float], None] = time.sleep,
     max_pages: int | None = None,
     include_details: bool = True,
+    start_page: int = 1,
 ) -> PersistentBackfillCollection:
     """Persist one Eastmoney backfill without ever advancing its checkpoint."""
     run_id = run_id or uuid.uuid4().hex
@@ -504,6 +505,7 @@ def execute_and_persist_backfill_collection(
         execution = collector.collect_backfill(
             stock_code, from_time=from_time, to_time=to_time, max_pages=max_pages,
             include_details=include_details,
+            start_page=start_page,
         )
         result = execution.result
         evidence_ids: dict[int, str] = {}
