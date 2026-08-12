@@ -7,7 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from myresearcher_collector.cli.main import build_parser, execute_backfill_cli, main
+from myresearcher_collector.cli.main import (
+    _browser_socket_transport,
+    build_parser,
+    execute_backfill_cli,
+    main,
+)
+from myresearcher_collector.sources.eastmoney_guba import EastmoneyExistingChromeDomTransport
 
 
 cli_main = importlib.import_module("myresearcher_collector.cli.main")
@@ -25,6 +31,7 @@ def test_backfill_plan_only_is_network_and_persistence_free(tmp_path: Path, caps
     assert plan["estimated_mode"] == "BACKFILL"
     assert plan["network_execution"] is False
     assert plan["checkpoint_mutation"] is False
+    assert plan["acquisition_method"] == "browser-socket"
     assert not data_dir.exists()
 
 
@@ -94,3 +101,12 @@ def test_backfill_live_fails_closed_without_browser_host(tmp_path: Path) -> None
     ])
     with pytest.raises(RuntimeError, match="browser-managed Eastmoney transport"):
         execute_backfill_cli(args)
+
+
+def test_backfill_cli_selects_existing_chrome_dom_acquisition(tmp_path: Path) -> None:
+    args = build_parser().parse_args([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--days", "1", "--data-dir", str(tmp_path / "data"),
+        "--acquisition-method", "existing-chrome-dom", "--confirm-live",
+    ])
+    assert isinstance(_browser_socket_transport(args), EastmoneyExistingChromeDomTransport)

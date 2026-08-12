@@ -36,6 +36,7 @@ from myresearcher_collector.run_report import summarize_run
 from myresearcher_collector.sources.eastmoney_guba import (
     BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
+    EastmoneyExistingChromeDomTransport,
     EastmoneyBrowserSocketTransport,
     EastmoneyGubaCollector,
 )
@@ -65,7 +66,16 @@ DEFAULT_BROWSER_PROFILE = Path(
         ".runtime/eastmoney-browser-profile",
     )
 )
-EASTMONEY_LIVE_ACCESS = "BROWSER_HOST_EXPERIMENTAL_AVAILABILITY_BLOCKED"
+EASTMONEY_LIVE_ACCESS = "EXISTING_USER_CHROME_DOM_OR_HTTP_BROWSER_HOST"
+
+
+def _add_eastmoney_acquisition_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--acquisition-method",
+        choices=("browser-socket", "existing-chrome-dom"),
+        default="browser-socket",
+        help="truthful HTTP-response host or existing-user Chrome DOM acquisition",
+    )
 
 
 def _add_browser_socket_argument(parser: argparse.ArgumentParser) -> None:
@@ -86,6 +96,8 @@ def _json_default(value: object) -> str:
 
 
 def _browser_socket_transport(args: argparse.Namespace) -> Transport:
+    if getattr(args, "acquisition_method", "browser-socket") == "existing-chrome-dom":
+        return EastmoneyExistingChromeDomTransport()
     return EastmoneyBrowserSocketTransport(args.browser_socket)
 
 
@@ -97,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     guba.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     guba.add_argument("--timeout", type=float, default=20.0)
     _add_browser_socket_argument(guba)
+    _add_eastmoney_acquisition_argument(guba)
 
     browser_host = subparsers.add_parser(
         "eastmoney-browser-host",
@@ -135,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--timeout", type=float, default=20.0)
     live.add_argument("--min-interval", type=float, default=3.0)
     _add_browser_socket_argument(live)
+    _add_eastmoney_acquisition_argument(live)
     live.add_argument(
         "--user-agent",
         default=os.environ.get("MYRESEARCHER_EASTMONEY_USER_AGENT", DEFAULT_USER_AGENT),
@@ -167,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     persistent.add_argument("--timeout", type=float, default=20.0)
     persistent.add_argument("--min-interval", type=float, default=3.0)
     _add_browser_socket_argument(persistent)
+    _add_eastmoney_acquisition_argument(persistent)
     persistent.add_argument(
         "--user-agent",
         default=os.environ.get("MYRESEARCHER_EASTMONEY_USER_AGENT", DEFAULT_USER_AGENT),
@@ -199,6 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--max-pages", type=int, default=BOOTSTRAP_MIN_PAGES)
     batch.add_argument("--timeout", type=float, default=20.0)
     _add_browser_socket_argument(batch)
+    _add_eastmoney_acquisition_argument(batch)
     batch_mode = batch.add_mutually_exclusive_group(required=True)
     batch_mode.add_argument(
         "--plan-only", action="store_true",
@@ -218,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--timeout", type=float, default=20.0)
     backfill.add_argument("--min-interval", type=float, default=3.0)
     _add_browser_socket_argument(backfill)
+    _add_eastmoney_acquisition_argument(backfill)
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
     backfill_mode.add_argument("--plan-only", action="store_true")
     backfill_mode.add_argument("--confirm-live", action="store_true")
@@ -478,6 +495,7 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": checkpoint,
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
+        "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
         "data_dir": str(data_dir),
         "source_access": (
             "BROWSER_MANAGED_OFFLINE_ONLY"
@@ -508,17 +526,23 @@ def execute_backfill_cli(
         to_value=args.to_value, days=args.days,
     )
     data_dir = args.data_dir.expanduser().resolve()
-    execution = execute_and_persist_backfill_collection(
-        db_path=data_dir / "collector.db", raw_data_dir=data_dir,
-        stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
-        transport=transport,
-        collector_config=CollectorConfig(timeout_seconds=args.timeout, min_interval_seconds=args.min_interval, max_pages=args.max_pages),
-        max_pages=args.max_pages,
-    )
+    try:
+        execution = execute_and_persist_backfill_collection(
+            db_path=data_dir / "collector.db", raw_data_dir=data_dir,
+            stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
+            transport=transport,
+            collector_config=CollectorConfig(timeout_seconds=args.timeout, min_interval_seconds=args.min_interval, max_pages=args.max_pages),
+            max_pages=args.max_pages,
+        )
+    finally:
+        close = getattr(transport, "close", None)
+        if callable(close):
+            close()
     stats = execution.execution
     result = stats.result
     report = {
         **range_as_dict(resolved), "run_id": execution.run_id,
+        "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
         "status": result.status.value, "stop_reason": result.stop_reason,
         "pages_scanned": stats.pages_scanned,
         "records_received": stats.records_received,

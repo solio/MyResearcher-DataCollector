@@ -3,8 +3,14 @@
 ## 状态
 
 ```text
-BLOCKED: EXISTING_CHROME_TRANSPORT_CONTRACT_UNSATISFIED
+SUPERSEDED: HTTP-ONLY TRANSPORT ASSUMPTION
 ```
+
+Reviewer superseded this handoff's production-blocking conclusion. Its field
+capability finding remains valid: Apple Events does not provide HTTP status,
+headers, or exact network response bytes. The corrected contract preserves the
+exact DOM snapshot bytes consumed by the parser as `browser_dom_snapshot`
+RawEvidence, with HTTP-only metadata truthfully `NULL`.
 
 本 finding 基于 Expert 已通过的 commit：
 
@@ -94,29 +100,29 @@ stealth 或 bypass。现有 Chrome 的人工上下文仍由浏览器自己持有
    已能提供完整 response shape，但新 context/profile 在当前环境会触发访问
    verification，且不能假定它等价于 existing-user Chrome。它不是本轮
    existing-user bridge 的替代成功证明。
-3. **Apple Events DOM-only adapter**：不接受。它会降低 RawEvidence contract，
-   所以不能进入 production。
+3. **Apple Events DOM-only adapter**：Reviewer 后续批准为独立 acquisition
+   method；保存 parser 实际消费的 DOM snapshot，并明确 provenance，不伪造 HTTP
+   metadata。
 
 ## 结论与下一步
 
-当前只能保留 Expert 的：
+本文件原结论已被 architecture correction 取代。保留的事实是：
 
 ```text
 EASTMONEY_EXISTING_CHROME_ACCESS_HYPOTHESIS = PASS
 STANDALONE_EXISTING_CHROME_BOUNDED_NAVIGATION = PASS
 ```
 
-但不得升级为：
+新实现必须独立验证：
 
 ```text
-TRANSPORT_CONTRACT = PASS
-COLLECTOR_INTEGRATION = PASS
-BOUNDED_BACKFILL_SMOKE = PASS
+DOM_ACQUISITION
+COLLECTOR_INTEGRATION
+BOUNDED_BACKFILL_SMOKE
 ```
 
-下一步由 Reviewer 决定是否授权一个能取得 response-grade Network/CDP 数据且
-不读取/导出 credentials 的受控接口实验。授权前不修改 production、不改变
-RawEvidence contract、不执行真实 Backfill。
+无需以 CDP/Network response 为前置条件。后续 handoff 以
+`runs/eastmoney-dom-acquisition/` 为当前结论。
 
 ```text
 FULL_BACKFILL_AUTHORIZED = NO

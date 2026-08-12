@@ -74,7 +74,7 @@ def test_plan_only_is_explicitly_offline_and_does_not_create_data_dir(
         "mode": "PLAN_ONLY",
         "network_execution": False,
         "source": "eastmoney_guba",
-        "source_access": "BROWSER_HOST_EXPERIMENTAL_AVAILABILITY_BLOCKED",
+        "source_access": "EXISTING_USER_CHROME_DOM_OR_HTTP_BROWSER_HOST",
         "unattended_production_ready": False,
         "stock_code": "601012",
         "max_pages": 1,

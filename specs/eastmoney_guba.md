@@ -29,7 +29,11 @@ Do not include credentials, cookie values, authorization headers or unnecessary 
 - entry type: server-rendered public HTML containing embedded source JSON.
 - list endpoint/page: `https://guba.eastmoney.com/list,{stock_code},f.html` for page 1; `https://guba.eastmoney.com/list,{stock_code},f_{page}.html` for page 2+.
 - detail endpoint/page for in-scope standard posts: use the exact observed list link; the normal form is `https://guba.eastmoney.com/news,{canonical_bar_code},{post_id}.html`.
-- method: `GET`.
+- method: source navigation/`GET`. HTTP/Playwright captures preserve the actual
+  response body and HTTP metadata. The existing-user Chrome Apple Events path
+  preserves the exact UTF-8 DOM snapshot bytes consumed by the production
+  parser and records HTTP-only metadata as unavailable; it must not claim that
+  DOM serialization is the network response body.
 - approved list payload: the `var article_list=<JSON>;` assignment embedded in HTML. Do not derive precise time or identity from display-only table text when the structured object is present.
 - approved detail payload: the `var post_article=<JSON>;` assignment embedded in the exact detail HTML.
 - current availability: the public list and standard detail HTML expose usable embedded data in established browser contexts. Revalidation on 2026-08-12 showed fresh profiles could be challenged, but a later standalone Python process controlling the user's already-running Google Chrome session passed page1, page2+detail and page3+detail with random 3–10 second delays and no operator intervention.
@@ -153,7 +157,12 @@ Terminal outcomes for this source are frozen as follows:
 - other non-2xx: non-success page; classify explicitly and do not parse as empty.
 - invalid body: missing/invalid `article_list`, non-success `rc`, malformed JSON, missing `re`, or structurally impossible fields are parse/source failures.
 - partial body/row: count `records_received`, `records_parsed`, `records_failed`; any failed required row prevents `SUCCESS`.
-- empty success: only valid when HTTP succeeds, embedded object is structurally valid with source success semantics, and `re` is an empty list. It may produce `NO_NEW_DATA` only when no new valid IDs exist and no request/page/record failure occurred.
+- empty success: for HTTP acquisition, HTTP must succeed; for existing-Chrome
+  DOM acquisition, navigation must complete on an approved observed URL. In
+  both cases the captured document must not be an access block and must contain
+  a structurally valid embedded object with source success semantics and an
+  empty `re` list. It may produce `NO_NEW_DATA` only when no new valid IDs exist
+  and no request/page/record failure occurred.
 - detail failure for an in-scope row: accepted list identity remains in raw evidence, but required content acquisition is incomplete; run is `PARTIAL_COLLECTION` unless all candidate details fail, in which case `COLLECTION_FAILED`. An explicitly counted alternate-type row is not a detail failure because it is outside the approved emitted-item scope.
 - evidence/status: `APPROVED` policy; exact live 403/429/5xx bodies are not established and require synthetic fixtures plus future captured sanitized fixtures.
 
@@ -217,7 +226,10 @@ Terminal outcomes for this source are frozen as follows:
 
 - reproduction steps:
   1. `GET https://guba.eastmoney.com/list,601012,f.html` with a descriptive User-Agent.
-  2. Verify HTTP success and parse the exact JSON assigned to `article_list` without executing page JavaScript.
+  2. For HTTP acquisition, verify HTTP success. For existing-Chrome DOM
+     acquisition, verify completed navigation and approved observed URL without
+     fabricating status or headers. Parse the exact captured document bytes and
+     the JSON assigned to `article_list`.
   3. `GET https://guba.eastmoney.com/list,601012,f_2.html`; compare IDs and source times to demonstrate page movement/overlap.
   4. Resolve one exact standard list link and verify detail `post_article.post_id`, author/bar identity, `post_publish_time`, `post_last_time` and body.
 - sanitized request sample/reference: the URLs and non-secret method above; no cookies, authorization or credential values.
@@ -257,3 +269,4 @@ Developer acceptance must include deterministic offline fixtures/tests for: page
 | 2026-08-11 | Amended live access to a browser-managed anonymous HTML transport after urllib/curl verification responses and successful normal-browser list/detail observations | `experts/eastmoney-live-access/` | Source access investigation / user-authorized resolution |
 | 2026-08-12 | Reclassified unattended live availability as blocked after fresh-context failures and recurrent graphical verification inside one manually verified detail sequence; retained the browser host only as an experimental/operator-assisted boundary | `experts/eastmoney-live-access/2026-08-12-retry-report.md` | Expert Developer revalidation |
 | 2026-08-12 | Added a later bounded PASS: standalone Python controlled the already-running user Google Chrome session through Apple Events and completed page1, page2+detail and page3+detail with random 3–10 second delays; bulk workload remains unvalidated | `experts/eastmoney-live-access/2026-08-12-existing-chrome-success.md` | Expert Developer revalidation |
+| 2026-08-12 | Corrected acquisition evidence semantics: existing Chrome DOM snapshots are legitimate parser-consumed RawEvidence with nullable HTTP metadata and explicit `browser_dom_snapshot` provenance; they are not HTTP responses | Reviewer-authorized architecture correction | Developer / Executor |

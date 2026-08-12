@@ -119,6 +119,15 @@ class _LinkParser(HTMLParser):
         values = {key.lower(): value for key, value in attrs}
         post_id = values.get("data-postid")
         href = values.get("href")
+        if not post_id and href:
+            parsed = urlparse(urljoin("https://guba.eastmoney.com", href))
+            match = re.fullmatch(r"/news,[0-9]+,([0-9]+)\.html", parsed.path)
+            if (
+                match is not None
+                and parsed.scheme == "https"
+                and parsed.hostname == "guba.eastmoney.com"
+            ):
+                post_id = match.group(1)
         if post_id and href and _ID_RE.fullmatch(post_id):
             self.links.setdefault(post_id, href)
 

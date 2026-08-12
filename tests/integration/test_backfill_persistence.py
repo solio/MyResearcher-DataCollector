@@ -52,6 +52,12 @@ def test_backfill_fresh_checkpoint_stays_null_and_forward_bootstrap_remains_pend
     store = SQLitePersistence(tmp_path / "collector.db", RawEvidenceStore(tmp_path / "data", source="eastmoney_guba"))
     try:
         assert store.checkpoint("eastmoney_guba", "stock:600001") is None
+        rows = store.conn.execute(
+            "SELECT evidence_kind, http_status FROM raw_evidence WHERE run_id=?",
+            (execution.run_id,),
+        ).fetchall()
+        assert rows
+        assert all(kind.endswith(":http_response") and status == 200 for kind, status in rows)
     finally:
         store.close()
 

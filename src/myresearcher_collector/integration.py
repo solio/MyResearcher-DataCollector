@@ -19,6 +19,7 @@ from .sources.eastmoney_guba.collector import (
     EastmoneyGubaCollector,
     Transport,
 )
+from .sources.eastmoney_guba.acquisition import BROWSER_DOM_SNAPSHOT, HTTP_RESPONSE
 from .sources.eastmoney_guba.parser import is_access_block_page
 from .sources.xueqiu.browser_transport import XueqiuTransport, redact_xueqiu_url
 from .sources.xueqiu.collector import (
@@ -47,10 +48,12 @@ class _RequestEvent:
     error_message: str | None = None
     published: PublishedRaw | None = None
     evidence_consumed: bool = False
+    capture_method: str = HTTP_RESPONSE
 
 
-def _response_parts(response: Any) -> tuple[int, bytes, dict[str, str], str | None]:
-    status = int(getattr(response, "status_code", getattr(response, "status", 0)))
+def _response_parts(response: Any) -> tuple[int | None, bytes, dict[str, str], str | None, str]:
+    raw_status = getattr(response, "status_code", getattr(response, "status", None))
+    status = None if raw_status is None else int(raw_status)
     body = getattr(response, "body", None)
     if body is None:
         body = getattr(response, "content", None)
@@ -61,7 +64,8 @@ def _response_parts(response: Any) -> tuple[int, bytes, dict[str, str], str | No
         body = body.encode("utf-8")
     headers = {str(k).lower(): str(v) for k, v in getattr(response, "headers", {}).items()}
     final_url = getattr(response, "final_url", None) or getattr(response, "url", None)
-    return status, bytes(body), headers, final_url
+    capture_method = str(getattr(response, "capture_method", HTTP_RESPONSE))
+    return status, bytes(body), headers, final_url, capture_method
 
 
 class _CapturingTransport:
@@ -94,23 +98,34 @@ class _CapturingTransport:
             response = self.delegate.get(url, timeout=timeout)
         except Exception as exc:
             finished = self.clock()
+            error_class = str(getattr(exc, "kind", type(exc).__name__))
             self.events.append(
                 _RequestEvent(
                     ordinal, url, self._kind(url), retry_number, started, finished,
-                    None, {}, None, None, type(exc).__name__, str(exc),
+                    None, {}, None, None, error_class, str(exc),
+                    capture_method=str(
+                        getattr(self.delegate, "capture_method", HTTP_RESPONSE)
+                    ),
                 )
             )
             raise
 
-        status, body, headers, final_url = _response_parts(response)
+        status, body, headers, final_url, capture_method = _response_parts(response)
         published = self.raw_store.publish(self.run_id, ordinal, body)
-        access_block = status == 200 and is_access_block_page(
+        acquisition_succeeded = status == 200 or (
+            status is None and capture_method == BROWSER_DOM_SNAPSHOT
+        )
+        access_block = acquisition_succeeded and is_access_block_page(
             body.decode("utf-8", errors="replace")
         )
+        finished = getattr(response, "fetched_at", None)
+        if not isinstance(finished, datetime):
+            finished = self.clock()
         self.events.append(
             _RequestEvent(
-                ordinal, url, self._kind(url), retry_number, started, self.clock(),
-                status, headers, final_url, body, published=published,
+                ordinal, url, self._kind(url), retry_number, started, finished,
+                status, headers, final_url, body, capture_method=capture_method,
+                published=published,
                 error_class="access_block" if access_block else None,
                 error_message="identity-verification page" if access_block else None,
             )
@@ -119,7 +134,10 @@ class _CapturingTransport:
 
     def consume_success(self, kind: str, payload: bytes) -> str:
         for event in reversed(self.events):
-            if event.status == 200 and event.request_kind == kind and not event.evidence_consumed:
+            successful = event.status == 200 or (
+                event.status is None and event.capture_method == BROWSER_DOM_SNAPSHOT
+            )
+            if successful and event.request_kind == kind and not event.evidence_consumed:
                 if event.body != bytes(payload):
                     raise PersistenceError("collector evidence bytes differ from response bytes")
                 event.evidence_consumed = True
@@ -200,12 +218,13 @@ class _XueqiuCapturingTransport:
                 None, {}, None, None, type(exc).__name__, "browser transport failure",
             ))
             raise
-        status, body, headers, final_url = _response_parts(response)
+        status, body, headers, final_url, capture_method = _response_parts(response)
         published = self.raw_store.publish(self.run_id, ordinal, body)
         safe_final_url = redact_xueqiu_url(final_url)
         self.events.append(_RequestEvent(
             ordinal, safe_final_url or request_url, "list", 1, started, self.clock(),
-            status, headers, safe_final_url, body, published=published,
+            status, headers, safe_final_url, body, capture_method=capture_method,
+            published=published,
         ))
         return response
 
@@ -242,13 +261,22 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
 
 def _attempt_outcome(event: _RequestEvent) -> str:
     if event.error_class == "access_block":
-        return "http_error"
-    if event.status == 200:
+        return "http_error" if event.status is not None else "transport_error"
+    if event.status == 200 or (
+        event.status is None
+        and event.capture_method == BROWSER_DOM_SNAPSHOT
+        and event.body is not None
+        and event.error_class is None
+    ):
         return "success"
     if event.status is not None:
         return "http_error"
     error = (event.error_class or "").lower()
     return "timeout" if "timeout" in error else "transport_error"
+
+
+def _evidence_kind(event: _RequestEvent) -> str:
+    return f"{event.request_kind}:{event.capture_method}"
 
 
 def _failure_event(
@@ -366,7 +394,10 @@ def execute_and_persist_collection(
                     ),
                     http_status=event.status,
                     retry_after_seconds=_retry_after(event.headers),
-                    error_class=event.error_class or (None if event.status == 200 else f"http_{event.status}"),
+                    error_class=event.error_class or (
+                        None if _attempt_outcome(event) == "success"
+                        else (f"http_{event.status}" if event.status is not None else "acquisition_failure")
+                    ),
                     error_message=event.error_message,
                 )
                 if event.published is not None:
@@ -377,7 +408,7 @@ def execute_and_persist_collection(
                         attempt_id,
                         evidence_id,
                         event.published,
-                        evidence_kind=event.request_kind,
+                        evidence_kind=_evidence_kind(event),
                         request_url=event.url,
                         final_url=event.final_url,
                         fetched_at=event.finished_at,
@@ -491,7 +522,10 @@ def execute_and_persist_backfill_collection(
                         else config.max_attempts
                     ),
                     http_status=event.status, retry_after_seconds=_retry_after(event.headers),
-                    error_class=event.error_class or (None if event.status == 200 else f"http_{event.status}"),
+                    error_class=event.error_class or (
+                        None if _attempt_outcome(event) == "success"
+                        else (f"http_{event.status}" if event.status is not None else "acquisition_failure")
+                    ),
                     error_message=event.error_message,
                 )
                 if event.published is not None:
@@ -499,7 +533,7 @@ def execute_and_persist_backfill_collection(
                     evidence_ids[event.ordinal] = evidence_id
                     store.record_raw_evidence(
                         run_id, attempt_id, evidence_id, event.published,
-                        evidence_kind=event.request_kind, request_url=event.url,
+                        evidence_kind=_evidence_kind(event), request_url=event.url,
                         final_url=event.final_url, fetched_at=event.finished_at,
                         http_status=event.status, content_type=event.headers.get("content-type"),
                     )
@@ -629,7 +663,10 @@ def execute_and_persist_xueqiu_collection(
                     retry_budget=config.max_attempts,
                     http_status=event.status,
                     retry_after_seconds=_retry_after(event.headers),
-                    error_class=event.error_class or (None if event.status == 200 else f"http_{event.status}"),
+                    error_class=event.error_class or (
+                        None if _attempt_outcome(event) == "success"
+                        else (f"http_{event.status}" if event.status is not None else "acquisition_failure")
+                    ),
                     error_message=event.error_message,
                 )
                 if event.published is not None:

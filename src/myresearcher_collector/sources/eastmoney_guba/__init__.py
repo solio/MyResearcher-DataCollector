@@ -1,5 +1,7 @@
 """Approved Eastmoney Guba source adapter."""
 
+from .acquisition import AcquiredDocument, BROWSER_DOM_SNAPSHOT, HTTP_RESPONSE
+
 from .browser_transport import (
     EastmoneyBrowserBoundaryError,
     EastmoneyBrowserResponse,
@@ -16,6 +18,10 @@ from .collector import (
     InMemoryRawEvidenceStore,
     UrllibTransport,
 )
+from .existing_chrome import (
+    EastmoneyExistingChromeDomTransport,
+    ExistingChromeAcquisitionError,
+)
 from .parser import (
     GubaDetailMismatch,
     GubaParseError,
@@ -27,6 +33,8 @@ from .parser import (
 
 __all__ = [
     "BOOTSTRAP_MIN_PAGES",
+    "AcquiredDocument",
+    "BROWSER_DOM_SNAPSHOT",
     "BackfillCollectionResult",
     "CollectorConfig",
     "EastmoneyBrowserBoundaryError",
@@ -35,11 +43,14 @@ __all__ = [
     "EastmoneyBrowserTransport",
     "EastmoneyBrowserTransportError",
     "EastmoneyGubaCollector",
+    "EastmoneyExistingChromeDomTransport",
+    "ExistingChromeAcquisitionError",
     "GubaDetailMismatch",
     "GubaParseError",
     "GubaSchemaMismatch",
     "SCHEMA_VERSION",
     "HttpResponse",
+    "HTTP_RESPONSE",
     "InMemoryRawEvidenceStore",
     "UrllibTransport",
     "parse_detail_page",

@@ -30,11 +30,12 @@ from .parser import (
     parse_list_page,
     is_access_block_page,
 )
+from .acquisition import BROWSER_DOM_SNAPSHOT, HTTP_RESPONSE
 
 
 class Transport(Protocol):
     def get(self, url: str, *, timeout: float) -> Any:
-        """Return a response-like object with ``status_code`` and body."""
+        """Return truthful HTTP-response or DOM acquired-document evidence."""
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,10 @@ class HttpResponse:
     @property
     def text(self) -> str:
         return self.body.decode("utf-8", errors="replace")
+
+    @property
+    def capture_method(self) -> str:
+        return HTTP_RESPONSE
 
 
 _ALLOWED_SOURCE_HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
@@ -107,7 +112,7 @@ class UrllibTransport:
 
 class RawEvidenceStore(Protocol):
     def put(self, kind: str, source_item_id: str | None, payload: bytes) -> str:
-        """Store one immutable response and return an opaque reference."""
+        """Store immutable parser-consumed evidence and return an opaque reference."""
 
 
 class InMemoryRawEvidenceStore:
@@ -198,8 +203,9 @@ class EastmoneyGubaCollector:
         return url
 
     @staticmethod
-    def _body(response: Any) -> tuple[int, str, bytes, dict[str, str], str | None]:
-        status = int(getattr(response, "status_code", getattr(response, "status", 0)))
+    def _body(response: Any) -> tuple[int | None, str, bytes, dict[str, str], str | None, str]:
+        raw_status = getattr(response, "status_code", getattr(response, "status", None))
+        status = None if raw_status is None else int(raw_status)
         raw = getattr(response, "body", None)
         if raw is None:
             raw = getattr(response, "content", None)
@@ -212,7 +218,10 @@ class EastmoneyGubaCollector:
         text = body.decode("utf-8", errors="replace")
         headers = {str(k).lower(): str(v) for k, v in getattr(response, "headers", {}).items()}
         final_url = getattr(response, "final_url", None) or getattr(response, "url", None)
-        return status, text, body, headers, final_url
+        capture_method = str(getattr(response, "capture_method", HTTP_RESPONSE))
+        if capture_method not in {HTTP_RESPONSE, BROWSER_DOM_SNAPSHOT}:
+            raise ValueError("unsupported acquisition capture method")
+        return status, text, body, headers, final_url, capture_method
 
     def _fetch(self, url: str, counters: RuntimeCounters) -> tuple[str, bytes, dict[str, str], str]:
         attempts = self.config.max_attempts
@@ -221,7 +230,7 @@ class EastmoneyGubaCollector:
             try:
                 self._rate_limit()
                 response = self.transport.get(url, timeout=self.config.timeout_seconds)
-                status, text, body, headers, final_url = self._body(response)
+                status, text, body, headers, final_url, capture_method = self._body(response)
                 _validate_source_url(final_url or url)
             except RedirectPolicyError as exc:
                 counters.requests_failed += 1
@@ -237,15 +246,25 @@ class EastmoneyGubaCollector:
                 continue
             except (TimeoutError, OSError, URLError) as exc:
                 counters.requests_failed += 1
+                failure_kind = str(getattr(exc, "kind", "transport"))
+                if failure_kind == "invalid_document":
+                    raise FetchFailure(failure_kind, str(exc)) from exc
                 if attempt >= self.config.max_attempts:
-                    raise FetchFailure("transport", "request failed after retry budget") from exc
+                    raise FetchFailure(
+                        failure_kind, "request failed after retry budget"
+                    ) from exc
                 self._backoff(attempt)
                 continue
             except Exception as exc:
                 counters.requests_failed += 1
                 raise FetchFailure("transport", "request raised an unexpected error") from exc
 
-            if status == 200:
+            acquisition_succeeded = (
+                status == 200
+                if capture_method == HTTP_RESPONSE
+                else status is None and capture_method == BROWSER_DOM_SNAPSHOT
+            )
+            if acquisition_succeeded:
                 if is_access_block_page(text):
                     counters.requests_failed += 1
                     attempts = self.config.access_block_attempts
@@ -260,6 +279,11 @@ class EastmoneyGubaCollector:
                 return text, body, headers, final_url or url
 
             counters.requests_failed += 1
+            if status is None:
+                raise FetchFailure(
+                    "invalid_document",
+                    "acquisition did not provide valid success semantics",
+                )
             retryable = status == 429 or status >= 500 or status == 403
             if status == 403:
                 attempts = self.config.access_block_attempts

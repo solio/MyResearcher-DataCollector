@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .acquisition import HTTP_RESPONSE
+
 
 _ALLOWED_HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
 _MAX_SOCKET_RESPONSE_BYTES = 32 * 1024 * 1024
@@ -56,6 +58,10 @@ class EastmoneyBrowserResponse:
     @property
     def text(self) -> str:
         return self.body.decode("utf-8", errors="replace")
+
+    @property
+    def capture_method(self) -> str:
+        return HTTP_RESPONSE
 
 
 class EastmoneyBrowserTransport:
