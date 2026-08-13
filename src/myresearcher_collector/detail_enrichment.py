@@ -39,6 +39,7 @@ def execute_detail_enrichment(
     limit: int | None = None,
     acquisition_mode: str = "existing-chrome",
     profile_path: str | None = None,
+    profile_mode: str | None = None,
 ) -> dict[str, object]:
     store = SimplePostStore(db_path)
     candidates = store.conn.execute(
@@ -68,6 +69,7 @@ def execute_detail_enrichment(
             "sleep_before_sec": None, "request_duration_sec": round(time.monotonic() - started, 3),
             "result": result, "success_since_last_block": success_since_last_block,
             "acquisition_mode": acquisition_mode, "profile_path": profile_path,
+            "profile_mode": profile_mode,
             "elapsed_since_last_block_sec": (round(time.monotonic() - last_block_monotonic, 3) if last_block_monotonic is not None else None),
         }
         if event is not None:

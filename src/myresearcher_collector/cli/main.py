@@ -45,7 +45,7 @@ from myresearcher_collector.sources.eastmoney_guba import (
 )
 from myresearcher_collector.sources.eastmoney_guba.browser_runtime import (
     ChromeCleanDomTransport, ManagedChromiumTransport,
-    DEFAULT_CHROME_PROFILE, DEFAULT_MANAGED_PROFILE, create_eastmoney_transport,
+    DEFAULT_CHROME_PROFILE, create_eastmoney_transport,
 )
 from myresearcher_collector.sources.eastmoney_guba.browser_host import (
     BrowserHostConfigError,
@@ -782,7 +782,8 @@ def main(argv: list[str] | None = None) -> int:
                 transport=transport, min_delay=args.min_delay, max_delay=args.max_delay,
                 challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
                 log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
-                acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None)
+                acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None,
+                profile_mode=getattr(transport, "profile_mode", None))
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"detail enrichment error: {exc}", file=sys.stderr)
             return 2

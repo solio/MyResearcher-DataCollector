@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import hashlib
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,7 +17,13 @@ from .existing_chrome import EastmoneyExistingChromeDomTransport
 
 
 DEFAULT_CHROME_PROFILE = Path(".runtime/browser-profiles/eastmoney-chrome")
-DEFAULT_MANAGED_PROFILE = Path(".runtime/browser-profiles/eastmoney-managed-chromium")
+FRESH_MANAGED_PROFILES_ROOT = Path(".runtime/browser-profiles/eastmoney-managed")
+
+
+def _fresh_managed_profile_path() -> Path:
+    """A new per-run profile directory; never reused across CLI runs."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    return FRESH_MANAGED_PROFILES_ROOT / stamp
 
 
 def create_eastmoney_transport(
@@ -22,13 +32,17 @@ def create_eastmoney_transport(
     profile_dir: str | Path | None = None,
     browser_socket: str | Path | None = None,
 ):
-    """Create the shared Eastmoney browser acquisition transport."""
+    """Create the shared Eastmoney browser acquisition transport.
+
+    managed-chromium without an explicit profile_dir selects a new per-run
+    profile; an explicit profile_dir keeps persistent reuse.
+    """
     if acquisition_mode == "existing-chrome":
         return EastmoneyExistingChromeDomTransport()
     if acquisition_mode == "chrome-clean":
         return ChromeCleanDomTransport(profile_dir=profile_dir or DEFAULT_CHROME_PROFILE)
     if acquisition_mode == "managed-chromium":
-        return ManagedChromiumTransport(profile_dir=profile_dir or DEFAULT_MANAGED_PROFILE)
+        return ManagedChromiumTransport(profile_dir=profile_dir)
     if acquisition_mode == "browser-socket":
         if browser_socket is None:
             raise ValueError("browser-socket acquisition requires a socket path")
@@ -78,17 +92,37 @@ class ChromeCleanDomTransport:
 
 
 class ManagedChromiumTransport:
-    """Launch a visible persistent Playwright Chromium/Chrome context."""
+    """Launch a visible persistent Playwright Chromium/Chrome context.
+
+    Without an explicit profile_dir each construction selects a new per-run
+    profile under ``FRESH_MANAGED_PROFILES_ROOT``; an explicit profile_dir
+    keeps the previous persistent reuse behavior.  The selected identity is
+    printed to stderr at construction so operators can tell runs apart.
+    """
 
     acquisition_mode = "managed-chromium"
 
-    def __init__(self, *, profile_dir: str | Path = DEFAULT_MANAGED_PROFILE) -> None:
-        self.profile_dir = Path(profile_dir).expanduser().resolve()
+    def __init__(self, *, profile_dir: str | Path | None = None) -> None:
+        if profile_dir is None:
+            self.profile_dir = _fresh_managed_profile_path().expanduser().resolve()
+            self.profile_mode = "fresh"
+        else:
+            self.profile_dir = Path(profile_dir).expanduser().resolve()
+            self.profile_mode = "explicit-reuse"
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = None
         self.context = None
         self.page = None
         self.delegate = None
+        self.dialogs: list[dict[str, str]] = []
+        self.diagnostics_dir = Path("runtime/diagnostics")
+        print(
+            f"acquisition_mode={self.acquisition_mode} "
+            f"profile_mode={self.profile_mode} "
+            f"profile_dir={self.profile_dir}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _ensure_started(self) -> None:
         if self.delegate is not None:
@@ -106,7 +140,15 @@ class ManagedChromiumTransport:
             kwargs["channel"] = os.environ.get("MYRESEARCHER_MANAGED_CHROMIUM_CHANNEL", "chrome")
         self.context = self._playwright.chromium.launch_persistent_context(**kwargs)
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+        self.page.on("dialog", self._on_dialog)
         self.delegate = EastmoneyBrowserTransport(self.page)
+
+    def _on_dialog(self, dialog) -> None:
+        self.dialogs.append({"type": str(dialog.type), "message": str(dialog.message)})
+        try:
+            dialog.dismiss()
+        except Exception:
+            pass
 
     def get(self, url: str, *, timeout: float):
         self._ensure_started()
@@ -121,6 +163,27 @@ class ManagedChromiumTransport:
             fetched_at=datetime.now(timezone.utc),
             http_status=None, content_type=None, metadata={},
         )
+
+    def diagnostic_snapshot(self, requested_url: str, *, previous_ids_hash: str | None = None) -> dict[str, object]:
+        self._ensure_started()
+        html = self.page.content()
+        ids = re.findall(r"news,\d{6},(\d+)\.html", html)
+        title = str(self.page.title())
+        actual = str(self.page.url)
+        challenge = any(token in (title + " " + html).lower() for token in ("验证码", "验证", "robot", "安全验证"))
+        stamp = time.strftime("%Y%m%dT%H%M%S")
+        self.diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        shot = self.diagnostics_dir / f"eastmoney-{stamp}.png"
+        self.page.screenshot(path=str(shot), full_page=False)
+        return {
+            "requested_url": requested_url, "actual_url": actual, "page_title": title,
+            "timestamp": stamp, "acquisition_mode": self.acquisition_mode,
+            "profile": str(self.profile_dir), "dialogs": list(self.dialogs),
+            "challenge_detected": challenge,
+            "previous_page_post_id_hash": previous_ids_hash,
+            "current_dom_post_id_hash": hashlib.sha256("|".join(ids).encode()).hexdigest(),
+            "screenshot": str(shot),
+        }
 
     def close(self) -> None:
         if self.context is not None:
