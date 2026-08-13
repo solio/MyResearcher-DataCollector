@@ -182,6 +182,7 @@ def plan_backfill(
     from_time: datetime,
     to_time: datetime,
     explicit_start_page: int | None = None,
+    started_at: datetime | None = None,
 ) -> BackfillPlan:
     """Decide resume page and coverage handling for one backfill request.
 
@@ -190,11 +191,15 @@ def plan_backfill(
     A requested range fully inside previously completed coverage short-circuits
     to ``already_covered`` without any transport work.
 
-    ``coverage_eligible`` records whether this traversal carries evidence for
-    the newest pages: it must start at page 1, or continue exactly from an
-    exact-range resume row (resume_page + 1).  An operator-picked start page
-    with no matching resume leaves pages 1..start-1 unscanned, so completing
-    such a run proves nothing about the full requested range.
+    A matching resume row is additionally ignored while the requested top is
+    not yet frozen (``to_time >= started_at``): posts published after the
+    previous run land on the newest pages, which a page-N continuation never
+    revisits.  ``coverage_eligible`` records whether this traversal carries
+    evidence for the newest pages: it must start at page 1, or continue
+    exactly from a still-valid exact-range resume row (resume_page + 1).  An
+    operator-picked start page with no valid resume leaves pages 1..start-1
+    unscanned, so completing such a run proves nothing about the full
+    requested range.
     """
     coverage = tuple(store.coverage_ranges(source, stock_code))
     if coverage_covers(coverage, from_time, to_time):
@@ -202,7 +207,12 @@ def plan_backfill(
             start_page=1, already_covered=True, coverage_eligible=True,
             coverage_ranges=coverage,
         )
+    effective_now = started_at or datetime.now(timezone.utc)
+    if effective_now.tzinfo is None:
+        effective_now = effective_now.replace(tzinfo=timezone.utc)
     resume_page = store.backfill_resume_page(source, stock_code, from_time, to_time)
+    if resume_page is not None and to_time >= effective_now:
+        resume_page = None
     start_page = (
         explicit_start_page
         if explicit_start_page is not None
@@ -245,10 +255,13 @@ def execute_and_persist_simple_backfill_collection(
     Evidence rules for claiming coverage are deliberately tight: the covered
     top is capped at ``min(to_time, run started_at)`` because data published
     after the run started cannot have been seen, and coverage is only written
-    when the traversal started at page 1 or continued exactly from an
-    exact-range resume (``plan.coverage_eligible``); resume rows are likewise
-    only saved for eligible traversals so a gapped start can never poison a
-    later completion.
+    when the traversal started at page 1 or continued exactly from a still
+    valid exact-range resume (``plan.coverage_eligible``).  Resume rows are
+    only saved for eligible traversals whose top is already frozen
+    (``to_time < started_at``), so a live-top partial run restarts at page 1
+    instead of skipping posts that appeared after it, and a gapped
+    operator-picked start can never poison a later completion; a gapped run
+    that finishes downward is downgraded to PARTIAL with range_complete false.
     """
     clock = clock or (lambda: datetime.now(timezone.utc))
     started_at = clock()
@@ -260,7 +273,7 @@ def execute_and_persist_simple_backfill_collection(
     source = "eastmoney_guba"
     plan = plan_backfill(
         store, source=source, stock_code=stock_code, from_time=from_time,
-        to_time=to_time, explicit_start_page=start_page,
+        to_time=to_time, explicit_start_page=start_page, started_at=started_at,
     )
     try:
         if plan.already_covered:
@@ -289,16 +302,35 @@ def execute_and_persist_simple_backfill_collection(
         )
         for item in execution.result.items:
             store.upsert_source_item(item, stock_code=stock_code, content=None)
+        if execution.range_complete and not plan.coverage_eligible:
+            # The downward traversal finished, but pages 1..start-1 were never
+            # scanned for this range, so the requested range is not complete.
+            execution = BackfillCollectionResult(
+                result=CollectionResult(
+                    CollectionStatus.PARTIAL_COLLECTION,
+                    execution.result.items, execution.result.counters,
+                    execution.result.failures, execution.result.stop_reason,
+                    None, None,
+                ),
+                pages_scanned=execution.pages_scanned,
+                records_received=execution.records_received,
+                records_in_range=execution.records_in_range,
+                records_failed=execution.records_failed,
+                earliest_observed_at=execution.earliest_observed_at,
+                latest_observed_at=execution.latest_observed_at,
+                range_complete=False,
+            )
         if execution.range_complete and plan.coverage_eligible:
             store.clear_backfill_resume(source, stock_code, from_time, to_time)
             store.add_coverage(
                 source, stock_code, from_time, min(to_time, started_at)
             )
         elif execution.pages_scanned > 0 and plan.coverage_eligible:
-            store.save_backfill_resume(
-                source, stock_code, from_time, to_time,
-                plan.start_page + execution.pages_scanned - 1,
-            )
+            if to_time < started_at:
+                store.save_backfill_resume(
+                    source, stock_code, from_time, to_time,
+                    plan.start_page + execution.pages_scanned - 1,
+                )
         return PersistentBackfillCollection(
             run_id="simple-" + uuid.uuid4().hex,
             execution=execution, db_path=Path(db_path), raw_data_dir=Path(db_path).parent,

@@ -380,15 +380,83 @@ def test_explicit_start_page_without_resume_never_claims_coverage(tmp_path):
         52: [("5002", "2026-07-25 12:00:00")],
     }))
     result = run_backfill(db_path, transport, utc(1), utc(13), start_page=51)
-    assert transport.calls[0] == EastmoneyGubaCollector.list_url(STOCK, 51)
-    assert result.execution.result.status is CollectionStatus.SUCCESS
+    assert transport.calls == [
+        EastmoneyGubaCollector.list_url(STOCK, 51),
+        EastmoneyGubaCollector.list_url(STOCK, 52),
+    ]
+    # The downward traversal may finish, but pages 1..50 were never scanned,
+    # so the external result must not report a complete requested range.
     assert result.execution.result.stop_reason == "backfill_range_complete"
-    assert result.execution.range_complete is True
+    assert result.execution.range_complete is False
+    assert result.execution.result.status is CollectionStatus.PARTIAL_COLLECTION
 
     store = SimplePostStore(db_path)
     try:
         assert store.coverage_ranges(SOURCE, STOCK) == []
         assert store.backfill_resume_page(SOURCE, STOCK, utc(1), utc(13)) is None
+    finally:
+        store.close()
+
+
+def test_live_top_partial_never_resumes_and_refetches_new_posts(tmp_path):
+    from myresearcher_collector.backfill import resolve_backfill_range
+
+    db_path = tmp_path / "collector.db"
+    noon = datetime(2026, 8, 13, 4, 0, tzinfo=timezone.utc)      # 12:00 Asia/Shanghai
+    afternoon = datetime(2026, 8, 13, 7, 0, tzinfo=timezone.utc)  # 15:00 Asia/Shanghai
+    resolved = resolve_backfill_range(source=SOURCE, stock_code=STOCK, days=36, now=noon)
+
+    # 12:00 partial run over a live-top range: the range top (end of today)
+    # is not frozen, so no resumable row may be saved.
+    first = run_backfill(
+        db_path,
+        MappingTransport(routes_for(STOCK, {
+            1: [("1001", "2026-08-13 10:00:00")],
+        })),
+        resolved.from_time, resolved.to_time, max_pages=1, clock=lambda: noon,
+    )
+    assert first.execution.result.status is CollectionStatus.PARTIAL_COLLECTION
+    store = SimplePostStore(db_path)
+    try:
+        assert store.backfill_resume_page(
+            SOURCE, STOCK, resolved.from_time, resolved.to_time
+        ) is None
+    finally:
+        store.close()
+
+    # Simulate a stale page-50 resume row from an older run; the 15:00 rerun
+    # must still start at page 1 to see posts published after noon.
+    store = SimplePostStore(db_path)
+    try:
+        store.save_backfill_resume(
+            SOURCE, STOCK, resolved.from_time, resolved.to_time, 50
+        )
+    finally:
+        store.close()
+
+    transport2 = MappingTransport(routes_for(STOCK, {
+        1: [("2001", "2026-08-13 13:00:00")],  # published after the noon run
+        2: [("2002", "2026-07-08 12:00:00")],  # below the 36-day from_time
+    }))
+    second = run_backfill(
+        db_path, transport2, resolved.from_time, resolved.to_time,
+        clock=lambda: afternoon,
+    )
+    assert transport2.calls == [
+        EastmoneyGubaCollector.list_url(STOCK, 1),
+        EastmoneyGubaCollector.list_url(STOCK, 2),
+    ]
+    assert second.execution.result.status is CollectionStatus.SUCCESS
+    assert second.execution.range_complete is True
+
+    store = SimplePostStore(db_path)
+    try:
+        post_ids = {row["source_item_id"] for row in store.rows(SOURCE, STOCK)}
+        assert "2001" in post_ids
+        assert store.coverage_ranges(SOURCE, STOCK) == [(resolved.from_time, afternoon)]
+        assert store.backfill_resume_page(
+            SOURCE, STOCK, resolved.from_time, resolved.to_time
+        ) is None
     finally:
         store.close()
 

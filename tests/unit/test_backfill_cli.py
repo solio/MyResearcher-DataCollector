@@ -43,11 +43,13 @@ def test_backfill_plan_only_is_range_aware_and_non_mutating(tmp_path: Path, caps
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     db_path = data_dir / "collector.db"
+    # The seeded range is fully in the past so the resume validity check
+    # (to_time < now) never depends on the wall clock.
     store = SimplePostStore(db_path)
     try:
         resolved = resolve_backfill_range(
             source="eastmoney_guba", stock_code="600001",
-            from_value="2026-08-01", to_value="2026-08-13",
+            from_value="2026-08-01", to_value="2026-08-10",
         )
         store.save_backfill_resume(
             "eastmoney_guba", "600001", resolved.from_time, resolved.to_time, 20
@@ -58,7 +60,7 @@ def test_backfill_plan_only_is_range_aware_and_non_mutating(tmp_path: Path, caps
 
     code = main([
         "backfill", "--source", "eastmoney_guba", "--stock", "600001",
-        "--from", "2026-08-01", "--to", "2026-08-13",
+        "--from", "2026-08-01", "--to", "2026-08-10",
         "--data-dir", str(data_dir), "--plan-only",
     ])
     assert code == 0
