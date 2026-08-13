@@ -749,7 +749,8 @@ def main(argv: list[str] | None = None) -> int:
             report = execute_detail_enrichment(
                 db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
                 transport=EastmoneyExistingChromeDomTransport(), min_delay=args.min_delay, max_delay=args.max_delay,
-                challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries)
+                challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
+                log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"))
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"detail enrichment error: {exc}", file=sys.stderr)
             return 2
