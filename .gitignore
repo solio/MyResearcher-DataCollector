@@ -15,6 +15,7 @@ venv/
 # Runtime artifacts must not be committed by default.
 output/
 logs/
+runtime/
 
 # Local collector runtime state and raw evidence bodies are not source fixtures.
 data/
