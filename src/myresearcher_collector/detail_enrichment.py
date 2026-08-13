@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .simple_store import SimplePostStore
+from .sources.eastmoney_guba.challenge_wait import wait_for_manual_verification
 from .sources.eastmoney_guba.existing_chrome import ExistingChromeAcquisitionError
 from .sources.eastmoney_guba.parser import GubaParseError, is_access_block_page, parse_detail_page
 
@@ -116,23 +117,14 @@ def execute_detail_enrichment(
                         f"within {challenge_wait_seconds:.0f}s; polling current DOM every 5s",
                         file=sys.stderr, flush=True,
                     )
-                    deadline = time.monotonic() + max(0.0, challenge_wait_seconds)
-                    current = getattr(transport, "current_document", None)
-                    if not callable(current):
-                        sleep_fn(max(0.0, challenge_wait_seconds))
-                        continue
-                    while time.monotonic() < deadline:
-                        sleep_fn(min(5.0, max(0.0, deadline - time.monotonic())))
-                        try:
-                            candidate = current()
-                            candidate_body = _body(candidate)
-                            candidate_html = candidate_body.decode("utf-8", errors="replace")
-                            if not is_access_block_page(candidate_html):
-                                response, body, html = candidate, candidate_body, candidate_html
-                                write_log(str(item_id), "manual_verification_resumed", request_started, event="manual_verification_resumed")
-                                break
-                        except Exception:
-                            continue
+                    candidate = wait_for_manual_verification(
+                        transport, timeout_seconds=challenge_wait_seconds, sleep_fn=sleep_fn,
+                    )
+                    if candidate is not None:
+                        body = _body(candidate)
+                        html = body.decode("utf-8", errors="replace")
+                        response = candidate
+                        write_log(str(item_id), "manual_verification_resumed", request_started, event="manual_verification_resumed")
                     if html and not is_access_block_page(html):
                         break
                 if is_access_block_page(html):

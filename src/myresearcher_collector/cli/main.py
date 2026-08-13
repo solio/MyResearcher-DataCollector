@@ -47,6 +47,9 @@ from myresearcher_collector.sources.eastmoney_guba.browser_runtime import (
     ChromeCleanDomTransport, ManagedChromiumTransport,
     DEFAULT_CHROME_PROFILE, create_eastmoney_transport,
 )
+from myresearcher_collector.sources.eastmoney_guba.challenge_wait import (
+    ChallengeAwareEastmoneyTransport,
+)
 from myresearcher_collector.sources.eastmoney_guba.browser_host import (
     BrowserHostConfigError,
     serve_browser_host,
@@ -267,6 +270,8 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--max-pages", type=int, default=None)
     backfill.add_argument("--min-interval", type=float, default=3.0)
     backfill.add_argument("--max-interval", type=float, default=10.0)
+    backfill.add_argument("--challenge-wait", type=float, default=180.0,
+                         help="seconds to leave Chrome open for manual verification after an access block")
     _add_browser_socket_argument(backfill)
     _add_eastmoney_acquisition_argument(backfill)
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
@@ -597,9 +602,16 @@ def execute_backfill_cli(
         raise BackfillConfigError("max_interval must be at least min_interval")
     if args.start_page is not None and args.start_page < 1:
         raise BackfillConfigError("start_page must be at least 1")
+    if args.challenge_wait < 0:
+        raise BackfillConfigError("challenge_wait must be non-negative")
     if transport is None:
         raise RuntimeError(
             "browser-managed Eastmoney transport must be supplied by the host"
+        )
+    if args.challenge_wait > 0 and callable(getattr(transport, "current_document", None)):
+        transport = ChallengeAwareEastmoneyTransport(
+            transport, challenge_wait_seconds=args.challenge_wait,
+            prompt=lambda message: print(message, file=sys.stderr, flush=True),
         )
     resolved = resolve_backfill_range(
         source=args.source, stock_code=args.stock, from_value=args.from_value,

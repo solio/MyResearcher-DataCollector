@@ -18,7 +18,10 @@ _ID_RE = re.compile(r"^[0-9]+$")
 _HOSTS = {"guba.eastmoney.com", "caifuhao.eastmoney.com"}
 _ACCESS_TITLE_RE = re.compile(r"<title[^>]*>\s*([^<]+?)\s*</title>", re.IGNORECASE)
 _ACCESS_TITLES = {"身份核实", "访问验证", "安全验证", "人机验证"}
-_ACCESS_MARKERS = ("fd_guba_validate", "em_capt.js", "validate.js")
+# emcaptcha is the captcha container id observed on the 2026-08-13 real
+# 身份核实 shell (list,601888,f_51.html); the script markers above also
+# match that shell, and emcaptcha holds when its assets differ.
+_ACCESS_MARKERS = ("fd_guba_validate", "em_capt.js", "validate.js", "emcaptcha")
 
 
 class GubaParseError(ValueError):
