@@ -50,7 +50,9 @@ def routes_for(stock: str, pages: dict[int, list[tuple[str, str]]]) -> dict[str,
     }
 
 
-def run_backfill(db_path, transport, from_time, to_time, *, max_pages=None, start_page=None):
+def run_backfill(db_path, transport, from_time, to_time, *, max_pages=None, start_page=None, clock=None):
+    # Default clock is pinned after every synthetic range so the effective-now
+    # coverage cap never depends on the wall clock.
     return execute_and_persist_simple_backfill_collection(
         db_path=db_path, stock_code=STOCK, from_time=from_time, to_time=to_time,
         transport=transport,
@@ -58,6 +60,7 @@ def run_backfill(db_path, transport, from_time, to_time, *, max_pages=None, star
         sleep_fn=lambda _: None,
         max_pages=max_pages,
         start_page=start_page,
+        clock=clock or (lambda: datetime(2026, 8, 25, tzinfo=timezone.utc)),
     )
 
 
@@ -297,6 +300,123 @@ def test_case7_stale_page_checkpoint_never_skips_new_range_data(tmp_path):
         assert store.coverage_ranges(SOURCE, STOCK) == [(utc(1), utc(20))]
         post_ids = {row["source_item_id"] for row in store.rows(SOURCE, STOCK)}
         assert "2001" in post_ids
+    finally:
+        store.close()
+
+
+# --- Coverage evidence tightening ----------------------------------------------
+
+def test_coverage_never_extends_beyond_effective_now(tmp_path):
+    from myresearcher_collector.backfill import resolve_backfill_range
+
+    db_path = tmp_path / "collector.db"
+    noon = datetime(2026, 8, 13, 4, 0, tzinfo=timezone.utc)  # 12:00 Asia/Shanghai
+    resolved = resolve_backfill_range(source=SOURCE, stock_code=STOCK, days=1, now=noon)
+    transport = MappingTransport(routes_for(STOCK, {
+        1: [("1001", "2026-08-13 10:00:00")],
+        2: [("1002", "2026-08-12 12:00:00")],
+    }))
+    result = run_backfill(
+        db_path, transport, resolved.from_time, resolved.to_time, clock=lambda: noon
+    )
+    assert result.execution.result.status is CollectionStatus.SUCCESS
+    assert result.execution.range_complete is True
+
+    store = SimplePostStore(db_path)
+    try:
+        coverage = store.coverage_ranges(SOURCE, STOCK)
+        assert len(coverage) == 1
+        covered_from, covered_to = coverage[0]
+        assert covered_from == resolved.from_time
+        assert covered_to == noon
+        assert covered_to < resolved.to_time  # never the end-of-day bound
+    finally:
+        store.close()
+
+
+def test_same_day_rerun_is_not_already_covered_and_refetches_page1(tmp_path):
+    from myresearcher_collector.backfill import resolve_backfill_range
+
+    db_path = tmp_path / "collector.db"
+    noon = datetime(2026, 8, 13, 4, 0, tzinfo=timezone.utc)      # 12:00 Asia/Shanghai
+    afternoon = datetime(2026, 8, 13, 7, 0, tzinfo=timezone.utc)  # 15:00 Asia/Shanghai
+    resolved = resolve_backfill_range(source=SOURCE, stock_code=STOCK, days=1, now=noon)
+
+    first = run_backfill(
+        db_path,
+        MappingTransport(routes_for(STOCK, {
+            1: [("1001", "2026-08-13 10:00:00")],
+            2: [("1002", "2026-08-12 12:00:00")],
+        })),
+        resolved.from_time, resolved.to_time, clock=lambda: noon,
+    )
+    assert first.execution.range_complete is True
+
+    transport2 = MappingTransport(routes_for(STOCK, {
+        1: [("2001", "2026-08-13 13:00:00")],  # published after the noon run
+        2: [("2002", "2026-08-12 12:00:00")],
+    }))
+    second = run_backfill(
+        db_path, transport2, resolved.from_time, resolved.to_time,
+        clock=lambda: afternoon,
+    )
+    assert second.execution.result.stop_reason != "already_covered"
+    assert transport2.calls[0] == EastmoneyGubaCollector.list_url(STOCK, 1)
+    assert second.execution.result.status is CollectionStatus.SUCCESS
+
+    store = SimplePostStore(db_path)
+    try:
+        post_ids = {row["source_item_id"] for row in store.rows(SOURCE, STOCK)}
+        assert "2001" in post_ids
+        assert store.coverage_ranges(SOURCE, STOCK) == [(resolved.from_time, afternoon)]
+    finally:
+        store.close()
+
+
+def test_explicit_start_page_without_resume_never_claims_coverage(tmp_path):
+    db_path = tmp_path / "collector.db"
+    transport = MappingTransport(routes_for(STOCK, {
+        51: [("5001", "2026-08-01 12:00:00")],
+        52: [("5002", "2026-07-25 12:00:00")],
+    }))
+    result = run_backfill(db_path, transport, utc(1), utc(13), start_page=51)
+    assert transport.calls[0] == EastmoneyGubaCollector.list_url(STOCK, 51)
+    assert result.execution.result.status is CollectionStatus.SUCCESS
+    assert result.execution.result.stop_reason == "backfill_range_complete"
+    assert result.execution.range_complete is True
+
+    store = SimplePostStore(db_path)
+    try:
+        assert store.coverage_ranges(SOURCE, STOCK) == []
+        assert store.backfill_resume_page(SOURCE, STOCK, utc(1), utc(13)) is None
+    finally:
+        store.close()
+
+
+def test_exact_range_resume_continuation_allows_coverage(tmp_path):
+    db_path = tmp_path / "collector.db"
+    store = SimplePostStore(db_path)
+    try:
+        store.save_backfill_resume(SOURCE, STOCK, utc(1), utc(10), 50)
+    finally:
+        store.close()
+
+    transport = MappingTransport(routes_for(STOCK, {
+        51: [("5101", "2026-08-03 12:00:00")],
+        52: [("5102", "2026-07-25 12:00:00")],
+    }))
+    result = run_backfill(db_path, transport, utc(1), utc(10))
+    assert transport.calls == [
+        EastmoneyGubaCollector.list_url(STOCK, 51),
+        EastmoneyGubaCollector.list_url(STOCK, 52),
+    ]
+    assert result.execution.result.status is CollectionStatus.SUCCESS
+    assert result.execution.range_complete is True
+
+    store = SimplePostStore(db_path)
+    try:
+        assert store.coverage_ranges(SOURCE, STOCK) == [(utc(1), utc(10))]
+        assert store.backfill_resume_page(SOURCE, STOCK, utc(1), utc(10)) is None
     finally:
         store.close()
 

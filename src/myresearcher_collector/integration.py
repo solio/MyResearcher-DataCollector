@@ -170,6 +170,7 @@ class BackfillPlan:
 
     start_page: int
     already_covered: bool
+    coverage_eligible: bool
     coverage_ranges: tuple[tuple[datetime, datetime], ...]
 
 
@@ -188,17 +189,33 @@ def plan_backfill(
     from_time and to_time all match exactly; any other range starts at page 1.
     A requested range fully inside previously completed coverage short-circuits
     to ``already_covered`` without any transport work.
+
+    ``coverage_eligible`` records whether this traversal carries evidence for
+    the newest pages: it must start at page 1, or continue exactly from an
+    exact-range resume row (resume_page + 1).  An operator-picked start page
+    with no matching resume leaves pages 1..start-1 unscanned, so completing
+    such a run proves nothing about the full requested range.
     """
     coverage = tuple(store.coverage_ranges(source, stock_code))
     if coverage_covers(coverage, from_time, to_time):
-        return BackfillPlan(start_page=1, already_covered=True, coverage_ranges=coverage)
+        return BackfillPlan(
+            start_page=1, already_covered=True, coverage_eligible=True,
+            coverage_ranges=coverage,
+        )
     resume_page = store.backfill_resume_page(source, stock_code, from_time, to_time)
     start_page = (
         explicit_start_page
         if explicit_start_page is not None
         else (resume_page + 1 if resume_page else 1)
     )
-    return BackfillPlan(start_page=start_page, already_covered=False, coverage_ranges=coverage)
+    coverage_eligible = (
+        start_page == 1
+        or (resume_page is not None and start_page == resume_page + 1)
+    )
+    return BackfillPlan(
+        start_page=start_page, already_covered=False,
+        coverage_eligible=coverage_eligible, coverage_ranges=coverage,
+    )
 
 
 def _synthetic_covered_result(stop_reason: str) -> BackfillCollectionResult:
@@ -224,8 +241,19 @@ def execute_and_persist_simple_backfill_collection(
     exact source/stock/from/to range, a completed run clears that resume and
     merges the range into completed coverage, and overlapping coverage enables
     conservative early stop (or a zero-request ``already_covered`` success).
+
+    Evidence rules for claiming coverage are deliberately tight: the covered
+    top is capped at ``min(to_time, run started_at)`` because data published
+    after the run started cannot have been seen, and coverage is only written
+    when the traversal started at page 1 or continued exactly from an
+    exact-range resume (``plan.coverage_eligible``); resume rows are likewise
+    only saved for eligible traversals so a gapped start can never poison a
+    later completion.
     """
     clock = clock or (lambda: datetime.now(timezone.utc))
+    started_at = clock()
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
     store = SimplePostStore(db_path)
     if start_page is not None and start_page < 1:
         raise ValueError("start_page must be at least 1")
@@ -261,10 +289,12 @@ def execute_and_persist_simple_backfill_collection(
         )
         for item in execution.result.items:
             store.upsert_source_item(item, stock_code=stock_code, content=None)
-        if execution.range_complete:
+        if execution.range_complete and plan.coverage_eligible:
             store.clear_backfill_resume(source, stock_code, from_time, to_time)
-            store.add_coverage(source, stock_code, from_time, to_time)
-        elif execution.pages_scanned > 0:
+            store.add_coverage(
+                source, stock_code, from_time, min(to_time, started_at)
+            )
+        elif execution.pages_scanned > 0 and plan.coverage_eligible:
             store.save_backfill_resume(
                 source, stock_code, from_time, to_time,
                 plan.start_page + execution.pages_scanned - 1,
