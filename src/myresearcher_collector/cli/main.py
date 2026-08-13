@@ -43,6 +43,10 @@ from myresearcher_collector.sources.eastmoney_guba import (
     EastmoneyBrowserSocketTransport,
     EastmoneyGubaCollector,
 )
+from myresearcher_collector.sources.eastmoney_guba.browser_runtime import (
+    ChromeCleanDomTransport, ManagedChromiumTransport,
+    DEFAULT_CHROME_PROFILE, DEFAULT_MANAGED_PROFILE,
+)
 from myresearcher_collector.sources.eastmoney_guba.browser_host import (
     BrowserHostConfigError,
     serve_browser_host,
@@ -261,6 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--challenge-wait", type=float, default=180.0,
                         help="seconds to leave Chrome open for manual verification")
     enrich.add_argument("--challenge-retries", type=int, default=3)
+    enrich.add_argument("--limit", type=int, default=None,
+                        help="diagnostic bound on detail candidates")
+    enrich.add_argument("--profile-dir", type=Path, default=None)
+    enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean", "managed-chromium"), default="existing-chrome")
     _add_eastmoney_acquisition_argument(enrich)
     enrich_mode = enrich.add_mutually_exclusive_group(required=True)
     enrich_mode.add_argument("--plan-only", action="store_true")
@@ -734,8 +742,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "enrich-details":
         try:
-            if args.source != "eastmoney_guba" or args.acquisition_method != "existing-chrome-dom":
-                raise ValueError("detail enrichment requires existing-chrome-dom")
+            if args.source != "eastmoney_guba":
+                raise ValueError("detail enrichment requires Eastmoney")
             if len(args.stock) != 6 or not args.stock.isdigit():
                 raise ValueError("stock must be six decimal digits")
             if args.min_delay < 3.0 or args.max_delay < args.min_delay:
@@ -746,11 +754,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"mode":"PLAN_ONLY","source":args.source,"stock":args.stock,
                                   "data_dir":str(args.data_dir.expanduser().resolve())}, indent=2))
                 return 0
+            mode = args.acquisition_mode
+            profile = args.profile_dir
+            if mode == "existing-chrome":
+                transport = EastmoneyExistingChromeDomTransport()
+            elif mode == "chrome-clean":
+                transport = ChromeCleanDomTransport(profile_dir=profile or DEFAULT_CHROME_PROFILE)
+            else:
+                transport = ManagedChromiumTransport(profile_dir=profile or DEFAULT_MANAGED_PROFILE)
+            resolved_profile = getattr(transport, "profile_dir", None)
             report = execute_detail_enrichment(
                 db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
-                transport=EastmoneyExistingChromeDomTransport(), min_delay=args.min_delay, max_delay=args.max_delay,
+                transport=transport, min_delay=args.min_delay, max_delay=args.max_delay,
                 challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
-                log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"))
+                log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
+                acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None)
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"detail enrichment error: {exc}", file=sys.stderr)
             return 2

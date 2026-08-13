@@ -6,6 +6,7 @@ import json
 import math
 import subprocess
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -20,7 +21,6 @@ on run argv
     set targetURL to item 1 of argv
     set w to front window
     set t to make new tab at end of tabs of w with properties {URL:targetURL}
-    set active tab index of w to (count of tabs of w)
     return ((id of w) as text) & "|" & ((id of t) as text)
   end tell
 end run
@@ -85,6 +85,13 @@ JSON.stringify({
 })
 '''
 
+FRONTMOST_APP = r'''
+tell application "System Events"
+  set frontmostProcess to first application process whose frontmost is true
+  return name of frontmostProcess
+end tell
+'''
+
 
 class ExistingChromeAcquisitionError(OSError):
     """Existing Chrome could not produce a trustworthy acquired document."""
@@ -129,6 +136,7 @@ class EastmoneyExistingChromeDomTransport:
         clock: Callable[[], datetime] | None = None,
         monotonic_fn: Callable[[], float] = time.monotonic,
         sleep_fn: Callable[[float], None] = time.sleep,
+        focus_log_path: str | Path = "runtime/logs/eastmoney-focus.jsonl",
     ) -> None:
         self.script_runner = script_runner
         self.poll_interval_seconds = poll_interval_seconds
@@ -138,6 +146,34 @@ class EastmoneyExistingChromeDomTransport:
         self.sleep_fn = sleep_fn
         self.window_id: str | None = None
         self.tab_id: str | None = None
+        self.focus_log_path = Path(focus_log_path)
+
+    def _frontmost(self) -> str:
+        try:
+            value = subprocess.run(
+                ["osascript", "-e", FRONTMOST_APP], capture_output=True,
+                text=True, timeout=5, check=False,
+            )
+            return value.stdout.strip() or "UNKNOWN"
+        except Exception:
+            return "UNKNOWN"
+
+    def _run_script(self, operation: str, script: str, *values: object) -> str:
+        before = self._frontmost()
+        result = self.script_runner(script, *values)
+        after = self._frontmost()
+        row = {
+            "operation": operation, "frontmost_before": before,
+            "frontmost_after": after,
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        }
+        try:
+            self.focus_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.focus_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        except OSError:
+            pass
+        return result
 
     def get(self, url: str, *, timeout: float) -> AcquiredDocument:
         _validate_browser_url(url)
@@ -145,13 +181,12 @@ class EastmoneyExistingChromeDomTransport:
             raise ValueError("timeout must be finite and positive")
         try:
             if self.window_id is None or self.tab_id is None:
-                identity = self.script_runner(CREATE_TAB, url)
+                identity = self._run_script("CREATE_TAB", CREATE_TAB, url)
                 self.window_id, self.tab_id = identity.split("|", 1)
             else:
-                self.script_runner(NAVIGATE_TAB, self.window_id, self.tab_id, url)
+                self._run_script("NAVIGATE_TAB", NAVIGATE_TAB, self.window_id, self.tab_id, url)
             self._wait_loaded(timeout)
-            encoded = self.script_runner(
-                EXECUTE_JS, self.window_id, self.tab_id, DOM_SNAPSHOT_JS
+            encoded = self._run_script("EXECUTE_JS", EXECUTE_JS, self.window_id, self.tab_id, DOM_SNAPSHOT_JS
             )
         except ExistingChromeAcquisitionError:
             raise
@@ -202,7 +237,7 @@ class EastmoneyExistingChromeDomTransport:
             )
         deadline = self.monotonic_fn() + timeout
         while self.monotonic_fn() < deadline:
-            loading = self.script_runner(TAB_LOADING, self.window_id, self.tab_id)
+            loading = self._run_script("TAB_LOADING", TAB_LOADING, self.window_id, self.tab_id)
             if loading.lower() == "false":
                 if self.settle_seconds > 0:
                     self.sleep_fn(self.settle_seconds)
@@ -217,7 +252,7 @@ class EastmoneyExistingChromeDomTransport:
         if self.window_id is None or self.tab_id is None:
             raise ExistingChromeAcquisitionError("navigation_failure", "Chrome tab is unavailable")
         try:
-            snapshot = json.loads(self.script_runner(EXECUTE_JS, self.window_id, self.tab_id, DOM_SNAPSHOT_JS))
+            snapshot = json.loads(self._run_script("EXECUTE_JS", EXECUTE_JS, self.window_id, self.tab_id, DOM_SNAPSHOT_JS))
         except Exception as exc:
             raise ExistingChromeAcquisitionError("navigation_failure", "current Chrome DOM read failed") from exc
         if not isinstance(snapshot, dict) or not isinstance(snapshot.get("html"), str):

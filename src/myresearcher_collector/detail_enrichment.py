@@ -36,13 +36,17 @@ def execute_detail_enrichment(
     challenge_wait_seconds: float = 180.0,
     challenge_retries: int = 3,
     log_path: str | Path | None = None,
+    limit: int | None = None,
+    acquisition_mode: str = "existing-chrome",
+    profile_path: str | None = None,
 ) -> dict[str, object]:
     store = SimplePostStore(db_path)
     candidates = store.conn.execute(
         """SELECT source_item_id,url,title,published_at FROM posts
            WHERE source='eastmoney_guba' AND stock_code=? AND content IS NULL
              AND length(trim(title))=40 AND url IS NOT NULL
-           ORDER BY published_at""", (stock_code,)
+           ORDER BY published_at""" + (" LIMIT ?" if limit is not None else ""),
+        (stock_code, limit) if limit is not None else (stock_code,)
     ).fetchall()
     requested = len(candidates)
     run_id = uuid.uuid4().hex
@@ -63,6 +67,7 @@ def execute_detail_enrichment(
             "run_id": run_id, "seq": seq, "source_item_id": str(source_item_id),
             "sleep_before_sec": None, "request_duration_sec": round(time.monotonic() - started, 3),
             "result": result, "success_since_last_block": success_since_last_block,
+            "acquisition_mode": acquisition_mode, "profile_path": profile_path,
             "elapsed_since_last_block_sec": (round(time.monotonic() - last_block_monotonic, 3) if last_block_monotonic is not None else None),
         }
         if event is not None:
@@ -164,6 +169,7 @@ def execute_detail_enrichment(
                 "content_filled": success, "candidates_remaining": int(remaining),
                 "stopped": stopped, "access_block_count": access_blocks,
                 "challenge_windows": windows, "jsonl_path": str(log_file),
+                "acquisition_mode": acquisition_mode,
                 "failures": failures, "samples": samples}
     finally:
         store.close()
