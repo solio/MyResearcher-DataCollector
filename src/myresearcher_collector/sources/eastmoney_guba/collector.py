@@ -738,12 +738,19 @@ class EastmoneyGubaCollector:
         max_pages: int | None = None,
         include_details: bool = True,
         start_page: int = 1,
+        coverage_stop: Callable[[datetime, datetime], bool] | None = None,
     ) -> BackfillCollectionResult:
         """Traverse newest-to-oldest pages for an inclusive historical range.
 
         This deliberately does not consult known IDs or a checkpoint.  The
         returned shared result never declares a safe frontier, so callers can
         reuse the normal persistence tables without advancing forward state.
+
+        ``coverage_stop`` optionally receives one successfully parsed page's
+        (page_min, page_max) and returns True when the page lies entirely
+        inside previously completed coverage and the remaining requested
+        range below it is fully covered; the traversal then stops with
+        ``existing_coverage_reached`` instead of re-acquiring covered pages.
         """
         if not isinstance(stock_code, str) or len(stock_code) != 6 or not stock_code.isdigit():
             raise ValueError("stock_code must be six decimal digits")
@@ -927,6 +934,14 @@ class EastmoneyGubaCollector:
             if not parsed_page.rows and not parsed_page.out_of_scope_rows:
                 range_complete = True
                 stop_reason = "backfill_range_complete"
+                break
+            if (
+                page_times
+                and coverage_stop is not None
+                and coverage_stop(min(page_times), max(page_times))
+            ):
+                range_complete = True
+                stop_reason = "existing_coverage_reached"
                 break
             if page_detail_failure:
                 # Keep traversing to establish coverage, but unresolved range

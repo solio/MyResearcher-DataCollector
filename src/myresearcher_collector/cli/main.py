@@ -10,7 +10,6 @@ import sqlite3
 import sys
 import time
 import uuid
-import re
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +20,7 @@ from myresearcher_collector.integration import (
     execute_and_persist_simple_backfill_collection,
     execute_and_persist_collection,
     execute_and_persist_xueqiu_collection,
+    plan_backfill,
 )
 from myresearcher_collector.detail_enrichment import execute_detail_enrichment
 from myresearcher_collector.backfill import (
@@ -60,6 +60,7 @@ from myresearcher_collector.sources.xueqiu import (
     XUEQIU_BOOTSTRAP_MIN_PAGES,
     symbol_for,
 )
+from myresearcher_collector.simple_store import SimplePostStore
 from myresearcher_collector.storage import RAW_BODY_RETENTION_DAYS, purge_raw_bodies
 
 
@@ -345,32 +346,6 @@ def _data_dir_state(data_dir: Path) -> str:
     return "empty" if next(data_dir.iterdir(), None) is None else "nonempty"
 
 
-def _last_successful_backfill_page(data_dir: Path, source: str, stock_code: str) -> int:
-    """Return the highest successfully persisted list page for resumable backfill."""
-    db_path = data_dir / "collector.db"
-    if not db_path.is_file():
-        return 0
-    pattern = re.compile(r"/list,[^/]+,f(?:_(\d+))?\.html$")
-    conn = sqlite3.connect(db_path)
-    try:
-        rows = conn.execute(
-            """SELECT a.request_url
-               FROM collection_attempts a
-               JOIN collection_runs r ON r.run_id = a.run_id
-               WHERE r.source=? AND r.scope_key=?
-                 AND a.request_kind='list' AND a.outcome='success'""",
-            (source, f"stock:{stock_code}"),
-        ).fetchall()
-    finally:
-        conn.close()
-    pages = []
-    for (url,) in rows:
-        match = pattern.search(str(url))
-        if match:
-            pages.append(int(match.group(1) or 1))
-    return max(pages, default=0)
-
-
 def _persistent_mode(
     data_dir: Path, stock_code: str, source: str = "eastmoney_guba"
 ) -> tuple[str, str | None]:
@@ -564,11 +539,28 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         to_value=args.to_value, days=args.days,
     )
     data_dir = args.data_dir.expanduser().resolve()
-    start_page = args.start_page or (_last_successful_backfill_page(data_dir, args.source, args.stock) + 1)
+    resume_from_page = args.start_page or 1
+    already_covered = False
     checkpoint = None
     db_path = data_dir / "collector.db"
     if db_path.is_file():
-        _mode, checkpoint = _persistent_mode(data_dir, args.stock, args.source)
+        store = SimplePostStore(db_path, read_only=True)
+        try:
+            plan = plan_backfill(
+                store, source=args.source, stock_code=args.stock,
+                from_time=resolved.from_time, to_time=resolved.to_time,
+                explicit_start_page=args.start_page,
+            )
+            resume_from_page = plan.start_page
+            already_covered = plan.already_covered
+        finally:
+            store.close()
+        try:
+            _mode, checkpoint = _persistent_mode(data_dir, args.stock, args.source)
+        except ValueError:
+            # Backfill-created databases only carry the simple post schema;
+            # the persistent checkpoint is absent there and that is expected.
+            checkpoint = None
     return {
         "mode": "PLAN_ONLY",
         "network_execution": False,
@@ -578,7 +570,8 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "estimated_mode": "BACKFILL",
         "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", None) or "browser-socket",
         "collection_mode": "list-only",
-        "resume_from_page": start_page,
+        "resume_from_page": resume_from_page,
+        "already_covered": already_covered,
         "data_dir": str(data_dir),
         "source_access": (
             "BROWSER_MANAGED_OFFLINE_ONLY"
@@ -618,20 +611,12 @@ def execute_backfill_cli(
         to_value=args.to_value, days=args.days,
     )
     data_dir = args.data_dir.expanduser().resolve()
-    from myresearcher_collector.simple_store import SimplePostStore
-    post_store = SimplePostStore(data_dir / "collector.db")
-    start_page = args.start_page or (
-        post_store.last_successful_page(args.source, args.stock) + 1
-        if getattr(args, "list_only", False)
-        else 1
-    )
-    post_store.close()
     try:
         execution = execute_and_persist_simple_backfill_collection(
             db_path=data_dir / "collector.db",
             stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
             transport=transport,
-            start_page=start_page,
+            start_page=args.start_page,
             collector_config=CollectorConfig(
                 timeout_seconds=args.timeout,
                 min_interval_seconds=args.min_interval,
@@ -650,7 +635,7 @@ def execute_backfill_cli(
         **range_as_dict(resolved), "run_id": execution.run_id,
         "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", "browser-socket"),
         "collection_mode": "list-only",
-        "resume_from_page": start_page,
+        "resume_from_page": execution.start_page,
         "status": result.status.value, "stop_reason": result.stop_reason,
         "pages_scanned": stats.pages_scanned,
         "records_received": stats.records_received,

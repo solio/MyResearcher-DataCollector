@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
 
-from .models import CollectionResult, CollectionStatus
+from .backfill import coverage_covers, coverage_stop_predicate
+from .models import CollectionResult, CollectionStatus, RuntimeCounters
 from .sources.eastmoney_guba.collector import (
     BackfillCollectionResult,
     BOOTSTRAP_MIN_PAGES,
@@ -163,36 +164,117 @@ class _NoopEvidenceStore:
         return f"noop://{kind}/{source_item_id or 'page'}"
 
 
+@dataclass(frozen=True)
+class BackfillPlan:
+    """Range-aware backfill decisions derived from persisted state only."""
+
+    start_page: int
+    already_covered: bool
+    coverage_ranges: tuple[tuple[datetime, datetime], ...]
+
+
+def plan_backfill(
+    store: SimplePostStore,
+    *,
+    source: str,
+    stock_code: str,
+    from_time: datetime,
+    to_time: datetime,
+    explicit_start_page: int | None = None,
+) -> BackfillPlan:
+    """Decide resume page and coverage handling for one backfill request.
+
+    Resume is inherited only from a persisted resume row whose source, stock,
+    from_time and to_time all match exactly; any other range starts at page 1.
+    A requested range fully inside previously completed coverage short-circuits
+    to ``already_covered`` without any transport work.
+    """
+    coverage = tuple(store.coverage_ranges(source, stock_code))
+    if coverage_covers(coverage, from_time, to_time):
+        return BackfillPlan(start_page=1, already_covered=True, coverage_ranges=coverage)
+    resume_page = store.backfill_resume_page(source, stock_code, from_time, to_time)
+    start_page = (
+        explicit_start_page
+        if explicit_start_page is not None
+        else (resume_page + 1 if resume_page else 1)
+    )
+    return BackfillPlan(start_page=start_page, already_covered=False, coverage_ranges=coverage)
+
+
+def _synthetic_covered_result(stop_reason: str) -> BackfillCollectionResult:
+    """A zero-request successful backfill result for fully covered ranges."""
+    return BackfillCollectionResult(
+        result=CollectionResult(
+            CollectionStatus.SUCCESS, [], RuntimeCounters(), [], stop_reason, None, None
+        ),
+        pages_scanned=0, records_received=0, records_in_range=0, records_failed=0,
+        earliest_observed_at=None, latest_observed_at=None, range_complete=True,
+    )
+
+
 def execute_and_persist_simple_backfill_collection(
     *, db_path: str | Path, stock_code: str, from_time: datetime, to_time: datetime,
     transport: Transport, collector_config: CollectorConfig | None = None,
     clock: Callable[[], datetime] | None = None, sleep_fn: Callable[[float], None] = time.sleep,
-    start_page: int = 1, max_pages: int | None = None,
+    start_page: int | None = None, max_pages: int | None = None,
 ) -> PersistentBackfillCollection:
-    """Run list-only Eastmoney collection directly into one-row ``posts``."""
+    """Run list-only Eastmoney collection directly into one-row ``posts``.
+
+    Persisted state is range-aware: a partial run saves resume only for its
+    exact source/stock/from/to range, a completed run clears that resume and
+    merges the range into completed coverage, and overlapping coverage enables
+    conservative early stop (or a zero-request ``already_covered`` success).
+    """
     clock = clock or (lambda: datetime.now(timezone.utc))
     store = SimplePostStore(db_path)
-    if start_page < 1:
+    if start_page is not None and start_page < 1:
         raise ValueError("start_page must be at least 1")
-    config = collector_config or CollectorConfig()
-    collector = EastmoneyGubaCollector(
-        transport, evidence_store=_NoopEvidenceStore(), config=config,
-        sleep_fn=sleep_fn, clock=clock,
+    source = "eastmoney_guba"
+    plan = plan_backfill(
+        store, source=source, stock_code=stock_code, from_time=from_time,
+        to_time=to_time, explicit_start_page=start_page,
     )
     try:
+        if plan.already_covered:
+            store.clear_backfill_resume(source, stock_code, from_time, to_time)
+            return PersistentBackfillCollection(
+                run_id="simple-" + uuid.uuid4().hex,
+                execution=_synthetic_covered_result("already_covered"),
+                db_path=Path(db_path), raw_data_dir=Path(db_path).parent,
+                records_new=0, records_existing=0, records_versioned=0,
+                checkpoint_before=None, checkpoint_after=None,
+                start_page=plan.start_page,
+            )
+        config = collector_config or CollectorConfig()
+        collector = EastmoneyGubaCollector(
+            transport, evidence_store=_NoopEvidenceStore(), config=config,
+            sleep_fn=sleep_fn, clock=clock,
+        )
+        coverage_stop = (
+            coverage_stop_predicate(plan.coverage_ranges, from_time)
+            if plan.coverage_ranges else None
+        )
         execution = collector.collect_backfill(
             stock_code, from_time=from_time, to_time=to_time,
-            max_pages=max_pages, include_details=False, start_page=start_page,
+            max_pages=max_pages, include_details=False,
+            start_page=plan.start_page, coverage_stop=coverage_stop,
         )
         for item in execution.result.items:
             store.upsert_source_item(item, stock_code=stock_code, content=None)
-        if execution.pages_scanned:
-            store.mark_page("eastmoney_guba", stock_code, start_page + execution.pages_scanned - 1)
+        if execution.range_complete:
+            store.clear_backfill_resume(source, stock_code, from_time, to_time)
+            store.add_coverage(source, stock_code, from_time, to_time)
+        elif execution.pages_scanned > 0:
+            store.save_backfill_resume(
+                source, stock_code, from_time, to_time,
+                plan.start_page + execution.pages_scanned - 1,
+            )
         return PersistentBackfillCollection(
             run_id="simple-" + uuid.uuid4().hex,
             execution=execution, db_path=Path(db_path), raw_data_dir=Path(db_path).parent,
             records_new=0, records_existing=0, records_versioned=0,
             checkpoint_before=None, checkpoint_after=None,
+            start_page=plan.start_page,
         )
     finally:
         store.close()
@@ -220,6 +302,7 @@ class PersistentBackfillCollection:
     records_versioned: int
     checkpoint_before: str | None
     checkpoint_after: str | None
+    start_page: int = 1
 
 
 class _XueqiuCapturingTransport:

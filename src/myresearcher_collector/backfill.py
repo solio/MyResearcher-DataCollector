@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from typing import Callable, Iterable, Sequence
 
 
 class BackfillConfigError(ValueError):
@@ -81,3 +82,87 @@ def range_as_dict(value: BackfillRange) -> dict[str, str]:
         "from_time": value.from_time.isoformat().replace("+00:00", "Z"),
         "to_time": value.to_time.isoformat().replace("+00:00", "Z"),
     }
+
+
+def merge_coverage_intervals(
+    intervals: Iterable[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    """Merge overlapping or adjacent [covered_from, covered_to] intervals.
+
+    Coverage intervals only ever come from fully completed backfill ranges, so
+    no interval ever exceeds the caller-validated [from, to] shape.
+    """
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(intervals):
+        if start > end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def coverage_covers(
+    covered: Sequence[tuple[datetime, datetime]],
+    from_time: datetime,
+    to_time: datetime,
+) -> bool:
+    """True when the union of merged coverage intervals fully covers the range.
+
+    Only completed backfills produce coverage, so a True result proves the
+    requested range was already acquired and persisted.
+    """
+    covered_until = from_time
+    for start, end in covered:
+        if end < covered_until:
+            continue
+        if start > covered_until:
+            return False
+        covered_until = end
+        if covered_until >= to_time:
+            return True
+    return covered_until >= to_time
+
+
+def coverage_boundary(
+    covered: Sequence[tuple[datetime, datetime]],
+    from_time: datetime,
+) -> datetime | None:
+    """Largest ``to`` such that [from_time, to] is fully covered, else None.
+
+    None means the requested from_time itself is not covered, so an overlap
+    stop can never be declared while scanning.
+    """
+    covered_until = from_time
+    boundary: datetime | None = None
+    for start, end in covered:
+        if end < covered_until:
+            continue
+        if start > covered_until:
+            return boundary
+        covered_until = end
+        boundary = end
+    return boundary
+
+
+def coverage_stop_predicate(
+    covered: Sequence[tuple[datetime, datetime]],
+    from_time: datetime,
+) -> Callable[[datetime, datetime], bool]:
+    """Build the conservative early-stop check for one backfill traversal.
+
+    The returned predicate receives one successfully parsed page's
+    (page_min, page_max) and returns True only when the whole page lies inside
+    the covered region below from_time: page_min >= from_time and
+    page_max <= boundary, where boundary is the farthest covered point
+    reachable continuously from from_time.  A page that merely grazes the
+    covered region never stops the traversal; over-collecting one page is
+    acceptable, missing data is not.
+    """
+    boundary = coverage_boundary(covered, from_time)
+    if boundary is None:
+        return lambda _page_min, _page_max: False
+    return lambda page_min, page_max: (
+        page_min >= from_time and page_max <= boundary
+    )

@@ -26,8 +26,11 @@ def test_simple_list_backfill_writes_posts_only_and_resumes(tmp_path):
         assert conn.execute("select count(*) from posts").fetchone()[0] == 1
         assert conn.execute("select content from posts").fetchone()[0] is None
         tables = {r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
-        assert tables == {"posts", "backfill_state"}
-        assert conn.execute("select last_successful_page from backfill_state").fetchone()[0] == 2
+        assert tables == {"posts", "backfill_resume", "backfill_coverage"}
+        assert conn.execute("select count(*) from backfill_resume").fetchone()[0] == 0
+        assert conn.execute("select covered_from, covered_to from backfill_coverage").fetchone() == (
+            "2026-08-09T00:00:00Z", "2026-08-11T00:00:00Z",
+        )
     finally:
         conn.close()
 

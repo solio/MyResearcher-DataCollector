@@ -13,6 +13,8 @@ from myresearcher_collector.cli.main import (
     execute_backfill_cli,
     main,
 )
+from myresearcher_collector.backfill import resolve_backfill_range
+from myresearcher_collector.simple_store import SimplePostStore
 from myresearcher_collector.sources.eastmoney_guba import EastmoneyExistingChromeDomTransport
 
 
@@ -32,7 +34,49 @@ def test_backfill_plan_only_is_network_and_persistence_free(tmp_path: Path, caps
     assert plan["network_execution"] is False
     assert plan["checkpoint_mutation"] is False
     assert plan["acquisition_method"] == "browser-socket"
+    assert plan["resume_from_page"] == 1
+    assert plan["already_covered"] is False
     assert not data_dir.exists()
+
+
+def test_backfill_plan_only_is_range_aware_and_non_mutating(tmp_path: Path, capsys) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = data_dir / "collector.db"
+    store = SimplePostStore(db_path)
+    try:
+        resolved = resolve_backfill_range(
+            source="eastmoney_guba", stock_code="600001",
+            from_value="2026-08-01", to_value="2026-08-13",
+        )
+        store.save_backfill_resume(
+            "eastmoney_guba", "600001", resolved.from_time, resolved.to_time, 20
+        )
+    finally:
+        store.close()
+    before = db_path.stat().st_mtime_ns
+
+    code = main([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--from", "2026-08-01", "--to", "2026-08-13",
+        "--data-dir", str(data_dir), "--plan-only",
+    ])
+    assert code == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["resume_from_page"] == 21
+    assert plan["already_covered"] is False
+
+    # A different range must not inherit the persisted page checkpoint.
+    code = main([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--from", "2026-08-01", "--to", "2026-08-20",
+        "--data-dir", str(data_dir), "--plan-only",
+    ])
+    assert code == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["resume_from_page"] == 1
+    assert plan["already_covered"] is False
+    assert db_path.stat().st_mtime_ns == before
 
 
 def test_backfill_requires_complete_explicit_range() -> None:
@@ -79,6 +123,7 @@ def test_backfill_host_can_inject_browser_owned_transport(
             records_versioned=0,
             checkpoint_before=None,
             checkpoint_after=None,
+            start_page=1,
         )
 
     monkeypatch.setattr(
