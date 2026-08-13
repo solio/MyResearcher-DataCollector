@@ -21,7 +21,6 @@ on run argv
     set w to front window
     set t to make new tab at end of tabs of w with properties {URL:targetURL}
     set active tab index of w to (count of tabs of w)
-    activate
     return ((id of w) as text) & "|" & ((id of t) as text)
   end tell
 end run
@@ -36,7 +35,6 @@ on run argv
     set w to first window whose id is windowID
     set t to first tab of w whose id is tabID
     set URL of t to targetURL
-    activate
     return targetURL
   end tell
 end run
