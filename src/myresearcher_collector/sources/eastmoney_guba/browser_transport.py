@@ -54,6 +54,7 @@ class EastmoneyBrowserResponse:
     body: bytes
     headers: dict[str, str]
     final_url: str | None = None
+    diagnostics: dict[str, object] | None = None
 
     @property
     def text(self) -> str:
@@ -97,6 +98,10 @@ class EastmoneyBrowserTransport:
                 body=body,
                 headers=headers,
                 final_url=final_url,
+                diagnostics={
+                    "actual_url": str(self.page.url),
+                    "page_title": str(self.page.title()),
+                },
             )
         except (EastmoneyBrowserBoundaryError, EastmoneyBrowserTransportError):
             raise

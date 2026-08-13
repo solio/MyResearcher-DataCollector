@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -766,6 +768,20 @@ class EastmoneyGubaCollector:
         previous_page_signature: tuple[str, ...] | None = None
         run_seen_ids: set[str] = set()
 
+        def diagnostic(url: str, previous: tuple[str, ...] | None = None) -> None:
+            capture = getattr(self.transport, "diagnostic_snapshot", None)
+            if not callable(capture):
+                return
+            try:
+                previous_hash = hashlib.sha256("|".join(previous or ()).encode()).hexdigest() if previous else None
+                row = capture(url, previous_ids_hash=previous_hash)
+                out = Path("runtime/diagnostics")
+                out.mkdir(parents=True, exist_ok=True)
+                with (out / "eastmoney-navigation.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+            except Exception:
+                pass
+
         def build_list_only_item(row: Any, list_ref: str, list_final_url: str) -> GubaSourceItem:
             collected_at = self.clock()
             if collected_at.tzinfo is None:
@@ -831,6 +847,7 @@ class EastmoneyGubaCollector:
             try:
                 html, raw_page, _, page_final_url = self._fetch(page_url, counters)
             except FetchFailure as exc:
+                diagnostic(page_url, previous_page_signature)
                 counters.pages_failed += 1
                 failures.append(f"page {page_number}: {exc.kind}")
                 stop_reason = "pagination_failure" if counters.pages_success else "source_failure"
@@ -853,6 +870,7 @@ class EastmoneyGubaCollector:
 
             signature = tuple(row.source_item_id for row in parsed_page.rows)
             if signature and signature == previous_page_signature:
+                diagnostic(page_url, previous_page_signature)
                 failures.append(f"page {page_number}: pagination_not_progressing")
                 stop_reason = "pagination_failure"
                 break
