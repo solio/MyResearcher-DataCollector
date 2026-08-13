@@ -138,6 +138,7 @@ class CollectorConfig:
     max_backoff_seconds: float = 30.0
     max_retry_after_seconds: float = 60.0
     min_interval_seconds: float = 3.0
+    max_interval_seconds: float = 10.0
     randomize_pacing: bool = False
 
 
@@ -299,7 +300,7 @@ class EastmoneyGubaCollector:
         if self._last_request_at is not None:
             interval = self.config.min_interval_seconds
             if self.config.randomize_pacing:
-                interval = self.jitter_fn(max(3.0, interval), 10.0)
+                interval = self.jitter_fn(max(3.0, interval), self.config.max_interval_seconds)
             remaining = interval - (now - self._last_request_at)
             if remaining > 0:
                 self.sleep_fn(remaining)

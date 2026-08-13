@@ -167,7 +167,7 @@ def execute_and_persist_simple_backfill_collection(
     *, db_path: str | Path, stock_code: str, from_time: datetime, to_time: datetime,
     transport: Transport, collector_config: CollectorConfig | None = None,
     clock: Callable[[], datetime] | None = None, sleep_fn: Callable[[float], None] = time.sleep,
-    start_page: int = 1,
+    start_page: int = 1, max_pages: int | None = None,
 ) -> PersistentBackfillCollection:
     """Run list-only Eastmoney collection directly into one-row ``posts``."""
     clock = clock or (lambda: datetime.now(timezone.utc))
@@ -182,7 +182,7 @@ def execute_and_persist_simple_backfill_collection(
     try:
         execution = collector.collect_backfill(
             stock_code, from_time=from_time, to_time=to_time,
-            max_pages=None, include_details=False, start_page=start_page,
+            max_pages=max_pages, include_details=False, start_page=start_page,
         )
         for item in execution.result.items:
             store.upsert_source_item(item, stock_code=stock_code, content=None)

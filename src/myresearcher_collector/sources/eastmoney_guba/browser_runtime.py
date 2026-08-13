@@ -8,12 +8,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .acquisition import AcquiredDocument, BROWSER_DOM_SNAPSHOT
-from .browser_transport import EastmoneyBrowserTransport
+from .browser_transport import EastmoneyBrowserSocketTransport, EastmoneyBrowserTransport
 from .existing_chrome import EastmoneyExistingChromeDomTransport
 
 
 DEFAULT_CHROME_PROFILE = Path(".runtime/browser-profiles/eastmoney-chrome")
 DEFAULT_MANAGED_PROFILE = Path(".runtime/browser-profiles/eastmoney-managed-chromium")
+
+
+def create_eastmoney_transport(
+    acquisition_mode: str,
+    *,
+    profile_dir: str | Path | None = None,
+    browser_socket: str | Path | None = None,
+):
+    """Create the shared Eastmoney browser acquisition transport."""
+    if acquisition_mode == "existing-chrome":
+        return EastmoneyExistingChromeDomTransport()
+    if acquisition_mode == "chrome-clean":
+        return ChromeCleanDomTransport(profile_dir=profile_dir or DEFAULT_CHROME_PROFILE)
+    if acquisition_mode == "managed-chromium":
+        return ManagedChromiumTransport(profile_dir=profile_dir or DEFAULT_MANAGED_PROFILE)
+    if acquisition_mode == "browser-socket":
+        if browser_socket is None:
+            raise ValueError("browser-socket acquisition requires a socket path")
+        return EastmoneyBrowserSocketTransport(browser_socket)
+    raise ValueError(f"unsupported Eastmoney acquisition mode: {acquisition_mode}")
 
 
 class ChromeCleanDomTransport:

@@ -45,7 +45,7 @@ from myresearcher_collector.sources.eastmoney_guba import (
 )
 from myresearcher_collector.sources.eastmoney_guba.browser_runtime import (
     ChromeCleanDomTransport, ManagedChromiumTransport,
-    DEFAULT_CHROME_PROFILE, DEFAULT_MANAGED_PROFILE,
+    DEFAULT_CHROME_PROFILE, DEFAULT_MANAGED_PROFILE, create_eastmoney_transport,
 )
 from myresearcher_collector.sources.eastmoney_guba.browser_host import (
     BrowserHostConfigError,
@@ -83,9 +83,16 @@ def _add_eastmoney_acquisition_argument(parser: argparse.ArgumentParser) -> None
     parser.add_argument(
         "--acquisition-method",
         choices=("browser-socket", "existing-chrome-dom"),
-        default="browser-socket",
+        default=None,
         help="truthful HTTP-response host or existing-user Chrome DOM acquisition",
     )
+    parser.add_argument(
+        "--acquisition-mode",
+        choices=("existing-chrome", "chrome-clean", "managed-chromium"),
+        default=None,
+        help="browser runtime shared by list backfill and detail enrichment",
+    )
+    parser.add_argument("--profile-dir", type=Path, default=None)
 
 
 def _add_browser_socket_argument(parser: argparse.ArgumentParser) -> None:
@@ -106,9 +113,16 @@ def _json_default(value: object) -> str:
 
 
 def _browser_socket_transport(args: argparse.Namespace) -> Transport:
-    if getattr(args, "acquisition_method", "browser-socket") == "existing-chrome-dom":
-        return EastmoneyExistingChromeDomTransport()
-    return EastmoneyBrowserSocketTransport(args.browser_socket)
+    mode = getattr(args, "acquisition_mode", None)
+    if mode:
+        return create_eastmoney_transport(
+            mode, profile_dir=getattr(args, "profile_dir", None),
+            browser_socket=getattr(args, "browser_socket", None),
+        )
+    method = getattr(args, "acquisition_method", None) or "browser-socket"
+    if method == "existing-chrome-dom":
+        return create_eastmoney_transport("existing-chrome")
+    return create_eastmoney_transport("browser-socket", browser_socket=args.browser_socket)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -250,7 +264,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="historical Eastmoney mode: persist list rows and never navigate post details",
     )
     backfill.add_argument("--timeout", type=float, default=20.0)
+    backfill.add_argument("--max-pages", type=int, default=None)
     backfill.add_argument("--min-interval", type=float, default=3.0)
+    backfill.add_argument("--max-interval", type=float, default=10.0)
     _add_browser_socket_argument(backfill)
     _add_eastmoney_acquisition_argument(backfill)
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
@@ -269,7 +285,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="diagnostic bound on detail candidates")
     enrich.add_argument("--profile-dir", type=Path, default=None)
     enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean", "managed-chromium"), default="existing-chrome")
-    _add_eastmoney_acquisition_argument(enrich)
     enrich_mode = enrich.add_mutually_exclusive_group(required=True)
     enrich_mode.add_argument("--plan-only", action="store_true")
     enrich_mode.add_argument("--confirm-live", action="store_true")
@@ -556,7 +571,7 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": checkpoint,
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
-        "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
+        "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", None) or "browser-socket",
         "collection_mode": "list-only",
         "resume_from_page": start_page,
         "data_dir": str(data_dir),
@@ -578,6 +593,8 @@ def execute_backfill_cli(
         raise RuntimeError("xueqiu backfill live host is not wired; offline path is NOT_READY")
     if args.min_interval < 2.5:
         raise BackfillConfigError("min_interval must be at least 2.5 seconds")
+    if args.max_interval < args.min_interval:
+        raise BackfillConfigError("max_interval must be at least min_interval")
     if args.start_page is not None and args.start_page < 1:
         raise BackfillConfigError("start_page must be at least 1")
     if transport is None:
@@ -606,8 +623,10 @@ def execute_backfill_cli(
             collector_config=CollectorConfig(
                 timeout_seconds=args.timeout,
                 min_interval_seconds=args.min_interval,
+                max_interval_seconds=args.max_interval,
                 randomize_pacing=True,
             ),
+            max_pages=args.max_pages,
         )
     finally:
         close = getattr(transport, "close", None)
@@ -617,7 +636,7 @@ def execute_backfill_cli(
     result = stats.result
     report = {
         **range_as_dict(resolved), "run_id": execution.run_id,
-        "acquisition_method": getattr(args, "acquisition_method", "browser-socket"),
+        "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", "browser-socket"),
         "collection_mode": "list-only",
         "resume_from_page": start_page,
         "status": result.status.value, "stop_reason": result.stop_reason,
@@ -756,12 +775,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mode = args.acquisition_mode
             profile = args.profile_dir
-            if mode == "existing-chrome":
-                transport = EastmoneyExistingChromeDomTransport()
-            elif mode == "chrome-clean":
-                transport = ChromeCleanDomTransport(profile_dir=profile or DEFAULT_CHROME_PROFILE)
-            else:
-                transport = ManagedChromiumTransport(profile_dir=profile or DEFAULT_MANAGED_PROFILE)
+            transport = create_eastmoney_transport(mode, profile_dir=profile)
             resolved_profile = getattr(transport, "profile_dir", None)
             report = execute_detail_enrichment(
                 db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
