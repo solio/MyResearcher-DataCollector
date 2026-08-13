@@ -214,6 +214,27 @@ class EastmoneyExistingChromeDomTransport:
             "navigation_failure", "Chrome tab navigation timed out"
         )
 
+    def current_document(self) -> AcquiredDocument:
+        """Read current tab DOM without navigating."""
+        if self.window_id is None or self.tab_id is None:
+            raise ExistingChromeAcquisitionError("navigation_failure", "Chrome tab is unavailable")
+        try:
+            snapshot = json.loads(self.script_runner(EXECUTE_JS, self.window_id, self.tab_id, DOM_SNAPSHOT_JS))
+        except Exception as exc:
+            raise ExistingChromeAcquisitionError("navigation_failure", "current Chrome DOM read failed") from exc
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("html"), str):
+            raise ExistingChromeAcquisitionError("invalid_document", "current Chrome DOM has no HTML")
+        observed_url = snapshot.get("observedUrl")
+        if not isinstance(observed_url, str):
+            raise ExistingChromeAcquisitionError("invalid_document", "current Chrome DOM has no URL")
+        _validate_browser_url(observed_url)
+        payload = snapshot["html"].encode("utf-8")
+        if not payload:
+            raise ExistingChromeAcquisitionError("invalid_document", "current Chrome DOM is empty")
+        return AcquiredDocument(payload=payload, request_url=observed_url, observed_url=observed_url,
+                                capture_method=BROWSER_DOM_SNAPSHOT, fetched_at=self.clock(),
+                                http_status=None, content_type=None, metadata={})
+
     def close(self) -> None:
         if self.window_id is None or self.tab_id is None:
             return

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import random
+import sys
 import time
 from pathlib import Path
 from typing import Callable
@@ -29,6 +30,8 @@ def execute_detail_enrichment(
     jitter_fn: Callable[[float, float], float] = random.uniform,
     min_delay: float = 3.0,
     max_delay: float = 10.0,
+    challenge_wait_seconds: float = 180.0,
+    challenge_retries: int = 3,
 ) -> dict[str, object]:
     store = SimplePostStore(db_path)
     candidates = store.conn.execute(
@@ -47,9 +50,40 @@ def execute_detail_enrichment(
             if index and max_delay > 0:
                 sleep_fn(jitter_fn(min_delay, max_delay))
             try:
-                response = transport.get(url, timeout=30.0)
-                body = _body(response)
-                html = body.decode("utf-8", errors="replace")
+                response = None
+                body = b""
+                html = ""
+                for attempt in range(max(1, challenge_retries + 1)):
+                    response = transport.get(url, timeout=30.0)
+                    body = _body(response)
+                    html = body.decode("utf-8", errors="replace")
+                    if not is_access_block_page(html):
+                        break
+                    if attempt >= challenge_retries:
+                        break
+                    print(
+                        f"access block for {item_id}; complete visible Chrome verification "
+                        f"within {challenge_wait_seconds:.0f}s; polling current DOM every 5s",
+                        file=sys.stderr, flush=True,
+                    )
+                    deadline = time.monotonic() + max(0.0, challenge_wait_seconds)
+                    current = getattr(transport, "current_document", None)
+                    if not callable(current):
+                        sleep_fn(max(0.0, challenge_wait_seconds))
+                        continue
+                    while time.monotonic() < deadline:
+                        sleep_fn(min(5.0, max(0.0, deadline - time.monotonic())))
+                        try:
+                            candidate = current()
+                            candidate_body = _body(candidate)
+                            candidate_html = candidate_body.decode("utf-8", errors="replace")
+                            if not is_access_block_page(candidate_html):
+                                response, body, html = candidate, candidate_body, candidate_html
+                                break
+                        except Exception:
+                            continue
+                    if html and not is_access_block_page(html):
+                        break
                 if is_access_block_page(html):
                     failures.append({"source_item_id": str(item_id), "reason": "access_block"})
                     stopped = True

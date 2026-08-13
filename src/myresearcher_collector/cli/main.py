@@ -258,6 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     enrich.add_argument("--min-delay", type=float, default=3.0)
     enrich.add_argument("--max-delay", type=float, default=10.0)
+    enrich.add_argument("--challenge-wait", type=float, default=180.0,
+                        help="seconds to leave Chrome open for manual verification")
+    enrich.add_argument("--challenge-retries", type=int, default=3)
     _add_eastmoney_acquisition_argument(enrich)
     enrich_mode = enrich.add_mutually_exclusive_group(required=True)
     enrich_mode.add_argument("--plan-only", action="store_true")
@@ -737,13 +740,16 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("stock must be six decimal digits")
             if args.min_delay < 3.0 or args.max_delay < args.min_delay:
                 raise ValueError("delay must be 3..10 seconds")
+            if args.challenge_wait < 0 or args.challenge_retries < 0:
+                raise ValueError("challenge wait/retries must be non-negative")
             if args.plan_only:
                 print(json.dumps({"mode":"PLAN_ONLY","source":args.source,"stock":args.stock,
                                   "data_dir":str(args.data_dir.expanduser().resolve())}, indent=2))
                 return 0
             report = execute_detail_enrichment(
                 db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
-                transport=EastmoneyExistingChromeDomTransport(), min_delay=args.min_delay, max_delay=args.max_delay)
+                transport=EastmoneyExistingChromeDomTransport(), min_delay=args.min_delay, max_delay=args.max_delay,
+                challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries)
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"detail enrichment error: {exc}", file=sys.stderr)
             return 2

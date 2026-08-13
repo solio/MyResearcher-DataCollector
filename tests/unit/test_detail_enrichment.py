@@ -20,6 +20,17 @@ class T:
         return AcquiredDocument(_detail(),url,url,BROWSER_DOM_SNAPSHOT,datetime.now(timezone.utc),None,None,{})
 
 
+class BlockThenPass:
+    def __init__(self): self.calls = 0
+    def get(self, url, *, timeout):
+        self.calls += 1
+        if self.calls == 1:
+            return AcquiredDocument("<title>身份核实</title><script>fd_guba_validate</script>".encode(), url, url, BROWSER_DOM_SNAPSHOT, datetime.now(timezone.utc), None, None, {})
+        return T().get(url, timeout=timeout)
+    def current_document(self):
+        return T().get("https://guba.eastmoney.com/news,601012,1.html", timeout=1)
+
+
 def test_enrichment_updates_same_row_and_skips_non_candidates(tmp_path):
     store=SimplePostStore(tmp_path/"collector.db")
     store.upsert_post(source="eastmoney_guba",source_item_id="1",stock_code="601012",title="x"*40,content=None,author_id="u",author_name="n",published_at="2026-08-01T02:00:00.000000Z",url="https://guba.eastmoney.com/news,601012,1.html",read_count=0,reply_count=0,like_count=0,forward_count=0)
@@ -30,3 +41,13 @@ def test_enrichment_updates_same_row_and_skips_non_candidates(tmp_path):
     assert reopened.count("eastmoney_guba","601012")==1
     assert reopened.rows("eastmoney_guba","601012")[0]["content"]=="完整正文内容"
     reopened.close()
+
+
+def test_enrichment_waits_for_manual_challenge_then_retries(tmp_path):
+    store=SimplePostStore(tmp_path/"collector.db")
+    _ = _post = store.upsert_post(source="eastmoney_guba",source_item_id="1",stock_code="601012",title="x"*40,content=None,author_id="u",author_name="n",published_at="2026-08-01T02:00:00.000000Z",url="https://guba.eastmoney.com/news,601012,1.html",read_count=0,reply_count=0,like_count=0,forward_count=0)
+    store.close()
+    waits=[]
+    report=execute_detail_enrichment(db_path=tmp_path/"collector.db",stock_code="601012",transport=BlockThenPass(),sleep_fn=waits.append,challenge_wait_seconds=7,challenge_retries=1)
+    assert report["success"] == 1
+    assert waits and waits[0] <= 5
