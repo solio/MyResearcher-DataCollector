@@ -12,7 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .acquisition import AcquiredDocument, BROWSER_DOM_SNAPSHOT
-from .browser_transport import EastmoneyBrowserSocketTransport, EastmoneyBrowserTransport
+from .browser_transport import (
+    EastmoneyBrowserSocketTransport,
+    EastmoneyBrowserTransport,
+    EastmoneyBrowserTransportError,
+)
 from .existing_chrome import EastmoneyExistingChromeDomTransport
 
 
@@ -150,12 +154,28 @@ class ManagedChromiumTransport:
         except Exception:
             pass
 
+    def _ensure_page(self) -> None:
+        """Recreate a usable page after the previous one was closed by the page."""
+        self._ensure_started()
+        if self.page is None or self.page.is_closed():
+            self.page = self.context.new_page()
+            self.page.on("dialog", self._on_dialog)
+            self.delegate = EastmoneyBrowserTransport(self.page)
+
     def get(self, url: str, *, timeout: float):
         self._ensure_started()
-        return self.delegate.get(url, timeout=timeout)
+        for attempt in range(2):
+            self._ensure_page()
+            try:
+                return self.delegate.get(url, timeout=timeout)
+            except EastmoneyBrowserTransportError:
+                if attempt == 0 and self.page.is_closed():
+                    continue
+                raise
 
     def current_document(self) -> AcquiredDocument:
         self._ensure_started()
+        self._ensure_page()
         html = self.page.content()
         return AcquiredDocument(
             payload=html.encode("utf-8"), request_url=self.page.url,
