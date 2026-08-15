@@ -757,6 +757,10 @@ class EastmoneyGubaCollector:
         start_page: int = 1,
         coverage_stop: Callable[[datetime, datetime], bool] | None = None,
         page_anchor_callback: Callable[[int, datetime, datetime, int | None, int], None] | None = None,
+        page_success_callback: Callable[
+            [int, list[GubaSourceItem], datetime | None, datetime | None, int | None, int],
+            None,
+        ] | None = None,
     ) -> BackfillCollectionResult:
         """Traverse newest-to-oldest pages for an inclusive historical range.
 
@@ -915,6 +919,7 @@ class EastmoneyGubaCollector:
                     )
 
             page_detail_failure = False
+            page_items: list[GubaSourceItem] = []
             for row in parsed_page.rows:
                 if row.published_at > to_time or row.published_at < from_time:
                     continue
@@ -922,7 +927,9 @@ class EastmoneyGubaCollector:
                     continue
                 records_in_range += 1
                 if not include_details:
-                    items.append(build_list_only_item(row, page_ref, page_final_url))
+                    item = build_list_only_item(row, page_ref, page_final_url)
+                    items.append(item)
+                    page_items.append(item)
                     run_seen_ids.add(row.source_item_id)
                     counters.records_parsed += 1
                     continue
@@ -945,10 +952,24 @@ class EastmoneyGubaCollector:
                     page_detail_failure = True
                     failures.append(f"detail {row.source_item_id}: {self._failure_name(exc)}")
                     continue
-                items.append(build_detail_item(merged, page_ref, detail_ref, page_final_url, detail_final_url))
+                item = build_detail_item(
+                    merged, page_ref, detail_ref, page_final_url, detail_final_url
+                )
+                items.append(item)
+                page_items.append(item)
                 run_seen_ids.add(row.source_item_id)
                 counters.details_success += 1
                 counters.records_parsed += 1
+
+            if page_success_callback is not None:
+                page_success_callback(
+                    page_number,
+                    page_items,
+                    page_min if page_times else None,
+                    page_max if page_times else None,
+                    parsed_page.source_count,
+                    len(parsed_page.rows) + len(parsed_page.out_of_scope_rows),
+                )
 
             if page_times and max(page_times) < from_time:
                 range_complete = True

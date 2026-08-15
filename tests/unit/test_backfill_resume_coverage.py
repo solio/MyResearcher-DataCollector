@@ -26,6 +26,7 @@ from myresearcher_collector.backfill import (
     coverage_covers,
     coverage_stop_predicate,
     merge_coverage_intervals,
+    resolve_backfill_range,
 )
 from myresearcher_collector.integration import (
     execute_and_persist_simple_backfill_collection,
@@ -83,6 +84,105 @@ def test_future_range_fails_closed_before_store_or_transport(tmp_path):
         )
     assert transport.calls == []
     assert not db_path.exists()
+
+
+def test_page_one_is_durable_before_unexpected_page_two_failure(tmp_path):
+    db_path = tmp_path / "collector.db"
+    transport = MappingTransport(routes_for(STOCK, {
+        1: [("1001", "2026-08-10 12:00:00")],
+    }))
+    # An absent page-2 route is normalized by the Collector into a partial
+    # pagination failure after page 1 has already committed.
+    result = run_backfill(db_path, transport, utc(1), utc(20))
+    assert result.execution.result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert result.execution.result.stop_reason == "pagination_failure"
+
+    store = SimplePostStore(db_path)
+    try:
+        assert store.count(SOURCE, STOCK) == 1
+        assert store.backfill_resume_page(SOURCE, STOCK, utc(1), utc(20)) == 1
+        assert len(store.page_anchors(SOURCE, STOCK)) == 1
+        assert store.coverage_ranges(SOURCE, STOCK) == []
+    finally:
+        store.close()
+
+
+def test_multiple_successful_pages_survive_unexpected_interruption(tmp_path):
+    db_path = tmp_path / "collector.db"
+    transport = MappingTransport(routes_for(STOCK, {
+        1: [("1001", "2026-08-10 12:00:00")],
+        2: [("1002", "2026-08-09 12:00:00")],
+    }))
+    result = run_backfill(db_path, transport, utc(1), utc(20))
+    assert result.execution.result.status is CollectionStatus.PARTIAL_COLLECTION
+    assert result.execution.result.stop_reason == "pagination_failure"
+
+    store = SimplePostStore(db_path)
+    try:
+        assert store.count(SOURCE, STOCK) == 2
+        assert store.backfill_resume_page(SOURCE, STOCK, utc(1), utc(20)) == 2
+        assert len(store.page_anchors(SOURCE, STOCK)) == 2
+        assert store.coverage_ranges(SOURCE, STOCK) == []
+    finally:
+        store.close()
+
+
+def test_page_transaction_rolls_back_posts_anchor_and_resume(tmp_path, monkeypatch):
+    db_path = tmp_path / "collector.db"
+    original = SimplePostStore.upsert_source_item
+    calls = 0
+
+    def fail_on_second(self, item, *, stock_code, content=None, updated_at=None):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected page transaction failure")
+        return original(
+            self, item, stock_code=stock_code, content=content, updated_at=updated_at
+        )
+
+    monkeypatch.setattr(SimplePostStore, "upsert_source_item", fail_on_second)
+    transport = MappingTransport(routes_for(STOCK, {
+        1: [
+            ("1001", "2026-08-10 12:00:00"),
+            ("1002", "2026-08-10 11:00:00"),
+        ],
+    }))
+    with pytest.raises(RuntimeError, match="injected page transaction failure"):
+        run_backfill(db_path, transport, utc(1), utc(20))
+
+    store = SimplePostStore(db_path)
+    try:
+        assert store.count(SOURCE, STOCK) == 0
+        assert store.backfill_resume_page(SOURCE, STOCK, utc(1), utc(20)) is None
+        assert store.page_anchors(SOURCE, STOCK) == []
+        assert store.coverage_ranges(SOURCE, STOCK) == []
+    finally:
+        store.close()
+
+
+def test_live_top_partial_persists_posts_without_unsafe_resume(tmp_path):
+    db_path = tmp_path / "collector.db"
+    noon = datetime(2026, 8, 13, 4, 0, tzinfo=timezone.utc)
+    resolved = resolve_backfill_range(source=SOURCE, stock_code=STOCK, days=36, now=noon)
+    result = run_backfill(
+        db_path,
+        MappingTransport(routes_for(STOCK, {
+            1: [("1001", "2026-08-13 10:00:00")],
+        })),
+        resolved.from_time, resolved.to_time, max_pages=1, clock=lambda: noon,
+    )
+    assert result.execution.result.status is CollectionStatus.PARTIAL_COLLECTION
+
+    store = SimplePostStore(db_path)
+    try:
+        assert store.count(SOURCE, STOCK) == 1
+        assert store.backfill_resume_page(
+            SOURCE, STOCK, resolved.from_time, resolved.to_time
+        ) is None
+        assert store.coverage_ranges(SOURCE, STOCK) == []
+    finally:
+        store.close()
 
 
 # --- CASE 1: same-range resume ---------------------------------------------

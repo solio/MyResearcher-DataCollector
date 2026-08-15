@@ -340,16 +340,30 @@ def execute_and_persist_simple_backfill_collection(
                     start_page=traversal_start_page,
                 )
         coverage_eligible = plan.coverage_eligible or seek_proof is not None
-        def save_anchor(page_no: int, page_min: datetime, page_max: datetime,
-                        source_count: int | None, page_size: int) -> None:
+        def persist_page(
+            page_no: int,
+            page_items: list[Any],
+            page_min: datetime | None,
+            page_max: datetime | None,
+            source_count: int | None,
+            page_size: int,
+        ) -> None:
             observed_at = clock()
             if observed_at.tzinfo is None:
                 observed_at = observed_at.replace(tzinfo=timezone.utc)
-            store.save_page_anchor(PageAnchor(
-                source=source, stock_code=stock_code, observed_at=observed_at,
-                page_no=page_no, page_min_time=page_min, page_max_time=page_max,
-                source_count=source_count, page_size=page_size,
-            ))
+            with store.transaction():
+                for item in page_items:
+                    store.upsert_source_item(item, stock_code=stock_code, content=None)
+                if page_min is not None and page_max is not None:
+                    store.save_page_anchor(PageAnchor(
+                        source=source, stock_code=stock_code, observed_at=observed_at,
+                        page_no=page_no, page_min_time=page_min, page_max_time=page_max,
+                        source_count=source_count, page_size=page_size,
+                    ))
+                if coverage_eligible and effective.to_time < started_at:
+                    store.save_backfill_resume(
+                        source, stock_code, effective.from_time, effective.to_time, page_no
+                    )
         coverage_stop = (
             coverage_stop_predicate(plan.coverage_ranges, effective.from_time)
             if plan.coverage_ranges else None
@@ -358,10 +372,8 @@ def execute_and_persist_simple_backfill_collection(
             stock_code, from_time=effective.from_time, to_time=effective.to_time,
             max_pages=max_pages, include_details=False,
             start_page=traversal_start_page, coverage_stop=coverage_stop,
-            page_anchor_callback=save_anchor,
+            page_success_callback=persist_page,
         )
-        for item in execution.result.items:
-            store.upsert_source_item(item, stock_code=stock_code, content=None)
         if execution.range_complete and not coverage_eligible:
             # The downward traversal finished, but pages 1..start-1 were never
             # scanned for this range, so the requested range is not complete.
@@ -391,12 +403,6 @@ def execute_and_persist_simple_backfill_collection(
             store.add_coverage(
                 source, stock_code, effective.from_time, effective.to_time
             )
-        elif execution.pages_scanned > 0 and coverage_eligible:
-            if effective.to_time < started_at:
-                store.save_backfill_resume(
-                    source, stock_code, effective.from_time, effective.to_time,
-                    traversal_start_page + execution.pages_scanned - 1,
-                )
         return PersistentBackfillCollection(
             run_id="simple-" + uuid.uuid4().hex,
             execution=execution, db_path=Path(db_path), raw_data_dir=Path(db_path).parent,

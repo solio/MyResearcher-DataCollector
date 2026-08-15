@@ -1,5 +1,6 @@
 """Simple one-row-per-post SQLite store."""
 from __future__ import annotations
+from contextlib import contextmanager
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,14 +52,39 @@ class SimplePostStore:
         else:
             self.db_path.parent.mkdir(parents=True,exist_ok=True)
             self.conn=sqlite3.connect(self.db_path); self.conn.executescript(SCHEMA); self.conn.commit()
+        self._transaction_depth = 0
     def close(self): self.conn.close()
+
+    def _commit(self) -> None:
+        if self._transaction_depth == 0:
+            self.conn.commit()
+
+    @contextmanager
+    def transaction(self):
+        """Commit or roll back a group of post/backfill state mutations atomically."""
+        outermost = self._transaction_depth == 0
+        if outermost:
+            self.conn.execute("BEGIN")
+        self._transaction_depth += 1
+        try:
+            yield self.conn
+        except BaseException:
+            self._transaction_depth -= 1
+            if outermost:
+                self.conn.rollback()
+            raise
+        else:
+            self._transaction_depth -= 1
+            if outermost:
+                self.conn.commit()
+
     def upsert_post(self, *, source, source_item_id, stock_code, title, content, author_id, author_name, published_at, url, read_count, reply_count, like_count, forward_count, updated_at=None):
         exists=self.conn.execute("SELECT 1 FROM posts WHERE source=? AND source_item_id=?",(source,source_item_id)).fetchone() is not None
         now=updated_at or _now()
         self.conn.execute("""INSERT INTO posts(source,source_item_id,stock_code,title,content,author_id,author_name,published_at,url,read_count,reply_count,like_count,forward_count,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(source,source_item_id) DO UPDATE SET stock_code=excluded.stock_code,title=excluded.title,content=COALESCE(excluded.content,posts.content),author_id=excluded.author_id,author_name=excluded.author_name,published_at=excluded.published_at,url=excluded.url,read_count=excluded.read_count,reply_count=excluded.reply_count,like_count=excluded.like_count,forward_count=excluded.forward_count,updated_at=excluded.updated_at""",(source,source_item_id,stock_code,title,content,author_id,author_name,published_at,url,read_count,reply_count,like_count,forward_count,now,now)); self.conn.commit(); return not exists
+          ON CONFLICT(source,source_item_id) DO UPDATE SET stock_code=excluded.stock_code,title=excluded.title,content=COALESCE(excluded.content,posts.content),author_id=excluded.author_id,author_name=excluded.author_name,published_at=excluded.published_at,url=excluded.url,read_count=excluded.read_count,reply_count=excluded.reply_count,like_count=excluded.like_count,forward_count=excluded.forward_count,updated_at=excluded.updated_at""",(source,source_item_id,stock_code,title,content,author_id,author_name,published_at,url,read_count,reply_count,like_count,forward_count,now,now)); self._commit(); return not exists
     def update_content(self, source, source_item_id, content, *, updated_at=None):
-        cur=self.conn.execute("UPDATE posts SET content=?,updated_at=? WHERE source=? AND source_item_id=?",(content,updated_at or _now(),source,source_item_id)); self.conn.commit(); return cur.rowcount==1
+        cur=self.conn.execute("UPDATE posts SET content=?,updated_at=? WHERE source=? AND source_item_id=?",(content,updated_at or _now(),source,source_item_id)); self._commit(); return cur.rowcount==1
     def upsert_source_item(self, item, *, stock_code: str, content: str | None = None, updated_at: str | None = None) -> bool:
         """Store a parser ``SourceItem`` without creating an observation version."""
         return self.upsert_post(
@@ -104,14 +130,14 @@ class SimplePostStore:
         self.conn.execute("""INSERT INTO backfill_resume(source,stock_code,from_time,to_time,last_successful_page) VALUES(?,?,?,?,?)
             ON CONFLICT(source,stock_code,from_time,to_time) DO UPDATE SET last_successful_page=max(last_successful_page,excluded.last_successful_page)""",
             (source, stock_code, self._time_text(from_time), self._time_text(to_time), page))
-        self.conn.commit()
+        self._commit()
 
     def clear_backfill_resume(self, source: str, stock_code: str, from_time: datetime, to_time: datetime) -> None:
         self.conn.execute(
             "DELETE FROM backfill_resume WHERE source=? AND stock_code=? AND from_time=? AND to_time=?",
             (source, stock_code, self._time_text(from_time), self._time_text(to_time)),
         )
-        self.conn.commit()
+        self._commit()
 
     def coverage_ranges(self, source: str, stock_code: str) -> list[tuple[datetime, datetime]]:
         """Merged coverage intervals produced by fully completed backfill ranges."""
@@ -136,7 +162,7 @@ class SimplePostStore:
             "INSERT INTO backfill_coverage(source,stock_code,covered_from,covered_to) VALUES(?,?,?,?)",
             [(source, stock_code, self._time_text(f), self._time_text(t)) for f, t in merged],
         )
-        self.conn.commit()
+        self._commit()
 
     def save_page_anchor(self, anchor: PageAnchor) -> None:
         self.conn.execute(
@@ -150,7 +176,7 @@ class SimplePostStore:
              self._time_text(anchor.page_min_time), self._time_text(anchor.page_max_time),
              anchor.source_count, anchor.page_size),
         )
-        self.conn.commit()
+        self._commit()
 
     def page_anchors(self, source: str, stock_code: str) -> list[PageAnchor]:
         if not self._has_table("backfill_page_anchors"):
