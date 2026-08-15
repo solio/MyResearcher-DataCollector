@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -27,6 +27,7 @@ from myresearcher_collector.backfill import (
     BackfillConfigError,
     range_as_dict,
     resolve_backfill_range,
+    resolve_effective_backfill_range,
 )
 from myresearcher_collector.batch import (
     BatchConfigError,
@@ -114,6 +115,10 @@ def _json_default(value: object) -> str:
     if isinstance(value, CollectionStatus):
         return value.value
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
+
+
+def _iso_utc(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _browser_socket_transport(args: argparse.Namespace) -> Transport:
@@ -534,10 +539,12 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         raise BackfillConfigError("min_interval must be at least 2.5 seconds")
     if args.start_page is not None and args.start_page < 1:
         raise BackfillConfigError("start_page must be at least 1")
-    resolved = resolve_backfill_range(
+    plan_started_at = datetime.now(timezone.utc)
+    requested = resolve_backfill_range(
         source=args.source, stock_code=args.stock, from_value=args.from_value,
-        to_value=args.to_value, days=args.days,
+        to_value=args.to_value, days=args.days, now=plan_started_at,
     )
+    effective = resolve_effective_backfill_range(requested, plan_started_at)
     data_dir = args.data_dir.expanduser().resolve()
     resume_from_page = args.start_page or 1
     already_covered = False
@@ -550,8 +557,8 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         try:
             plan = plan_backfill(
                 store, source=args.source, stock_code=args.stock,
-                from_time=resolved.from_time, to_time=resolved.to_time,
-                explicit_start_page=args.start_page,
+                from_time=effective.from_time, to_time=effective.to_time,
+                explicit_start_page=args.start_page, started_at=plan_started_at,
             )
             resume_from_page = plan.start_page
             already_covered = plan.already_covered
@@ -568,7 +575,13 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
     return {
         "mode": "PLAN_ONLY",
         "network_execution": False,
-        **range_as_dict(resolved),
+        **range_as_dict(requested),
+        "requested_from_time": _iso_utc(requested.from_time),
+        "requested_to_time": _iso_utc(requested.to_time),
+        "run_started_at": _iso_utc(plan_started_at),
+        "effective_from_time": _iso_utc(effective.from_time),
+        "effective_to_time": _iso_utc(effective.to_time),
+        "requested_range_truncated_at_run_start": effective.to_time < requested.to_time,
         "checkpoint": checkpoint,
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
@@ -603,6 +616,12 @@ def execute_backfill_cli(
         raise BackfillConfigError("start_page must be at least 1")
     if args.challenge_wait < 0:
         raise BackfillConfigError("challenge_wait must be non-negative")
+    run_started_at = datetime.now(timezone.utc)
+    requested = resolve_backfill_range(
+        source=args.source, stock_code=args.stock, from_value=args.from_value,
+        to_value=args.to_value, days=args.days, now=run_started_at,
+    )
+    effective = resolve_effective_backfill_range(requested, run_started_at)
     if transport is None:
         raise RuntimeError(
             "browser-managed Eastmoney transport must be supplied by the host"
@@ -612,15 +631,11 @@ def execute_backfill_cli(
             transport, challenge_wait_seconds=args.challenge_wait,
             prompt=lambda message: print(message, file=sys.stderr, flush=True),
         )
-    resolved = resolve_backfill_range(
-        source=args.source, stock_code=args.stock, from_value=args.from_value,
-        to_value=args.to_value, days=args.days,
-    )
     data_dir = args.data_dir.expanduser().resolve()
     try:
         execution = execute_and_persist_simple_backfill_collection(
             db_path=data_dir / "collector.db",
-            stock_code=args.stock, from_time=resolved.from_time, to_time=resolved.to_time,
+            stock_code=args.stock, from_time=requested.from_time, to_time=requested.to_time,
             transport=transport,
             start_page=args.start_page,
             collector_config=CollectorConfig(
@@ -631,6 +646,7 @@ def execute_backfill_cli(
             ),
             max_pages=args.max_pages,
             enable_time_seek=True,
+            run_started_at=run_started_at,
         )
     finally:
         close = getattr(transport, "close", None)
@@ -639,7 +655,13 @@ def execute_backfill_cli(
     stats = execution.execution
     result = stats.result
     report = {
-        **range_as_dict(resolved), "run_id": execution.run_id,
+        **range_as_dict(requested), "run_id": execution.run_id,
+        "requested_from_time": _iso_utc(requested.from_time),
+        "requested_to_time": _iso_utc(requested.to_time),
+        "run_started_at": _iso_utc(run_started_at),
+        "effective_from_time": _iso_utc(effective.from_time),
+        "effective_to_time": _iso_utc(effective.to_time),
+        "requested_range_truncated_at_run_start": effective.to_time < requested.to_time,
         "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", "browser-socket"),
         "collection_mode": "list-only",
         "resume_from_page": execution.start_page,
@@ -658,6 +680,11 @@ def execute_backfill_cli(
         "checkpoint_before": execution.checkpoint_before,
         "checkpoint_after": execution.checkpoint_after,
         "range_complete": stats.range_complete,
+        "effective_range_complete": stats.range_complete,
+        "requested_range_complete": (
+            stats.range_complete and effective.to_time == requested.to_time
+        ),
+        "range_complete_scope": "effective",
     }
     if report["checkpoint_after"] != report["checkpoint_before"]:
         raise RuntimeError("backfill checkpoint isolation assertion failed")

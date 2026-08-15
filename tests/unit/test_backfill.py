@@ -8,7 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from myresearcher_collector.backfill import BackfillConfigError, resolve_backfill_range
+from myresearcher_collector.backfill import (
+    BackfillConfigError,
+    BackfillRange,
+    resolve_backfill_range,
+    resolve_effective_backfill_range,
+)
 from myresearcher_collector.models import CollectionStatus
 from myresearcher_collector.sources.eastmoney_guba import (
     CollectorConfig,
@@ -171,6 +176,42 @@ def test_days_resolves_explicit_inclusive_utc_boundaries() -> None:
     )
     assert value.from_time.isoformat() == "2026-08-09T16:00:00+00:00"
     assert value.to_time.isoformat() == "2026-08-11T15:59:59.999999+00:00"
+
+
+def test_effective_range_is_clamped_once_to_run_start() -> None:
+    requested = BackfillRange(
+        "eastmoney_guba", "600001",
+        datetime(2026, 8, 1, tzinfo=timezone.utc),
+        datetime(2026, 8, 14, 23, 59, 59, tzinfo=timezone.utc),
+    )
+    effective = resolve_effective_backfill_range(
+        requested, datetime(2026, 8, 13, 4, tzinfo=timezone.utc)
+    )
+    assert effective.from_time == requested.from_time
+    assert effective.to_time == datetime(2026, 8, 13, 4, tzinfo=timezone.utc)
+
+
+def test_effective_range_keeps_historical_requested_end() -> None:
+    requested = BackfillRange(
+        "eastmoney_guba", "600001",
+        datetime(2026, 7, 1, tzinfo=timezone.utc),
+        datetime(2026, 7, 10, tzinfo=timezone.utc),
+    )
+    assert resolve_effective_backfill_range(
+        requested, datetime(2026, 8, 13, tzinfo=timezone.utc)
+    ) == requested
+
+
+def test_effective_range_rejects_interval_entirely_in_the_future() -> None:
+    requested = BackfillRange(
+        "eastmoney_guba", "600001",
+        datetime(2026, 8, 14, tzinfo=timezone.utc),
+        datetime(2026, 8, 14, 23, 59, 59, tzinfo=timezone.utc),
+    )
+    with pytest.raises(BackfillConfigError, match="begins after run start"):
+        resolve_effective_backfill_range(
+            requested, datetime(2026, 8, 13, 4, tzinfo=timezone.utc)
+        )
 
 
 def test_bf_016_overlap_detail_and_emission_are_deduplicated_per_run() -> None:

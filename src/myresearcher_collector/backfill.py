@@ -75,6 +75,25 @@ def resolve_backfill_range(
     return BackfillRange(source, stock_code, from_time, to_time)
 
 
+def resolve_effective_backfill_range(
+    requested: BackfillRange,
+    run_started_at: datetime,
+) -> BackfillRange:
+    """Clamp a requested range to the instant the run actually began."""
+    if run_started_at.tzinfo is None:
+        run_started_at = run_started_at.replace(tzinfo=timezone.utc)
+    else:
+        run_started_at = run_started_at.astimezone(timezone.utc)
+    effective_to = min(requested.to_time, run_started_at)
+    if requested.from_time > effective_to:
+        raise BackfillConfigError(
+            "backfill range begins after run start; no effective range is collectable"
+        )
+    return BackfillRange(
+        requested.source, requested.stock_code, requested.from_time, effective_to
+    )
+
+
 def range_as_dict(value: BackfillRange) -> dict[str, str]:
     return {
         "source": value.source,

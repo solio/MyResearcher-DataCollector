@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from myresearcher_collector.backfill import (
+    BackfillConfigError,
     coverage_boundary,
     coverage_covers,
     coverage_stop_predicate,
@@ -62,6 +65,24 @@ def run_backfill(db_path, transport, from_time, to_time, *, max_pages=None, star
         start_page=start_page,
         clock=clock or (lambda: datetime(2026, 8, 25, tzinfo=timezone.utc)),
     )
+
+
+def test_future_range_fails_closed_before_store_or_transport(tmp_path):
+    db_path = tmp_path / "collector.db"
+    transport = MappingTransport({})
+    with pytest.raises(BackfillConfigError, match="begins after run start"):
+        execute_and_persist_simple_backfill_collection(
+            db_path=db_path,
+            stock_code=STOCK,
+            from_time=datetime(2026, 8, 14, tzinfo=timezone.utc),
+            to_time=datetime(2026, 8, 14, 23, 59, 59, tzinfo=timezone.utc),
+            transport=transport,
+            run_started_at=datetime(2026, 8, 13, 4, tzinfo=timezone.utc),
+            collector_config=CollectorConfig(max_pages=5, min_interval_seconds=2.5),
+            sleep_fn=lambda _: None,
+        )
+    assert transport.calls == []
+    assert not db_path.exists()
 
 
 # --- CASE 1: same-range resume ---------------------------------------------

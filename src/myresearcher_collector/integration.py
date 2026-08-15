@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
 
-from .backfill import coverage_covers, coverage_stop_predicate
+from .backfill import (
+    BackfillRange,
+    coverage_covers,
+    coverage_stop_predicate,
+    resolve_effective_backfill_range,
+)
 from .page_anchor import PageAnchor, SeekProof, seek_historical_page
 from .models import CollectionResult, CollectionStatus, RuntimeCounters
 from .sources.eastmoney_guba.collector import (
@@ -249,6 +254,7 @@ def execute_and_persist_simple_backfill_collection(
     clock: Callable[[], datetime] | None = None, sleep_fn: Callable[[float], None] = time.sleep,
     start_page: int | None = None, max_pages: int | None = None,
     enable_time_seek: bool = False,
+    run_started_at: datetime | None = None,
 ) -> PersistentBackfillCollection:
     """Run list-only Eastmoney collection directly into one-row ``posts``.
 
@@ -269,20 +275,31 @@ def execute_and_persist_simple_backfill_collection(
     that finishes downward is downgraded to PARTIAL with range_complete false.
     """
     clock = clock or (lambda: datetime.now(timezone.utc))
-    started_at = clock()
+    started_at = run_started_at if run_started_at is not None else clock()
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=timezone.utc)
+    else:
+        started_at = started_at.astimezone(timezone.utc)
+    source = "eastmoney_guba"
+    requested = BackfillRange(source, stock_code, from_time, to_time)
+    effective = resolve_effective_backfill_range(requested, started_at)
     store = SimplePostStore(db_path)
     if start_page is not None and start_page < 1:
         raise ValueError("start_page must be at least 1")
-    source = "eastmoney_guba"
     plan = plan_backfill(
-        store, source=source, stock_code=stock_code, from_time=from_time,
-        to_time=to_time, explicit_start_page=start_page, started_at=started_at,
+        store, source=source, stock_code=stock_code,
+        from_time=effective.from_time, to_time=effective.to_time,
+        explicit_start_page=start_page, started_at=started_at,
     )
     try:
         if plan.already_covered:
-            store.clear_backfill_resume(source, stock_code, from_time, to_time)
+            store.clear_backfill_resume(
+                source, stock_code, effective.from_time, effective.to_time
+            )
+            if effective != requested:
+                store.clear_backfill_resume(
+                    source, stock_code, requested.from_time, requested.to_time
+                )
             return PersistentBackfillCollection(
                 run_id="simple-" + uuid.uuid4().hex,
                 execution=_synthetic_covered_result("already_covered"),
@@ -301,7 +318,7 @@ def execute_and_persist_simple_backfill_collection(
         if enable_time_seek and plan.time_seek_eligible:
             try:
                 seek_proof = seek_historical_page(
-                    target_to=to_time,
+                    target_to=effective.to_time,
                     anchors=store.page_anchors(source, stock_code),
                     probe=lambda page: collector.probe_list_page(stock_code, page),
                 )
@@ -334,11 +351,11 @@ def execute_and_persist_simple_backfill_collection(
                 source_count=source_count, page_size=page_size,
             ))
         coverage_stop = (
-            coverage_stop_predicate(plan.coverage_ranges, from_time)
+            coverage_stop_predicate(plan.coverage_ranges, effective.from_time)
             if plan.coverage_ranges else None
         )
         execution = collector.collect_backfill(
-            stock_code, from_time=from_time, to_time=to_time,
+            stock_code, from_time=effective.from_time, to_time=effective.to_time,
             max_pages=max_pages, include_details=False,
             start_page=traversal_start_page, coverage_stop=coverage_stop,
             page_anchor_callback=save_anchor,
@@ -364,14 +381,20 @@ def execute_and_persist_simple_backfill_collection(
                 range_complete=False,
             )
         if execution.range_complete and coverage_eligible:
-            store.clear_backfill_resume(source, stock_code, from_time, to_time)
+            store.clear_backfill_resume(
+                source, stock_code, effective.from_time, effective.to_time
+            )
+            if effective != requested:
+                store.clear_backfill_resume(
+                    source, stock_code, requested.from_time, requested.to_time
+                )
             store.add_coverage(
-                source, stock_code, from_time, min(to_time, started_at)
+                source, stock_code, effective.from_time, effective.to_time
             )
         elif execution.pages_scanned > 0 and coverage_eligible:
-            if to_time < started_at:
+            if effective.to_time < started_at:
                 store.save_backfill_resume(
-                    source, stock_code, from_time, to_time,
+                    source, stock_code, effective.from_time, effective.to_time,
                     traversal_start_page + execution.pages_scanned - 1,
                 )
         return PersistentBackfillCollection(

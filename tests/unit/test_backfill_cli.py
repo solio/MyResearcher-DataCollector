@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +37,12 @@ def test_backfill_plan_only_is_network_and_persistence_free(tmp_path: Path, caps
     assert plan["acquisition_method"] == "browser-socket"
     assert plan["resume_from_page"] == 1
     assert plan["already_covered"] is False
+    assert "requested_from_time" in plan
+    assert "requested_to_time" in plan
+    assert "run_started_at" in plan
+    assert "effective_from_time" in plan
+    assert "effective_to_time" in plan
+    assert "requested_range_truncated_at_run_start" in plan
     assert not data_dir.exists()
 
 
@@ -148,6 +155,61 @@ def test_backfill_live_fails_closed_without_browser_host(tmp_path: Path) -> None
     ])
     with pytest.raises(RuntimeError, match="browser-managed Eastmoney transport"):
         execute_backfill_cli(args)
+
+
+def test_backfill_plan_only_future_range_is_configuration_error(tmp_path: Path, capsys) -> None:
+    data_dir = tmp_path / "data"
+    code = main([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--from", "2099-01-01", "--to", "2099-01-02",
+        "--data-dir", str(data_dir), "--plan-only",
+    ])
+    assert code == 2
+    assert "backfill range begins after run start" in capsys.readouterr().err
+    assert not data_dir.exists()
+
+
+def test_backfill_report_distinguishes_requested_and_effective_ranges(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 8, 13, 4, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(cli_main, "datetime", FrozenDateTime)
+    args = build_parser().parse_args([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--from", "2026-08-01", "--to", "2026-08-20",
+        "--data-dir", str(tmp_path / "data"), "--confirm-live",
+    ])
+
+    def fake_execute(**kwargs):
+        result = SimpleNamespace(
+            status=SimpleNamespace(value="SUCCESS"), stop_reason="backfill_range_complete"
+        )
+        stats = SimpleNamespace(
+            result=result, pages_scanned=1, records_received=1, records_in_range=1,
+            records_failed=0, earliest_observed_at=None, latest_observed_at=None,
+            range_complete=True,
+        )
+        return SimpleNamespace(
+            execution=stats, run_id="range-report", records_new=1,
+            records_existing=0, records_versioned=0, checkpoint_before=None,
+            checkpoint_after=None, start_page=1,
+        )
+
+    monkeypatch.setattr(
+        cli_main, "execute_and_persist_simple_backfill_collection", fake_execute
+    )
+    report = execute_backfill_cli(args, transport=object())
+    assert report["to_time"] == "2026-08-20T15:59:59.999999Z"
+    assert report["effective_to_time"] == "2026-08-13T04:00:00Z"
+    assert report["requested_range_truncated_at_run_start"] is True
+    assert report["effective_range_complete"] is True
+    assert report["requested_range_complete"] is False
+    assert report["range_complete"] is True
+    assert report["range_complete_scope"] == "effective"
 
 
 def test_backfill_cli_selects_existing_chrome_dom_acquisition(tmp_path: Path) -> None:
