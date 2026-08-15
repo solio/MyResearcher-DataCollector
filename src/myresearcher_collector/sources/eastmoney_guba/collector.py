@@ -33,6 +33,7 @@ from .parser import (
     is_access_block_page,
 )
 from .acquisition import BROWSER_DOM_SNAPSHOT, HTTP_RESPONSE
+from myresearcher_collector.page_anchor import PageProbe
 
 
 class Transport(Protocol):
@@ -296,6 +297,22 @@ class EastmoneyGubaCollector:
                 raise FetchFailure(kind, f"source request returned HTTP {status}")
             self._backoff(attempt, headers)
         raise FetchFailure("transport", "request failed")
+
+    def probe_list_page(self, stock_code: str, page_no: int) -> PageProbe:
+        """Acquire and parse one list page for bounded historical seeking."""
+        counters = RuntimeCounters()
+        html, _raw, _headers, _final_url = self._fetch(
+            self.list_url(stock_code, page_no), counters
+        )
+        parsed = parse_list_page(html, stock_code)
+        if not parsed.rows:
+            raise FetchFailure("empty_page", "time-seek probe returned no rows")
+        times = [row.published_at for row in parsed.rows]
+        return PageProbe(
+            page_no=page_no, page_min_time=min(times), page_max_time=max(times),
+            source_count=parsed.source_count,
+            page_size=len(parsed.rows) + len(parsed.out_of_scope_rows),
+        )
 
     def _rate_limit(self) -> None:
         now = self.monotonic_fn()
@@ -739,6 +756,7 @@ class EastmoneyGubaCollector:
         include_details: bool = True,
         start_page: int = 1,
         coverage_stop: Callable[[datetime, datetime], bool] | None = None,
+        page_anchor_callback: Callable[[int, datetime, datetime, int | None, int], None] | None = None,
     ) -> BackfillCollectionResult:
         """Traverse newest-to-oldest pages for an inclusive historical range.
 
@@ -890,6 +908,11 @@ class EastmoneyGubaCollector:
                 page_min, page_max = min(page_times), max(page_times)
                 earliest = page_min if earliest is None else min(earliest, page_min)
                 latest = page_max if latest is None else max(latest, page_max)
+                if page_anchor_callback is not None:
+                    page_anchor_callback(
+                        page_number, page_min, page_max, parsed_page.source_count,
+                        len(parsed_page.rows) + len(parsed_page.out_of_scope_rows),
+                    )
 
             page_detail_failure = False
             for row in parsed_page.rows:

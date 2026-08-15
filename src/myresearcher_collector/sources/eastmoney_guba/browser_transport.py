@@ -99,8 +99,8 @@ class EastmoneyBrowserTransport:
                 headers=headers,
                 final_url=final_url,
                 diagnostics={
-                    "actual_url": str(self.page.url),
-                    "page_title": str(self.page.title()),
+                    "actual_url": str(getattr(self.page, "url", final_url)),
+                    "page_title": str(self.page.title()) if callable(getattr(self.page, "title", None)) else None,
                 },
             )
         except (EastmoneyBrowserBoundaryError, EastmoneyBrowserTransportError):

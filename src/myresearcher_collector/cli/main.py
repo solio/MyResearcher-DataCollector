@@ -541,6 +541,8 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
     data_dir = args.data_dir.expanduser().resolve()
     resume_from_page = args.start_page or 1
     already_covered = False
+    time_seek_eligible = False
+    anchor_count = 0
     checkpoint = None
     db_path = data_dir / "collector.db"
     if db_path.is_file():
@@ -553,6 +555,8 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
             )
             resume_from_page = plan.start_page
             already_covered = plan.already_covered
+            time_seek_eligible = plan.time_seek_eligible
+            anchor_count = len(store.page_anchors(args.source, args.stock))
         finally:
             store.close()
         try:
@@ -572,6 +576,8 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "collection_mode": "list-only",
         "resume_from_page": resume_from_page,
         "already_covered": already_covered,
+        "time_seek_eligible": time_seek_eligible,
+        "page_anchor_count": anchor_count,
         "data_dir": str(data_dir),
         "source_access": (
             "BROWSER_MANAGED_OFFLINE_ONLY"
@@ -624,6 +630,7 @@ def execute_backfill_cli(
                 randomize_pacing=True,
             ),
             max_pages=args.max_pages,
+            enable_time_seek=True,
         )
     finally:
         close = getattr(transport, "close", None)

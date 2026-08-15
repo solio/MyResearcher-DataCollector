@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
 
 from .backfill import coverage_covers, coverage_stop_predicate
+from .page_anchor import PageAnchor, SeekProof, seek_historical_page
 from .models import CollectionResult, CollectionStatus, RuntimeCounters
 from .sources.eastmoney_guba.collector import (
     BackfillCollectionResult,
@@ -172,6 +173,7 @@ class BackfillPlan:
     already_covered: bool
     coverage_eligible: bool
     coverage_ranges: tuple[tuple[datetime, datetime], ...]
+    time_seek_eligible: bool = False
 
 
 def plan_backfill(
@@ -206,6 +208,7 @@ def plan_backfill(
         return BackfillPlan(
             start_page=1, already_covered=True, coverage_eligible=True,
             coverage_ranges=coverage,
+            time_seek_eligible=False,
         )
     effective_now = started_at or datetime.now(timezone.utc)
     if effective_now.tzinfo is None:
@@ -225,6 +228,7 @@ def plan_backfill(
     return BackfillPlan(
         start_page=start_page, already_covered=False,
         coverage_eligible=coverage_eligible, coverage_ranges=coverage,
+        time_seek_eligible=(explicit_start_page is None and resume_page is None),
     )
 
 
@@ -244,6 +248,7 @@ def execute_and_persist_simple_backfill_collection(
     transport: Transport, collector_config: CollectorConfig | None = None,
     clock: Callable[[], datetime] | None = None, sleep_fn: Callable[[float], None] = time.sleep,
     start_page: int | None = None, max_pages: int | None = None,
+    enable_time_seek: bool = False,
 ) -> PersistentBackfillCollection:
     """Run list-only Eastmoney collection directly into one-row ``posts``.
 
@@ -291,6 +296,43 @@ def execute_and_persist_simple_backfill_collection(
             transport, evidence_store=_NoopEvidenceStore(), config=config,
             sleep_fn=sleep_fn, clock=clock,
         )
+        traversal_start_page = plan.start_page
+        seek_proof: SeekProof | None = None
+        if enable_time_seek and plan.time_seek_eligible:
+            try:
+                seek_proof = seek_historical_page(
+                    target_to=to_time,
+                    anchors=store.page_anchors(source, stock_code),
+                    probe=lambda page: collector.probe_list_page(stock_code, page),
+                )
+                traversal_start_page = seek_proof.start_page
+            except Exception as exc:
+                return PersistentBackfillCollection(
+                    run_id="simple-" + uuid.uuid4().hex,
+                    execution=BackfillCollectionResult(
+                        result=CollectionResult(
+                            CollectionStatus.COLLECTION_FAILED, [], RuntimeCounters(),
+                            [f"time_seek_failure: {exc}"], "time_seek_failure", None, None,
+                        ), pages_scanned=0, records_received=0, records_in_range=0,
+                        records_failed=0, earliest_observed_at=None,
+                        latest_observed_at=None, range_complete=False,
+                    ),
+                    db_path=Path(db_path), raw_data_dir=Path(db_path).parent,
+                    records_new=0, records_existing=0, records_versioned=0,
+                    checkpoint_before=None, checkpoint_after=None,
+                    start_page=traversal_start_page,
+                )
+        coverage_eligible = plan.coverage_eligible or seek_proof is not None
+        def save_anchor(page_no: int, page_min: datetime, page_max: datetime,
+                        source_count: int | None, page_size: int) -> None:
+            observed_at = clock()
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            store.save_page_anchor(PageAnchor(
+                source=source, stock_code=stock_code, observed_at=observed_at,
+                page_no=page_no, page_min_time=page_min, page_max_time=page_max,
+                source_count=source_count, page_size=page_size,
+            ))
         coverage_stop = (
             coverage_stop_predicate(plan.coverage_ranges, from_time)
             if plan.coverage_ranges else None
@@ -298,11 +340,12 @@ def execute_and_persist_simple_backfill_collection(
         execution = collector.collect_backfill(
             stock_code, from_time=from_time, to_time=to_time,
             max_pages=max_pages, include_details=False,
-            start_page=plan.start_page, coverage_stop=coverage_stop,
+            start_page=traversal_start_page, coverage_stop=coverage_stop,
+            page_anchor_callback=save_anchor,
         )
         for item in execution.result.items:
             store.upsert_source_item(item, stock_code=stock_code, content=None)
-        if execution.range_complete and not plan.coverage_eligible:
+        if execution.range_complete and not coverage_eligible:
             # The downward traversal finished, but pages 1..start-1 were never
             # scanned for this range, so the requested range is not complete.
             execution = BackfillCollectionResult(
@@ -320,23 +363,23 @@ def execute_and_persist_simple_backfill_collection(
                 latest_observed_at=execution.latest_observed_at,
                 range_complete=False,
             )
-        if execution.range_complete and plan.coverage_eligible:
+        if execution.range_complete and coverage_eligible:
             store.clear_backfill_resume(source, stock_code, from_time, to_time)
             store.add_coverage(
                 source, stock_code, from_time, min(to_time, started_at)
             )
-        elif execution.pages_scanned > 0 and plan.coverage_eligible:
+        elif execution.pages_scanned > 0 and coverage_eligible:
             if to_time < started_at:
                 store.save_backfill_resume(
                     source, stock_code, from_time, to_time,
-                    plan.start_page + execution.pages_scanned - 1,
+                    traversal_start_page + execution.pages_scanned - 1,
                 )
         return PersistentBackfillCollection(
             run_id="simple-" + uuid.uuid4().hex,
             execution=execution, db_path=Path(db_path), raw_data_dir=Path(db_path).parent,
             records_new=0, records_existing=0, records_versioned=0,
             checkpoint_before=None, checkpoint_after=None,
-            start_page=plan.start_page,
+            start_page=traversal_start_page,
         )
     finally:
         store.close()

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from myresearcher_collector.backfill import merge_coverage_intervals
+from myresearcher_collector.page_anchor import PageAnchor
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS posts (
  source TEXT NOT NULL, source_item_id TEXT NOT NULL, stock_code TEXT NOT NULL,
@@ -27,6 +28,13 @@ CREATE TABLE IF NOT EXISTS backfill_coverage (
  source TEXT NOT NULL, stock_code TEXT NOT NULL,
  covered_from TEXT NOT NULL, covered_to TEXT NOT NULL,
  PRIMARY KEY(source, stock_code, covered_from)
+);
+CREATE TABLE IF NOT EXISTS backfill_page_anchors (
+ source TEXT NOT NULL, stock_code TEXT NOT NULL,
+ observed_at TEXT NOT NULL, page_no INTEGER NOT NULL,
+ page_min_time TEXT NOT NULL, page_max_time TEXT NOT NULL,
+ source_count INTEGER, page_size INTEGER NOT NULL,
+ PRIMARY KEY(source, stock_code, observed_at, page_no)
 );
 DROP TABLE IF EXISTS backfill_state;
 """
@@ -129,3 +137,35 @@ class SimplePostStore:
             [(source, stock_code, self._time_text(f), self._time_text(t)) for f, t in merged],
         )
         self.conn.commit()
+
+    def save_page_anchor(self, anchor: PageAnchor) -> None:
+        self.conn.execute(
+            """INSERT INTO backfill_page_anchors
+               (source,stock_code,observed_at,page_no,page_min_time,page_max_time,source_count,page_size)
+               VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(source,stock_code,observed_at,page_no) DO UPDATE SET
+                 page_min_time=excluded.page_min_time, page_max_time=excluded.page_max_time,
+                 source_count=excluded.source_count, page_size=excluded.page_size""",
+            (anchor.source, anchor.stock_code, self._time_text(anchor.observed_at), anchor.page_no,
+             self._time_text(anchor.page_min_time), self._time_text(anchor.page_max_time),
+             anchor.source_count, anchor.page_size),
+        )
+        self.conn.commit()
+
+    def page_anchors(self, source: str, stock_code: str) -> list[PageAnchor]:
+        if not self._has_table("backfill_page_anchors"):
+            return []
+        rows = self.conn.execute(
+            """SELECT observed_at,page_no,page_min_time,page_max_time,source_count,page_size
+               FROM backfill_page_anchors WHERE source=? AND stock_code=?
+               ORDER BY observed_at DESC, page_no""", (source, stock_code)
+        ).fetchall()
+        return [
+            PageAnchor(
+                source=source, stock_code=stock_code,
+                observed_at=self._time_value(row[0]), page_no=int(row[1]),
+                page_min_time=self._time_value(row[2]), page_max_time=self._time_value(row[3]),
+                source_count=int(row[4]) if row[4] is not None else None, page_size=int(row[5]),
+            )
+            for row in rows
+        ]

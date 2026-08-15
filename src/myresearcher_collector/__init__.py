@@ -18,6 +18,7 @@ from .batch import (
     make_batch_plan,
     validate_targets,
 )
+from .page_anchor import PageAnchor, PageProbe, SeekFailure, SeekProof, seek_historical_page
 
 __all__ = [
     "PersistentCollection", "PersistentBackfillCollection",
@@ -26,4 +27,5 @@ __all__ = [
     "BatchConfigError", "BatchRunner", "BatchSummary", "BatchTargets",
     "SingleStockOutcome", "execute_batch_collection", "load_targets",
     "make_batch_plan", "validate_targets",
+    "PageAnchor", "PageProbe", "SeekFailure", "SeekProof", "seek_historical_page",
 ]
