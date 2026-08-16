@@ -61,6 +61,8 @@ from myresearcher_collector.sources.xueqiu import (
     XUEQIU_BOOTSTRAP_MIN_PAGES,
     symbol_for,
 )
+from myresearcher_collector.sources.xueqiu.dom_backfill import execute_xueqiu_dom_backfill
+from myresearcher_collector.sources.xueqiu.dom_transport import create_xueqiu_dom_transport
 from myresearcher_collector.simple_store import SimplePostStore
 from myresearcher_collector.storage import RAW_BODY_RETENTION_DAYS, purge_raw_bodies
 
@@ -605,9 +607,8 @@ def execute_backfill_cli(
     args: argparse.Namespace,
     *,
     transport: Transport | None = None,
+    sleep_fn: Callable[[float], None] | None = None,
 ) -> dict[str, object]:
-    if args.source != "eastmoney_guba":
-        raise RuntimeError("xueqiu backfill live host is not wired; offline path is NOT_READY")
     if args.min_interval < 2.5:
         raise BackfillConfigError("min_interval must be at least 2.5 seconds")
     if args.max_interval < args.min_interval:
@@ -622,16 +623,32 @@ def execute_backfill_cli(
         to_value=args.to_value, days=args.days, now=run_started_at,
     )
     effective = resolve_effective_backfill_range(requested, run_started_at)
+    data_dir = args.data_dir.expanduser().resolve()
     if transport is None:
-        raise RuntimeError(
-            "browser-managed Eastmoney transport must be supplied by the host"
-        )
+        if args.source == "eastmoney_guba":
+            raise RuntimeError("browser-managed Eastmoney transport must be supplied by the host")
+        raise RuntimeError("browser-managed Xueqiu transport must be supplied by the host")
+    if args.source == "xueqiu":
+        if args.list_only:
+            raise BackfillConfigError("--list-only is only supported for Eastmoney")
+        try:
+            execution = execute_xueqiu_dom_backfill(
+                db_path=data_dir / "collector.db", stock_code=args.stock,
+                requested=requested, transport=transport, max_pages=args.max_pages,
+                start_page=args.start_page, min_interval=args.min_interval,
+                max_interval=args.max_interval, clock=lambda: run_started_at,
+                sleep_fn=sleep_fn,
+            )
+        finally:
+            close = getattr(transport, "close", None)
+            if callable(close):
+                close()
+        return execution.as_dict()
     if args.challenge_wait > 0 and callable(getattr(transport, "current_document", None)):
         transport = ChallengeAwareEastmoneyTransport(
             transport, challenge_wait_seconds=args.challenge_wait,
             prompt=lambda message: print(message, file=sys.stderr, flush=True),
         )
-    data_dir = args.data_dir.expanduser().resolve()
     try:
         execution = execute_and_persist_simple_backfill_collection(
             db_path=data_dir / "collector.db",
@@ -783,7 +800,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.plan_only:
                 print(json.dumps(backfill_plan(args), ensure_ascii=False, indent=2, default=_json_default))
                 return 0
-            summary = execute_backfill_cli(args, transport=_browser_socket_transport(args))
+            transport = (
+                create_xueqiu_dom_transport(
+                    getattr(args, "acquisition_mode", None) or "managed-chromium",
+                    profile_dir=str(args.profile_dir) if getattr(args, "profile_dir", None) else None,
+                )
+                if args.source == "xueqiu"
+                else _browser_socket_transport(args)
+            )
+            summary = execute_backfill_cli(args, transport=transport)
         except (BackfillConfigError, LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"backfill error: {exc}", file=sys.stderr)
             return 2

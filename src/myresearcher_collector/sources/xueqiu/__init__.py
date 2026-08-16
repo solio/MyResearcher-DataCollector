@@ -29,6 +29,20 @@ from .parser import (
     parse_json,
     parse_page,
 )
+from .dom_parser import (
+    XueqiuDomItem,
+    XueqiuDomPage,
+    XueqiuDomParseError,
+    parse_detail_status,
+    parse_dom_item,
+    parse_dom_page,
+    parse_time_text,
+)
+from .dom_transport import (
+    XueqiuDomTransport,
+    XueqiuDomTransportError,
+    create_xueqiu_dom_transport,
+)
 
 __all__ = [
     "BrowserTransportError", "CollectorConfig", "ENTRY_URL",
@@ -40,4 +54,8 @@ __all__ = [
     "created_at_to_datetime", "parse_item", "parse_json", "parse_page",
     "redact_xueqiu_url",
     "symbol_for",
+    "XueqiuDomItem", "XueqiuDomPage",
+    "XueqiuDomParseError", "XueqiuDomTransport", "XueqiuDomTransportError",
+    "create_xueqiu_dom_transport",
+    "parse_detail_status", "parse_dom_item", "parse_dom_page", "parse_time_text",
 ]

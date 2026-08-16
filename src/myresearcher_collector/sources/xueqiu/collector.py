@@ -66,7 +66,7 @@ class XueqiuTransportFailure(RuntimeError):
 def symbol_for(stock_code: str) -> str:
     if not isinstance(stock_code, str) or len(stock_code) != 6 or not stock_code.isdigit():
         raise ValueError("stock_code must be six decimal digits")
-    if not stock_code.startswith(("0", "3", "6")):
+    if not stock_code.startswith(("0", "2", "3", "6")):
         raise ValueError("only A-share stock codes are supported")
     return ("SH" if stock_code.startswith("6") else "SZ") + stock_code
 
