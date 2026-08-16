@@ -1,0 +1,85 @@
+{
+  "experiment": "Xueqiu Longi SH601012 project-independent browser backfill",
+  "run_date": "2026-08-16",
+  "timezone": "Asia/Shanghai",
+  "stock": {
+    "name": "隆基绿能",
+    "symbol": "SH601012"
+  },
+  "entry_url": "https://xueqiu.com/S/SH601012",
+  "ordering_evidence": {
+    "tab": "新帖",
+    "order": "time",
+    "analytics_sub_tab": "新帖"
+  },
+  "pacing": "sequential page navigation with randomized 3-10 second delay",
+  "pages_observed": 23,
+  "rows_observed": 225,
+  "unique_status_ids": 225,
+  "duplicate_status_ids": [],
+  "three_day_window": {
+    "from": "2026-08-14T00:00:00+08:00",
+    "to": "run time on 2026-08-16",
+    "count": 49,
+    "boundary_page": 5
+  },
+  "seven_day_window": {
+    "from": "2026-08-10T00:00:00+08:00",
+    "to": "run time on 2026-08-16",
+    "count": 217,
+    "boundary_page": 23
+  },
+  "detail_sample_urls": [
+    "https://xueqiu.com/6861928576/405225405",
+    "https://xueqiu.com/1873655483/404791394",
+    "https://xueqiu.com/6213802785/404301590"
+  ],
+  "boundary_created_at_checks": [
+    {
+      "listed": {
+        "id": "405032576",
+        "time_text": "修改于08-14 11:28· 来自iPhone",
+        "url": "https://xueqiu.com/1978396034/405032576"
+      },
+      "exact": {
+        "created_at": 1786677965000,
+        "created_iso": "2026-08-14T03:26:05.000Z",
+        "edited_at": 1786678127000,
+        "edited_iso": "2026-08-14T03:28:47.000Z",
+        "id": "405032576",
+        "target": "/1978396034/405032576"
+      }
+    },
+    {
+      "listed": {
+        "id": "404908180",
+        "time_text": "修改于08-14 16:57· 来自雪球",
+        "url": "https://xueqiu.com/3439104632/404908180"
+      },
+      "exact": {
+        "created_at": 1786607804000,
+        "created_iso": "2026-08-13T07:56:44.000Z",
+        "edited_at": 1786697834000,
+        "edited_iso": "2026-08-14T08:57:14.000Z",
+        "id": "404908180",
+        "target": "/3439104632/404908180"
+      }
+    },
+    {
+      "listed": {
+        "id": "404327209",
+        "time_text": "修改于08-10 06:05· 来自iPhone",
+        "url": "https://xueqiu.com/1088846097/404327209"
+      },
+      "exact": {
+        "created_at": 1786312996000,
+        "created_iso": "2026-08-09T22:03:16.000Z",
+        "edited_at": 1786313143000,
+        "edited_iso": "2026-08-09T22:05:43.000Z",
+        "id": "404327209",
+        "target": "/1088846097/404327209"
+      }
+    }
+  ],
+  "caveat": "List time_text may show edited_at. Window membership uses new-post creation ordering and detail-page created_at checks at edited boundary posts; per-row exact created_at was not fetched for all posts."
+}
