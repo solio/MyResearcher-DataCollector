@@ -158,14 +158,38 @@ class XueqiuDomTransport:
         except Exception as exc:
             raise XueqiuDomTransportError("Xueqiu detail timestamp is unavailable") from exc
 
-    def restore_page(self, page_no: int, *, previous_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+    def restore_page(
+        self, page_no: int, *, expected_ids: tuple[str, ...] = (),
+        previous_ids: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
+        """Return to a target page without applying next-page progress rules.
+
+        ``previous_ids`` is retained as a compatibility alias for callers of
+        the first DOM integration.  On restore those IDs describe the target
+        page and therefore are checked for equality after navigation; they are
+        never passed to ``goto_page`` as a requirement to change.
+        """
         if self.stock_code is None:
             raise XueqiuDomTransportError("stock page is not open")
+        if previous_ids is not None and not expected_ids:
+            expected_ids = previous_ids
         if page_no == 1:
             self.open_stock(self.stock_code)
-            return self.read_current_page()
-        self.open_stock(self.stock_code)
-        return self.goto_page(page_no, previous_ids=previous_ids)
+            page = self.read_current_page()
+        else:
+            self.open_stock(self.stock_code)
+            page = self.goto_page(page_no, previous_ids=())
+        if int(page.get("page_no", 0)) != page_no:
+            raise XueqiuDomTransportError(
+                f"restore did not reach page {page_no}; observed={page.get('page_no')}"
+            )
+        if expected_ids:
+            observed_ids = tuple(str(item.get("status_id")) for item in page.get("items", ()))
+            if observed_ids != tuple(expected_ids):
+                raise XueqiuDomTransportError(
+                    f"restored page {page_no} IDs differ from target page"
+                )
+        return page
 
     def close(self) -> None:
         close = getattr(self.runtime, "close", None)

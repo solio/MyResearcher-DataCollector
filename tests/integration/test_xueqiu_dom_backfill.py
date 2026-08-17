@@ -56,7 +56,7 @@ class FakeDomTransport:
             raise value
         return value
 
-    def restore_page(self, page_no: int, *, previous_ids=()):
+    def restore_page(self, page_no: int, *, expected_ids=(), previous_ids=()):
         self.restored.append(page_no)
         self.current = page_no
         return self.read_current_page()
@@ -83,15 +83,18 @@ def test_rows_under_ten_continue_and_modified_detail_is_resolved(tmp_path: Path)
         pages,
         {modified_url: {"id": "modified", "created_at": 1786607804000, "edited_at": 1786697834000}},
     )
+    pacing: list[float] = []
     result = execute_xueqiu_dom_backfill(
         db_path=tmp_path / "collector.db", stock_code="601012", requested=_request(),
-        transport=transport, sleep_fn=lambda _: None, clock=lambda: NOW,
+        transport=transport, sleep_fn=pacing.append, clock=lambda: NOW,
     )
     assert result.status == "SUCCESS"
     assert result.range_complete is True
     assert result.records_in_range == 1
     assert result.modified_posts_resolved == 1
     assert transport.goto_calls == [2]
+    assert len(pacing) == 3  # detail, restore, and next-page navigation
+    assert all(3.0 <= delay <= 10.0 for delay in pacing)
     store = SimplePostStore(tmp_path / "collector.db", read_only=True)
     try:
         rows = store.rows("xueqiu", "601012")
@@ -160,3 +163,56 @@ def test_unified_backfill_cli_dispatches_xueqiu_dom_path(tmp_path: Path) -> None
     assert summary["source"] == "xueqiu"
     assert summary["status"] == "SUCCESS"
     assert transport.closed is True
+
+
+def test_manual_unproven_start_page_does_not_create_reusable_resume(tmp_path: Path) -> None:
+    first_transport = FakeDomTransport({
+        51: [_raw("manual-51", "08/15 10:00")],
+        52: [_raw("manual-old", "08/13 10:00")],
+    })
+    first = execute_xueqiu_dom_backfill(
+        db_path=tmp_path / "collector.db", stock_code="601012", requested=_request(),
+        transport=first_transport, start_page=51, sleep_fn=lambda _: None, clock=lambda: NOW,
+    )
+    assert first.status == "PARTIAL_COLLECTION"
+    store = SimplePostStore(tmp_path / "collector.db", read_only=True)
+    try:
+        assert store.backfill_resume_page("xueqiu", "601012", FROM, TO) is None
+    finally:
+        store.close()
+
+    second_transport = FakeDomTransport({
+        1: [_raw("normal-1", "08/15 10:00")],
+        2: [_raw("normal-old", "08/13 10:00")],
+    })
+    second = execute_xueqiu_dom_backfill(
+        db_path=tmp_path / "collector.db", stock_code="601012", requested=_request(),
+        transport=second_transport, sleep_fn=lambda _: None, clock=lambda: NOW,
+    )
+    assert second.start_page == 1
+    assert second_transport.goto_calls == [2]
+
+
+def test_exact_historical_resume_remains_usable(tmp_path: Path) -> None:
+    store = SimplePostStore(tmp_path / "collector.db")
+    try:
+        store.save_backfill_resume("xueqiu", "601012", FROM, TO, 50)
+    finally:
+        store.close()
+    transport = FakeDomTransport({
+        51: [_raw("resume-51", "08/15 10:00")],
+        52: [_raw("resume-old", "08/13 10:00")],
+    })
+    result = execute_xueqiu_dom_backfill(
+        db_path=tmp_path / "collector.db", stock_code="601012", requested=_request(),
+        transport=transport, sleep_fn=lambda _: None, clock=lambda: NOW,
+    )
+    assert result.status == "SUCCESS"
+    assert result.start_page == 51
+    assert transport.goto_calls == [51, 52]
+    store = SimplePostStore(tmp_path / "collector.db", read_only=True)
+    try:
+        assert store.coverage_ranges("xueqiu", "601012") == [(FROM, TO)]
+        assert store.backfill_resume_page("xueqiu", "601012", FROM, TO) is None
+    finally:
+        store.close()

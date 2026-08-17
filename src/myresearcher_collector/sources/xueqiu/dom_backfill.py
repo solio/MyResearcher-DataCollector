@@ -90,6 +90,7 @@ def execute_xueqiu_dom_backfill(
     sleep_fn = sleep_fn or (lambda seconds: __import__("time").sleep(seconds))
     started_at = clock()
     effective = resolve_effective_backfill_range(requested, started_at)
+    resume_eligible = False
     run_id = run_id or uuid.uuid4().hex
     store = SimplePostStore(db_path)
     plan = plan_backfill(
@@ -97,6 +98,10 @@ def execute_xueqiu_dom_backfill(
         from_time=effective.from_time, to_time=effective.to_time,
         explicit_start_page=start_page, started_at=started_at,
     )
+    # Match the shared backfill rule: only a frozen exact range with a valid
+    # start/resume proof may create a reusable page resume row.  A moving top
+    # is deliberately excluded even when the traversal begins at page 1.
+    resume_eligible = plan.coverage_eligible and effective.to_time < started_at
     if plan.already_covered:
         store.close()
         return XueqiuDomBackfillExecution(
@@ -152,6 +157,7 @@ def execute_xueqiu_dom_backfill(
                 edited_at = item.edited_at
                 if published_at is None:
                     try:
+                        sleep_fn(random.uniform(min_interval, max_interval))
                         detail = transport.read_detail_created_at(item.url)
                         detail_id, published_at, edited_at = parse_detail_status(detail)
                         if detail_id != item.status_id:
@@ -163,7 +169,8 @@ def execute_xueqiu_dom_backfill(
                         page_unresolved = True
                         continue
                     finally:
-                        transport.restore_page(page_no, previous_ids=page.active_ids)
+                        sleep_fn(random.uniform(min_interval, max_interval))
+                        transport.restore_page(page_no, expected_ids=page.active_ids)
                 if published_at is None:
                     page_unresolved = True
                     records_failed += 1
@@ -189,7 +196,11 @@ def execute_xueqiu_dom_backfill(
                         page_no=page_no, page_min_time=min(page_times), page_max_time=max(page_times),
                         source_count=None, page_size=len(page.items),
                     ))
-                store.save_backfill_resume("xueqiu", stock_code, effective.from_time, effective.to_time, page_no)
+                if resume_eligible:
+                    store.save_backfill_resume(
+                        "xueqiu", stock_code, effective.from_time,
+                        effective.to_time, page_no,
+                    )
             if page_times and not page_unresolved and max(page_times) < effective.from_time:
                 range_complete = True
                 stop_reason = "backfill_range_complete"

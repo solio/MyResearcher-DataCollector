@@ -11,7 +11,10 @@ from myresearcher_collector.sources.xueqiu.dom_parser import (
     parse_time_text,
 )
 from myresearcher_collector.sources.xueqiu import symbol_for
-from myresearcher_collector.sources.xueqiu.dom_transport import XueqiuDomTransport
+from myresearcher_collector.sources.xueqiu.dom_transport import (
+    XueqiuDomTransport,
+    XueqiuDomTransportError,
+)
 
 
 NOW = datetime(2026, 8, 16, 4, 0, tzinfo=timezone.utc)
@@ -101,3 +104,50 @@ def test_dom_transport_waits_for_active_page_and_id_progression() -> None:
     assert page.opened == ["601012"]
     assert page.requested_pages == [2]
     assert page.url == "https://xueqiu.com/S/SH601012"
+
+
+class _RestorePage:
+    def __init__(self) -> None:
+        self.page_no = 1
+        self.pending_page: int | None = None
+        self.reads_after_click = 0
+
+    def open_stock(self, stock_code: str) -> None:
+        assert stock_code == "601012"
+        self.page_no = 1
+
+    def wait_posts_loaded(self, timeout_ms: int) -> None:
+        assert timeout_ms > 0
+
+    def active_page(self) -> int:
+        return self.page_no
+
+    def read_dom_page(self):
+        if self.pending_page is not None:
+            self.reads_after_click += 1
+            if self.reads_after_click >= 2:
+                self.page_no = self.pending_page
+                self.pending_page = None
+        ids = ("A", "B", "C")
+        return [_item(item_id) for item_id in ids]
+
+    def goto_page(self, page_no: int) -> None:
+        self.pending_page = page_no
+        self.reads_after_click = 0
+
+
+def test_restore_target_page_allows_same_ids() -> None:
+    page = _RestorePage()
+    transport = XueqiuDomTransport(page, timeout_ms=300)
+    transport.open_stock("601012")
+    restored = transport.restore_page(5, expected_ids=("A", "B", "C"))
+    assert restored["page_no"] == 5
+    assert tuple(item["status_id"] for item in restored["items"]) == ("A", "B", "C")
+
+
+def test_normal_next_page_with_same_ids_still_fails() -> None:
+    page = _RestorePage()
+    transport = XueqiuDomTransport(page, timeout_ms=60)
+    transport.open_stock("601012")
+    with pytest.raises(XueqiuDomTransportError, match="pagination did not progress"):
+        transport.goto_page(2, previous_ids=("A", "B", "C"))
