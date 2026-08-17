@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -151,3 +152,100 @@ def test_normal_next_page_with_same_ids_still_fails() -> None:
     transport.open_stock("601012")
     with pytest.raises(XueqiuDomTransportError, match="pagination did not progress"):
         transport.goto_page(2, previous_ids=("A", "B", "C"))
+
+
+class _DetailPage:
+    def __init__(self, value=None, error: Exception | None = None) -> None:
+        self.value = value
+        self.error = error
+        self.goto_urls: list[str] = []
+        self.closed = 0
+
+    def goto(self, url: str, *, wait_until: str) -> None:
+        assert wait_until == "domcontentloaded"
+        self.goto_urls.append(url)
+        if self.error is not None:
+            raise self.error
+
+    def wait_for_function(self, expression: str, *, timeout: int) -> None:
+        assert "SNOWMAN_STATUS" in expression
+        assert timeout > 0
+        if self.error is not None:
+            raise self.error
+
+    def evaluate(self, expression: str):
+        assert "SNOWMAN_STATUS" in expression
+        return self.value
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class _DetailContext:
+    def __init__(self, pages: list[_DetailPage]) -> None:
+        self.pages = pages
+        self.created: list[_DetailPage] = []
+
+    def new_page(self) -> _DetailPage:
+        page = self.pages[len(self.created)]
+        self.created.append(page)
+        return page
+
+
+def test_modified_detail_uses_temporary_page_and_leaves_main_page_unchanged() -> None:
+    main = _RestorePage()
+    main.page_no = 5
+    detail = _DetailPage({"id": 101, "created_at": 1786607804000})
+    transport = XueqiuDomTransport(main, runtime=SimpleNamespace(context=_DetailContext([detail])))
+    transport.stock_code = "601012"
+    transport.current_page = 5
+    value = transport.read_detail_created_at("https://xueqiu.com/u/101")
+    assert value["id"] == 101
+    assert detail.goto_urls == ["https://xueqiu.com/u/101"]
+    assert detail.closed == 1
+    assert main.page_no == 5
+    assert transport.assert_current_page(5, expected_ids=("A", "B", "C"))["page_no"] == 5
+
+
+def test_three_modified_details_are_serial_and_each_detail_page_closes() -> None:
+    main = _RestorePage()
+    main.page_no = 5
+    details = [
+        _DetailPage({"id": index, "created_at": 1786607804000 + index})
+        for index in (101, 102, 103)
+    ]
+    context = _DetailContext(details)
+    transport = XueqiuDomTransport(main, runtime=SimpleNamespace(context=context))
+    transport.stock_code = "601012"
+    transport.current_page = 5
+    for index in (101, 102, 103):
+        assert transport.read_detail_created_at(f"https://xueqiu.com/u/{index}")["id"] == index
+        assert main.page_no == 5
+    assert context.created == details
+    assert [page.closed for page in details] == [1, 1, 1]
+
+
+def test_missing_detail_status_closes_temporary_page_and_preserves_main_page() -> None:
+    main = _RestorePage()
+    main.page_no = 5
+    detail = _DetailPage(error=TimeoutError("missing status"))
+    transport = XueqiuDomTransport(main, runtime=SimpleNamespace(context=_DetailContext([detail])))
+    transport.stock_code = "601012"
+    transport.current_page = 5
+    with pytest.raises(XueqiuDomTransportError):
+        transport.read_detail_created_at("https://xueqiu.com/u/404")
+    assert detail.closed == 1
+    assert main.page_no == 5
+
+
+def test_detail_goto_exception_still_closes_temporary_page() -> None:
+    main = _RestorePage()
+    main.page_no = 5
+    detail = _DetailPage(error=RuntimeError("navigation failed"))
+    transport = XueqiuDomTransport(main, runtime=SimpleNamespace(context=_DetailContext([detail])))
+    transport.stock_code = "601012"
+    transport.current_page = 5
+    with pytest.raises(XueqiuDomTransportError):
+        transport.read_detail_created_at("https://xueqiu.com/u/500")
+    assert detail.closed == 1
+    assert main.page_no == 5

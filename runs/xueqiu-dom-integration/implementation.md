@@ -12,7 +12,13 @@ stays stable, and list text beginning with `修改于` is not publication time.
 
 - `sources/xueqiu/dom_transport.py`: managed-Chromium page ownership, async
   post wait, DOM extraction, active-page/ID progression, and
-  `window.SNOWMAN_STATUS` detail timestamp observation.
+  `window.SNOWMAN_STATUS` detail timestamp observation. Modified-post detail
+  lookup now creates a temporary page in the same browser context, closes it
+  in `finally`, and leaves the main list page at its current page/ID sequence.
+- `sources/xueqiu/dom_backfill.py`: modified-post resolution no longer calls
+  `restore_page`; it performs a non-navigating main-page state assertion and
+  writes resume rows only when the shared plan proves a frozen, resumable
+  range.
 - `sources/xueqiu/dom_parser.py`: deterministic DOM field and time parsing;
   modified display times remain unresolved until detail lookup.
 - `sources/xueqiu/dom_backfill.py`: sequential range traversal, selective
@@ -36,6 +42,8 @@ acquisition mode. Pacing is sequential and bounded to a random 3–10 seconds.
 
 ## Live state
 
-No live smoke was executed in this run. No real source response, browser
-profile, credential, or production database was read or written. The live
-command remains an operator-authorized action after independent review.
+No live smoke was executed in this correction run, as required by the current
+scope. The prior attempted smoke failed during source acquisition before any
+post was read; its temporary profile/data directory was removed. No real source
+response, user browser profile, credential, or production database was read or
+written.

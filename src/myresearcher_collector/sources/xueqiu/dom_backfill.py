@@ -162,15 +162,15 @@ def execute_xueqiu_dom_backfill(
                         detail_id, published_at, edited_at = parse_detail_status(detail)
                         if detail_id != item.status_id:
                             raise XueqiuDomParseError("detail status_id does not match list")
+                        assert_main_page = getattr(transport, "assert_current_page", None)
+                        if callable(assert_main_page):
+                            assert_main_page(page_no, expected_ids=page.active_ids)
                         modified_resolved += 1
                         resolved_item = item
                     except (XueqiuDomTransportError, XueqiuDomParseError, ValueError):
                         records_failed += 1
                         page_unresolved = True
                         continue
-                    finally:
-                        sleep_fn(random.uniform(min_interval, max_interval))
-                        transport.restore_page(page_no, expected_ids=page.active_ids)
                 if published_at is None:
                     page_unresolved = True
                     records_failed += 1

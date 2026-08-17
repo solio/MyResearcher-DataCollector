@@ -93,7 +93,8 @@ def test_rows_under_ten_continue_and_modified_detail_is_resolved(tmp_path: Path)
     assert result.records_in_range == 1
     assert result.modified_posts_resolved == 1
     assert transport.goto_calls == [2]
-    assert len(pacing) == 3  # detail, restore, and next-page navigation
+    assert transport.restored == []
+    assert len(pacing) == 2  # detail and next-page navigation; no restore
     assert all(3.0 <= delay <= 10.0 for delay in pacing)
     store = SimplePostStore(tmp_path / "collector.db", read_only=True)
     try:

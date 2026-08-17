@@ -24,6 +24,8 @@ class XueqiuDomTransport:
         self.stock_code: str | None = None
         self.symbol: str | None = None
         self.current_page = 0
+        self.detail_close_failures = 0
+        self.diagnostics: list[str] = []
 
     @staticmethod
     def symbol_for(stock_code: str) -> str:
@@ -141,15 +143,14 @@ class XueqiuDomTransport:
         )
 
     def read_detail_created_at(self, url: str) -> dict[str, Any]:
-        if callable(getattr(self.page, "read_detail_status", None)):
-            return dict(self.page.read_detail_status(url))
+        detail_page = self._new_detail_page()
         try:
-            self.page.goto(url, wait_until="domcontentloaded")
-            self.page.wait_for_function(
+            detail_page.goto(url, wait_until="domcontentloaded")
+            detail_page.wait_for_function(
                 "() => Boolean(window.SNOWMAN_STATUS && window.SNOWMAN_STATUS.created_at !== undefined && window.SNOWMAN_STATUS.created_at !== null)",
                 timeout=self.timeout_ms,
             )
-            value = self.page.evaluate("() => window.SNOWMAN_STATUS")
+            value = detail_page.evaluate("() => window.SNOWMAN_STATUS")
             if not isinstance(value, dict):
                 raise XueqiuDomTransportError("SNOWMAN_STATUS is not an object")
             return value
@@ -157,6 +158,47 @@ class XueqiuDomTransport:
             raise
         except Exception as exc:
             raise XueqiuDomTransportError("Xueqiu detail timestamp is unavailable") from exc
+        finally:
+            try:
+                detail_page.close()
+            except Exception as exc:
+                self.detail_close_failures += 1
+                self.diagnostics.append(f"detail_page_close_failed: {type(exc).__name__}")
+
+    def _new_detail_page(self) -> Any:
+        context = getattr(self.runtime, "context", None)
+        if context is None:
+            context = getattr(self.page, "context", None)
+            if callable(context):
+                context = context()
+        new_page = getattr(context, "new_page", None)
+        if not callable(new_page):
+            raise XueqiuDomTransportError(
+                "managed browser context cannot create a temporary detail page"
+            )
+        try:
+            return new_page()
+        except Exception as exc:
+            raise XueqiuDomTransportError(
+                "temporary Xueqiu detail page could not be created"
+            ) from exc
+
+    def assert_current_page(
+        self, page_no: int, *, expected_ids: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
+        """Lightweight state check that never navigates the main list page."""
+        page = self.read_current_page()
+        if int(page.get("page_no", 0)) != page_no:
+            raise XueqiuDomTransportError(
+                f"main list page changed during detail lookup: expected {page_no}"
+            )
+        if expected_ids:
+            observed_ids = tuple(str(item.get("status_id")) for item in page.get("items", ()))
+            if observed_ids != tuple(expected_ids):
+                raise XueqiuDomTransportError(
+                    f"main list page IDs changed during detail lookup: expected page {page_no}"
+                )
+        return page
 
     def restore_page(
         self, page_no: int, *, expected_ids: tuple[str, ...] = (),

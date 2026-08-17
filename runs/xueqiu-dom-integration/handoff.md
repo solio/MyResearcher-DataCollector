@@ -6,11 +6,20 @@ Next role: Independent Tester / reviewer
 
 Read `scope.md`, `implementation.md`, and `test-results.md`. The approved
 Expert source evidence is the commit and directory cited in
-`implementation.md`; this run does not claim a live CLI smoke result.
+`implementation.md`; this correction run does not claim a live CLI smoke
+result.
 
 Changed production components are limited to the Xueqiu DOM transport/parser,
 the unified backfill dispatch, and the shared posts upsert's optional source
 creation timestamp. Existing Eastmoney and legacy Xueqiu paths remain intact.
+
+Correction evidence:
+
+- detail timestamp resolution uses a temporary page in the existing browser
+  context and never restores/reopens the main list page on the normal path;
+- manual unproven starts do not create reusable resume rows;
+- exact frozen-range continuation remains resumable;
+- full deterministic suite: 328 passed, 1 approved xfail.
 
 Required review focus:
 
