@@ -16,6 +16,7 @@ from ..eastmoney_guba.existing_chrome import (
     CLOSE_TAB,
     CREATE_TAB,
     EXECUTE_JS,
+    FRONTMOST_APP,
     NAVIGATE_TAB,
     TAB_LOADING,
     _osascript,
@@ -25,15 +26,44 @@ from .collector import symbol_for
 from .dom_transport import XueqiuDomTransportError
 
 
-CREATE_ACTIVE_TAB = r'''
+CREATE_BACKGROUND_TAB = r'''
 on run argv
   tell application "Google Chrome"
     if (count of windows) is 0 then make new window
     set targetURL to item 1 of argv
     set w to front window
     set t to make new tab at end of tabs of w with properties {URL:targetURL}
-    set active tab index of w to (count of tabs of w)
     return ((id of w) as text) & "|" & ((id of t) as text)
+  end tell
+end run
+'''
+
+
+CREATE_TAB_IN_WINDOW = r'''
+on run argv
+  tell application "Google Chrome"
+    set windowID to (item 1 of argv) as integer
+    set targetURL to item 2 of argv
+    set w to first window whose id is windowID
+    set t to make new tab at end of tabs of w with properties {URL:targetURL}
+    return ((id of w) as text) & "|" & ((id of t) as text)
+  end tell
+end run
+'''
+
+
+# Kept as a compatibility alias for callers/tests that imported the old name.
+# The script itself is now explicitly background-only.
+CREATE_ACTIVE_TAB = CREATE_BACKGROUND_TAB
+
+
+CHROME_FOCUS_STATE = r'''
+on run argv
+  tell application "Google Chrome"
+    if (count of windows) is 0 then return "NO_WINDOWS"
+    set w to front window
+    set t to active tab of w
+    return ((id of w) as text) & "|" & ((id of t) as text) & "|" & ((active tab index of w) as text)
   end tell
 end run
 '''
@@ -201,6 +231,36 @@ class XueqiuExistingChromePage:
         self.tab_id: str | None = None
         self.navigation_urls: list[str] = []
 
+    def observe_user_focus(self) -> dict[str, str | None]:
+        """Read focus state without activating Chrome or changing any tab."""
+        try:
+            frontmost = self.script_runner(FRONTMOST_APP).strip() or None
+        except Exception:
+            frontmost = None
+        try:
+            raw = self.script_runner(CHROME_FOCUS_STATE).strip()
+            parts = raw.split("|", 2)
+            if len(parts) != 3:
+                return {
+                    "frontmost_application": frontmost,
+                    "chrome_window_id": None,
+                    "chrome_active_tab_id": None,
+                    "chrome_active_tab_index": None,
+                }
+            return {
+                "frontmost_application": frontmost,
+                "chrome_window_id": parts[0],
+                "chrome_active_tab_id": parts[1],
+                "chrome_active_tab_index": parts[2],
+            }
+        except Exception:
+            return {
+                "frontmost_application": frontmost,
+                "chrome_window_id": None,
+                "chrome_active_tab_id": None,
+                "chrome_active_tab_index": None,
+            }
+
     def _run_script(self, script: str, *values: object) -> str:
         try:
             return self.script_runner(script, *values)
@@ -298,7 +358,8 @@ class XueqiuExistingChromePage:
 
     def read_detail_status(self, url: str) -> dict[str, Any]:
         _validate_xueqiu_url(url)
-        identity = self._run_script(CREATE_ACTIVE_TAB, url)
+        collector_window_id, _ = self._tab_identity()
+        identity = self._run_script(CREATE_TAB_IN_WINDOW, collector_window_id, url)
         try:
             detail_window_id, detail_tab_id = identity.split("|", 1)
         except ValueError as exc:
