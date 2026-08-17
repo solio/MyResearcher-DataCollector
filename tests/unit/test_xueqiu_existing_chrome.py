@@ -19,6 +19,7 @@ from myresearcher_collector.sources.xueqiu.existing_chrome import (
     DETAIL_STATE_JS,
     PAGE_STATE_JS,
     READ_PAGE_JS,
+    _clean_embedded_status_json,
     XueqiuExistingChromePage,
 )
 
@@ -114,3 +115,15 @@ def test_existing_chrome_supports_list_pagination_and_temporary_detail_tab() -> 
 def test_existing_chrome_factory_does_not_accept_a_profile_copy() -> None:
     with pytest.raises(ValueError, match="running user profile"):
         create_xueqiu_dom_transport("existing-chrome", profile_dir="copied-profile")
+
+
+def test_embedded_status_json_ignores_observed_following_target_assignment() -> None:
+    raw = (
+        '{"id":"modified","created_at":1786607804000};\n'
+        "window.SNOWMAN_TARGET = window.SNOWMAN_STATUS.user"
+    )
+
+    assert json.loads(_clean_embedded_status_json(raw)) == {
+        "id": "modified",
+        "created_at": 1786607804000,
+    }

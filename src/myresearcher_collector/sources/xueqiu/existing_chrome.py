@@ -119,7 +119,12 @@ DETAIL_STATE_JS = r'''
     if (script) {
       const text = script.textContent || '';
       const start = text.indexOf(marker) + marker.length;
-      embeddedStatusJson = text.slice(start).trim().replace(/;\s*$/, '');
+      const remainder = text.slice(start).trim();
+      const targetAssignment = ';\\nwindow.SNOWMAN_TARGET =';
+      const targetStart = remainder.indexOf(targetAssignment);
+      embeddedStatusJson = targetStart >= 0
+        ? remainder.slice(0, targetStart).trim()
+        : remainder.replace(/;\s*$/, '');
     }
   }
   return JSON.stringify({
@@ -153,6 +158,22 @@ def _redact_url(url: str) -> str:
     names = [name for name, _ in parse_qsl(parts.query, keep_blank_values=True)]
     query = "&".join(f"{name}=<redacted>" for name in names)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, ""))
+
+
+def _clean_embedded_status_json(value: str) -> str:
+    """Remove the observed Snowman assignment that follows the JSON object.
+
+    The public detail script currently emits ``SNOWMAN_STATUS`` followed by
+    ``window.SNOWMAN_TARGET`` in the same script element.  Keep this cleanup
+    exact and small; it is not a JavaScript parser or an attempt to interpret
+    arbitrary script content.
+    """
+    remainder = value.strip()
+    target_assignment = ";\nwindow.SNOWMAN_TARGET ="
+    target_start = remainder.find(target_assignment)
+    if target_start >= 0:
+        remainder = remainder[:target_start].rstrip()
+    return remainder.rstrip(";").rstrip()
 
 
 class XueqiuExistingChromePage:
@@ -300,7 +321,7 @@ class XueqiuExistingChromePage:
                 embedded = state.get("embeddedStatusJson")
                 if status is None and isinstance(embedded, str):
                     try:
-                        status = json.loads(embedded)
+                        status = json.loads(_clean_embedded_status_json(embedded))
                     except json.JSONDecodeError as exc:
                         raise XueqiuDomTransportError(
                             "embedded SNOWMAN_STATUS is not valid JSON"
