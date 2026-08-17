@@ -4,6 +4,26 @@
 页面事实、帖子清单和结论，不代表 Collector 集成已经完成，也不把一次浏览器成功
 扩大解释为长期无人值守能力。
 
+## 2026-08-17 生产复查更新
+
+最新复查见
+[2026-08-17-production-reinvestigation.md](2026-08-17-production-reinvestigation.md)。
+
+- Codex 内置浏览器和用户正常 Chrome 均能取得 10 条帖子；
+- 项目 Playwright managed Chrome 无论 fresh profile，还是复用已由普通 Chrome
+  成功初始化的 dedicated profile，都会进入 `md5__1038` challenge loop；
+- 已增加不依赖 Codex 的 `existing-chrome` Apple Events 路径，真实 page1/page2
+  各读到 10 个唯一 ID 且 overlap=0；
+- 详情页另有独立 bug：公开 `SNOWMAN_STATUS` JSON 仍在 script 中，但 global 已被
+  清除；修复已实现并通过离线测试，修复后的最终 live smoke 尚未获准执行；
+- 因此当前仍不能宣称 production basic smoke 或 3-day backfill PASS。
+
+复现代码：
+
+- [managed_environment_probe.py](managed_environment_probe.py)
+- [existing_chrome_smoke.py](existing_chrome_smoke.py)
+- [production-reinvestigation.json](evidence/production-reinvestigation.json)
+
 ## 当前结论
 
 2026-08-16，以隆基绿能 `SH601012` 为样本，在浏览器页面中按“新帖”顺序、

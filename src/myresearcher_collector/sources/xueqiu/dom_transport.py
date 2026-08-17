@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from .browser_transport import ENTRY_URL
+from .browser_transport import ENTRY_URL, redact_xueqiu_url
 from .collector import symbol_for as _symbol_for
 
 
@@ -21,11 +21,41 @@ class XueqiuDomTransport:
         self.page = page
         self.runtime = runtime
         self.timeout_ms = timeout_ms
+        self.acquisition_mode = str(
+            getattr(page, "acquisition_mode", self.acquisition_mode)
+        )
         self.stock_code: str | None = None
         self.symbol: str | None = None
         self.current_page = 0
         self.detail_close_failures = 0
         self.diagnostics: list[str] = []
+        # First-page diagnostics are deliberately scoped to the Xueqiu main
+        # page.  They are not used by pagination, detail acquisition, or
+        # persistence logic.
+        self.main_goto_count = 0
+        self.frame_navigation_urls: list[str] = []
+        self.post_dom_loaded = False
+        self._bind_main_frame_observer()
+
+    def _bind_main_frame_observer(self) -> None:
+        on = getattr(self.page, "on", None)
+        if not callable(on):
+            return
+
+        def record_navigation(frame: Any) -> None:
+            try:
+                main_frame = self.page.main_frame
+                if frame is not main_frame:
+                    return
+            except Exception:
+                # Lightweight test doubles and compatible browser wrappers
+                # may not expose ``main_frame``; in that case the event is
+                # treated as the main-page event.
+                pass
+            observed = redact_xueqiu_url(str(getattr(frame, "url", "")))
+            self.frame_navigation_urls.append(str(observed or ""))
+
+        on("framenavigated", record_navigation)
 
     @staticmethod
     def symbol_for(stock_code: str) -> str:
@@ -34,11 +64,16 @@ class XueqiuDomTransport:
     def open_stock(self, stock_code: str) -> None:
         self.stock_code = stock_code
         self.symbol = self.symbol_for(stock_code)
+        self.main_goto_count += 1
         if callable(getattr(self.page, "open_stock", None)):
             self.page.open_stock(stock_code)
         else:
             self.page.goto(ENTRY_URL.format(symbol=self.symbol), wait_until="domcontentloaded")
         self._wait_posts_loaded()
+        self.post_dom_loaded = True
+        observed_urls = getattr(self.page, "navigation_urls", None)
+        if observed_urls:
+            self.frame_navigation_urls = list(observed_urls)
         self.current_page = self._active_page(default=1)
 
     def _wait_posts_loaded(self) -> None:
@@ -143,6 +178,8 @@ class XueqiuDomTransport:
         )
 
     def read_detail_created_at(self, url: str) -> dict[str, Any]:
+        if callable(getattr(self.page, "read_detail_status", None)):
+            return dict(self.page.read_detail_status(url))
         detail_page = self._new_detail_page()
         try:
             detail_page.goto(url, wait_until="domcontentloaded")
@@ -234,18 +271,31 @@ class XueqiuDomTransport:
         return page
 
     def close(self) -> None:
-        close = getattr(self.runtime, "close", None)
+        owner = self.runtime if self.runtime is not None else self.page
+        close = getattr(owner, "close", None)
         if callable(close):
             close()
 
 
 def create_xueqiu_dom_transport(
-    acquisition_mode: str = "managed-chromium", *, profile_dir: str | None = None,
+    acquisition_mode: str = "existing-chrome", *, profile_dir: str | None = None,
 ) -> XueqiuDomTransport:
+    if acquisition_mode == "existing-chrome":
+        if profile_dir is not None:
+            raise ValueError("existing-chrome uses the running user profile; --profile-dir is unsupported")
+        from .existing_chrome import XueqiuExistingChromePage
+
+        return XueqiuDomTransport(XueqiuExistingChromePage())
     if acquisition_mode != "managed-chromium":
-        raise ValueError("Xueqiu DOM production path requires managed-chromium")
+        raise ValueError(
+            "Xueqiu DOM production path requires existing-chrome or managed-chromium"
+        )
     from ..eastmoney_guba.browser_runtime import ManagedChromiumTransport
 
-    runtime = ManagedChromiumTransport(profile_dir=profile_dir)
+    runtime = ManagedChromiumTransport(
+        profile_dir=profile_dir,
+        record_dialogs=True,
+        auto_dismiss_dialogs=False,
+    )
     runtime._ensure_started()
     return XueqiuDomTransport(runtime.page, runtime=runtime)

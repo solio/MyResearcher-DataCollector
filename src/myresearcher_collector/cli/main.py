@@ -587,7 +587,11 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": checkpoint,
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
-        "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", None) or "browser-socket",
+        "acquisition_method": (
+            getattr(args, "acquisition_mode", None)
+            or getattr(args, "acquisition_method", None)
+            or ("existing-chrome" if args.source == "xueqiu" else "browser-socket")
+        ),
         "collection_mode": "list-only",
         "resume_from_page": resume_from_page,
         "already_covered": already_covered,
@@ -595,7 +599,7 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "page_anchor_count": anchor_count,
         "data_dir": str(data_dir),
         "source_access": (
-            "BROWSER_MANAGED_OFFLINE_ONLY"
+            "EXISTING_USER_CHROME_APPLE_EVENTS"
             if args.source == "xueqiu"
             else EASTMONEY_LIVE_ACCESS
         ),
@@ -802,7 +806,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             transport = (
                 create_xueqiu_dom_transport(
-                    getattr(args, "acquisition_mode", None) or "managed-chromium",
+                    getattr(args, "acquisition_mode", None) or "existing-chrome",
                     profile_dir=str(args.profile_dir) if getattr(args, "profile_dir", None) else None,
                 )
                 if args.source == "xueqiu"

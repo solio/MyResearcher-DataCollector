@@ -1,0 +1,128 @@
+{
+  "run_date": "2026-08-17",
+  "stock": {
+    "code": "601012",
+    "symbol": "SH601012",
+    "name": "隆基绿能"
+  },
+  "urls": [
+    "https://xueqiu.com/S/SH601012",
+    "https://xueqiu.com/1717901414/405215718"
+  ],
+  "baseline": {
+    "compile": "PASS",
+    "targeted_before": "71 passed",
+    "full_before": "332 passed, 1 xfailed",
+    "targeted_after": "68 passed",
+    "full_after": "336 passed, 1 xfailed"
+  },
+  "previous_expert": {
+    "commit": "f5f155f73d7d37927dc296d4765839b858adf0a",
+    "result": "PARTIALLY_VERIFIED",
+    "browser": "Codex built-in in-app browser",
+    "profile_mode": "UNKNOWN",
+    "automation": "Codex browser tool with Playwright-compatible DOM API",
+    "rows_verified": 225,
+    "unique_status_ids_verified": 225
+  },
+  "controlled_environments": {
+    "A_codex_iab": {
+      "goto_count": 1,
+      "observed_seconds": 25,
+      "md5_loop": false,
+      "challenge": false,
+      "posts": 10,
+      "post_dom_loaded": true,
+      "result": "PASS_DISCOVERY_ONLY"
+    },
+    "B_existing_user_chrome": {
+      "browser_ua_version": "Chrome/150.0.0.0",
+      "profile_mode": "existing-user",
+      "goto_count": 1,
+      "observed_seconds": 25,
+      "md5_loop": false,
+      "challenge": false,
+      "posts": 10,
+      "post_dom_loaded": true,
+      "webdriver": false,
+      "languages": ["en-US", "en", "ja"],
+      "plugin_count": 5,
+      "window_chrome": true,
+      "result": "PASS"
+    },
+    "C_managed_fresh": {
+      "launch": "playwright.chromium.launch_persistent_context(channel=chrome)",
+      "profile_mode": "fresh",
+      "goto_count": 1,
+      "md5_loop": true,
+      "challenge": true,
+      "posts": 0,
+      "post_dom_loaded": false,
+      "result": "FAIL"
+    },
+    "D_managed_reused_dedicated": {
+      "browser_ua_version": "Chrome/151.0.0.0",
+      "profile_mode": "explicit-reuse-after-normal-chrome-success",
+      "goto_count": 1,
+      "navigation_chain_representative": [
+        "https://xueqiu.com/S/SH601012",
+        "https://xueqiu.com/S/SH601012?md5__1038=<redacted>",
+        "https://xueqiu.com/S/SH601012",
+        "https://xueqiu.com/S/SH601012?alichlgref=<redacted>&md5__1038=<redacted>"
+      ],
+      "md5_loop": true,
+      "challenge_text": ["md5__1038", "访问验证"],
+      "posts": 0,
+      "post_dom_loaded": false,
+      "webdriver": true,
+      "languages": ["zh-CN", "zh"],
+      "plugin_count": 5,
+      "window_chrome": true,
+      "result": "FAIL"
+    }
+  },
+  "browser_private_state": {
+    "cookie_names": "NOT_COLLECTED",
+    "cookie_values": "NOT_COLLECTED",
+    "local_storage_keys": "NOT_COLLECTED",
+    "session_storage": "NOT_COLLECTED",
+    "reason": "browser safety boundary and unnecessary for same-profile A/B"
+  },
+  "production_existing_chrome_smoke": {
+    "page1": {
+      "count": 10,
+      "ids": [
+        "405276541", "405273701", "405269850", "405257742", "405255915",
+        "405238137", "405235322", "405232271", "405225405", "405222688"
+      ]
+    },
+    "page2": {
+      "count": 10,
+      "ids": [
+        "405219354", "405219325", "405216519", "405215718", "405214125",
+        "405213139", "405211925", "405203458", "405199120", "405194171"
+      ]
+    },
+    "page_overlap": 0,
+    "modified_detail_url": "https://xueqiu.com/1717901414/405215718",
+    "modified_detail_before_fix": "FAIL_GLOBAL_REMOVED_AFTER_BOOTSTRAP",
+    "modified_detail_fix": "PARSE_PUBLIC_EMBEDDED_SNOWMAN_STATUS_JSON",
+    "modified_detail_after_fix": "NOT_EXECUTED_APPROVAL_CHANNEL_REJECTED",
+    "persistence": "NOT_RUN",
+    "result": "INCOMPLETE"
+  },
+  "root_cause": {
+    "confirmed": [
+      "Playwright managed launch/context triggers a challenge before post DOM",
+      "warmed dedicated profile does not make Playwright compatible",
+      "detail global-variable wait is invalid when only embedded script JSON remains"
+    ],
+    "likely": [
+      "one or more Playwright automation-context signals trigger the challenge"
+    ],
+    "still_unknown": [
+      "the single minimal Playwright property or flag that triggers the challenge"
+    ]
+  },
+  "final_status": "DISCOVERY_PASS_PRODUCTION_ENVIRONMENT_NOT_REPRODUCIBLE"
+}

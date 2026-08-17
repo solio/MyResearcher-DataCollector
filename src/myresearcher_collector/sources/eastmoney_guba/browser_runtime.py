@@ -106,7 +106,13 @@ class ManagedChromiumTransport:
 
     acquisition_mode = "managed-chromium"
 
-    def __init__(self, *, profile_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        profile_dir: str | Path | None = None,
+        record_dialogs: bool = True,
+        auto_dismiss_dialogs: bool = True,
+    ) -> None:
         if profile_dir is None:
             self.profile_dir = _fresh_managed_profile_path().expanduser().resolve()
             self.profile_mode = "fresh"
@@ -119,6 +125,8 @@ class ManagedChromiumTransport:
         self.page = None
         self.delegate = None
         self.dialogs: list[dict[str, str]] = []
+        self.record_dialogs = bool(record_dialogs)
+        self.auto_dismiss_dialogs = bool(auto_dismiss_dialogs)
         self.diagnostics_dir = Path("runtime/diagnostics")
         print(
             f"acquisition_mode={self.acquisition_mode} "
@@ -144,22 +152,27 @@ class ManagedChromiumTransport:
             kwargs["channel"] = os.environ.get("MYRESEARCHER_MANAGED_CHROMIUM_CHANNEL", "chrome")
         self.context = self._playwright.chromium.launch_persistent_context(**kwargs)
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-        self.page.on("dialog", self._on_dialog)
+        self._bind_dialog_handler(self.page)
         self.delegate = EastmoneyBrowserTransport(self.page)
 
+    def _bind_dialog_handler(self, page) -> None:
+        page.on("dialog", self._on_dialog)
+
     def _on_dialog(self, dialog) -> None:
-        self.dialogs.append({"type": str(dialog.type), "message": str(dialog.message)})
-        try:
-            dialog.dismiss()
-        except Exception:
-            pass
+        if self.record_dialogs:
+            self.dialogs.append({"type": str(dialog.type), "message": str(dialog.message)})
+        if self.auto_dismiss_dialogs:
+            try:
+                dialog.dismiss()
+            except Exception:
+                pass
 
     def _ensure_page(self) -> None:
         """Recreate a usable page after the previous one was closed by the page."""
         self._ensure_started()
         if self.page is None or self.page.is_closed():
             self.page = self.context.new_page()
-            self.page.on("dialog", self._on_dialog)
+            self._bind_dialog_handler(self.page)
             self.delegate = EastmoneyBrowserTransport(self.page)
 
     def get(self, url: str, *, timeout: float):

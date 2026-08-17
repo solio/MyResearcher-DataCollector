@@ -93,6 +93,55 @@ class _AsyncPage:
         self.requested_pages.append(page_no)
 
 
+class _NavigatingPage:
+    def __init__(self) -> None:
+        self.url = "about:blank"
+        self.main_frame = SimpleNamespace(url=self.url)
+        self.handlers: dict[str, object] = {}
+        self.goto_urls: list[str] = []
+
+    def on(self, event: str, handler) -> None:
+        self.handlers[event] = handler
+
+    def goto(self, url: str, *, wait_until: str) -> None:
+        assert wait_until == "domcontentloaded"
+        self.goto_urls.append(url)
+        self.url = url
+        self.main_frame.url = url
+        self.handlers["framenavigated"](self.main_frame)
+
+    def wait_posts_loaded(self, timeout_ms: int) -> None:
+        assert timeout_ms > 0
+
+    def active_page(self) -> int:
+        return 1
+
+
+def test_xueqiu_records_main_navigation_and_dom_ready() -> None:
+    page = _NavigatingPage()
+    transport = XueqiuDomTransport(page, timeout_ms=500)
+
+    transport.open_stock("601012")
+
+    assert transport.main_goto_count == 1
+    assert transport.frame_navigation_urls == [
+        "https://xueqiu.com/S/SH601012"
+    ]
+    assert transport.post_dom_loaded is True
+
+
+def test_xueqiu_navigation_diagnostics_do_not_retain_challenge_values() -> None:
+    page = _NavigatingPage()
+    transport = XueqiuDomTransport(page, timeout_ms=500)
+    page.main_frame.url = (
+        "https://xueqiu.com/S/SH601012?alichlgref=secret&md5__1038=signature"
+    )
+
+    page.handlers["framenavigated"](page.main_frame)
+
+    assert transport.frame_navigation_urls == ["https://xueqiu.com/S/SH601012"]
+
+
 def test_dom_transport_waits_for_active_page_and_id_progression() -> None:
     page = _AsyncPage()
     transport = XueqiuDomTransport(page, timeout_ms=500)

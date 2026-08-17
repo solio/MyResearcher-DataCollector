@@ -46,6 +46,18 @@ def test_backfill_plan_only_is_network_and_persistence_free(tmp_path: Path, caps
     assert not data_dir.exists()
 
 
+def test_xueqiu_plan_reports_existing_user_chrome_default(tmp_path: Path, capsys) -> None:
+    code = main([
+        "backfill", "--source", "xueqiu", "--stock", "601012",
+        "--days", "3", "--data-dir", str(tmp_path / "data"), "--plan-only",
+    ])
+    assert code == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["acquisition_method"] == "existing-chrome"
+    assert plan["source_access"] == "EXISTING_USER_CHROME_APPLE_EVENTS"
+    assert plan["unattended_production_ready"] is False
+
+
 def test_backfill_plan_only_is_range_aware_and_non_mutating(tmp_path: Path, capsys) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
