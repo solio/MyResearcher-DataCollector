@@ -46,16 +46,140 @@ def test_backfill_plan_only_is_network_and_persistence_free(tmp_path: Path, caps
     assert not data_dir.exists()
 
 
-def test_xueqiu_plan_reports_existing_user_chrome_default(tmp_path: Path, capsys) -> None:
+def test_xueqiu_plan_reports_dedicated_chrome_cdp_default(tmp_path: Path, capsys) -> None:
     code = main([
         "backfill", "--source", "xueqiu", "--stock", "601012",
         "--days", "3", "--data-dir", str(tmp_path / "data"), "--plan-only",
     ])
     assert code == 0
     plan = json.loads(capsys.readouterr().out)
-    assert plan["acquisition_method"] == "existing-chrome"
-    assert plan["source_access"] == "EXISTING_USER_CHROME_APPLE_EVENTS"
+    assert plan["acquisition_method"] == "dedicated-chrome-cdp"
+    assert plan["source_access"] == "DEDICATED_NORMAL_CHROME_FIXED_LOOPBACK_CDP"
+    assert plan["xueqiu_cdp_port"] == 9227
+    assert plan["xueqiu_profile_dir"].endswith(
+        ".runtime/browser-profiles/xueqiu-dedicated"
+    )
     assert plan["unattended_production_ready"] is False
+
+
+def test_xueqiu_standalone_plan_reports_dedicated_runtime(
+    tmp_path: Path, capsys
+) -> None:
+    code = main([
+        "xueqiu", "601012", "--data-dir", str(tmp_path / "data"),
+        "--plan-only",
+    ])
+    assert code == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["network_execution"] is False
+    assert plan["acquisition_method"] == "dedicated-chrome-cdp"
+    assert plan["source_access"] == "DEDICATED_NORMAL_CHROME_FIXED_LOOPBACK_CDP"
+    assert plan["fixed_cdp_port"] == 9227
+    assert plan["profile_dir"].endswith(
+        ".runtime/browser-profiles/xueqiu-dedicated"
+    )
+
+
+def test_xueqiu_standalone_live_owns_and_closes_dedicated_runtime(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeRuntime:
+        def __init__(self, **kwargs) -> None:
+            captured["runtime_kwargs"] = kwargs
+            self.closed = 0
+            self.runtime_report = {"acquisition_mode": "dedicated-chrome-cdp"}
+
+        def browser_page(self):
+            return "owned-page"
+
+        def assert_safe_state(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed += 1
+            captured["runtime_closed"] = self.closed
+
+    def fake_browser_transport(page, *, response_timeout_ms, safety_check):
+        captured["page"] = page
+        captured["response_timeout_ms"] = response_timeout_ms
+        captured["safety_check"] = safety_check
+        return "response-transport"
+
+    def fake_execute(args, *, transport, **_kwargs):
+        captured["transport"] = transport
+        return {"status": "SUCCESS", "run_id": "xueqiu-live"}
+
+    monkeypatch.setattr(cli_main, "XueqiuDedicatedChromePage", FakeRuntime)
+    monkeypatch.setattr(cli_main, "XueqiuBrowserTransport", fake_browser_transport)
+    monkeypatch.setattr(cli_main, "execute_xueqiu_run", fake_execute)
+
+    code = main([
+        "xueqiu", "601012", "--data-dir", str(tmp_path / "data"),
+        "--timeout", "21", "--xueqiu-cdp-port", "9327", "--confirm-live",
+    ])
+    assert code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert captured["page"] == "owned-page"
+    assert captured["transport"] == "response-transport"
+    assert captured["response_timeout_ms"] == 21_000
+    assert callable(captured["safety_check"])
+    assert captured["runtime_closed"] == 1
+    assert captured["runtime_kwargs"]["cdp_port"] == 9327
+    assert report["browser_runtime"]["acquisition_mode"] == "dedicated-chrome-cdp"
+
+
+def test_xueqiu_backfill_rejects_eastmoney_acquisition_argument(
+    tmp_path: Path, capsys
+) -> None:
+    code = main([
+        "backfill", "--source", "xueqiu", "--stock", "601012",
+        "--days", "3", "--data-dir", str(tmp_path / "data"),
+        "--acquisition-method", "existing-chrome-dom", "--plan-only",
+    ])
+    assert code == 2
+    assert "Eastmoney-only" in capsys.readouterr().err
+
+
+def test_xueqiu_backfill_report_includes_closed_runtime_diagnostics(
+    tmp_path: Path, monkeypatch
+) -> None:
+    args = build_parser().parse_args([
+        "backfill", "--source", "xueqiu", "--stock", "601012",
+        "--days", "1", "--data-dir", str(tmp_path / "data"),
+        "--confirm-live",
+    ])
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.closed = 0
+            self.page = SimpleNamespace(runtime_report={"closed": False})
+
+        def close(self) -> None:
+            self.closed += 1
+            self.page.runtime_report = {
+                "closed": True,
+                "acquisition_mode": "dedicated-chrome-cdp",
+            }
+
+    class FakeExecution:
+        def as_dict(self):
+            return {"status": "SUCCESS", "records_new": 2}
+
+    monkeypatch.setattr(
+        cli_main,
+        "execute_xueqiu_dom_backfill",
+        lambda **_kwargs: FakeExecution(),
+    )
+    transport = FakeTransport()
+    report = execute_backfill_cli(args, transport=transport)
+    assert transport.closed == 1
+    assert report["acquisition_method"] == "dedicated-chrome-cdp"
+    assert report["browser_runtime"] == {
+        "closed": True,
+        "acquisition_mode": "dedicated-chrome-cdp",
+    }
 
 
 def test_backfill_plan_only_is_range_aware_and_non_mutating(tmp_path: Path, capsys) -> None:

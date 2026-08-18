@@ -1,8 +1,10 @@
 # 雪球页面访问与短窗口 Backfill 实验归档
 
 本目录记录雪球公开页面的项目独立访问实验。它保存已经实际执行的思考、步骤、
-页面事实、帖子清单和结论，不代表 Collector 集成已经完成，也不把一次浏览器成功
-扩大解释为长期无人值守能力。
+页面事实、帖子清单和结论。2026-08-18 后续已把实验链路接入 production
+Collector；实现状态与 Luna 维护边界见
+[`runs/xueqiu-dom-integration/handoff.md`](../../runs/xueqiu-dom-integration/handoff.md)。
+实验和集成都不把一次浏览器成功扩大解释为长期无人值守能力。
 
 ## 2026-08-18 独立普通 Chrome + CDP 更新
 
@@ -20,7 +22,8 @@
 - owned Chrome PID 没有成为 frontmost，用户 Chrome 运行前后标签 identity 一致；
 - 入口和详情各观察到一次自动恢复的 `md5__1038` 往返，因此结论是有界
   `PASS_WITH_TRANSIENT_MD5_REDIRECTS`，不是长回填稳定性保证；
-- 实验尚未接入 production Collector。
+- 同日后续已接入 production Collector；离线回归通过，production live CLI 的独立
+  重新验收仍待执行。
 
 复现与证据：
 

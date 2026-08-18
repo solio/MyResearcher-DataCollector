@@ -134,3 +134,32 @@ def test_xq022d_unsafe_browser_query_values_are_not_retained() -> None:
     assert "signature" not in (response.final_url or "")
     assert "xq_a_token" not in (response.final_url or "")
 
+
+def test_browser_response_runs_runtime_safety_check_before_acceptance() -> None:
+    page = FakePage([
+        FakeResponse(
+            "https://xueqiu.com/query/v1/symbol/search/status.json?symbol=SH600519&page=1"
+        )
+    ])
+    checks: list[str] = []
+    response = XueqiuBrowserTransport(
+        page, safety_check=lambda: checks.append("safe")
+    ).fetch_page("600519", page=1, last_id=None, timeout=1.0)
+    assert response.status_code == 200
+    assert checks == ["safe"]
+
+
+def test_browser_response_rejects_runtime_safety_failure() -> None:
+    page = FakePage([
+        FakeResponse(
+            "https://xueqiu.com/query/v1/symbol/search/status.json?symbol=SH600519&page=1"
+        )
+    ])
+
+    def reject() -> None:
+        raise RuntimeError("verification visible")
+
+    with pytest.raises(BrowserTransportError):
+        XueqiuBrowserTransport(page, safety_check=reject).fetch_page(
+            "600519", page=1, last_id=None, timeout=1.0
+        )

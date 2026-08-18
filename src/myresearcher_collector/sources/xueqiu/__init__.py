@@ -43,6 +43,12 @@ from .dom_transport import (
     XueqiuDomTransportError,
     create_xueqiu_dom_transport,
 )
+from .dedicated_chrome import (
+    DEFAULT_XUEQIU_CDP_PORT,
+    DEFAULT_XUEQIU_CHROME_EXECUTABLE,
+    DEFAULT_XUEQIU_PROFILE,
+    XueqiuDedicatedChromePage,
+)
 
 __all__ = [
     "BrowserTransportError", "CollectorConfig", "ENTRY_URL",
@@ -57,5 +63,7 @@ __all__ = [
     "XueqiuDomItem", "XueqiuDomPage",
     "XueqiuDomParseError", "XueqiuDomTransport", "XueqiuDomTransportError",
     "create_xueqiu_dom_transport",
+    "DEFAULT_XUEQIU_CDP_PORT", "DEFAULT_XUEQIU_CHROME_EXECUTABLE",
+    "DEFAULT_XUEQIU_PROFILE", "XueqiuDedicatedChromePage",
     "parse_detail_status", "parse_dom_item", "parse_dom_page", "parse_time_text",
 ]

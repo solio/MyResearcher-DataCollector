@@ -9,7 +9,7 @@ page's own JSON response.  Tests inject a fake object implementing the same
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import parse_qsl, parse_qs, urlencode, urlsplit, urlunsplit
 
 
@@ -70,9 +70,16 @@ class XueqiuBrowserTransport:
     remains browser-owned and is never exposed to Collector code.
     """
 
-    def __init__(self, page: Any, *, response_timeout_ms: int = 20_000) -> None:
+    def __init__(
+        self,
+        page: Any,
+        *,
+        response_timeout_ms: int = 20_000,
+        safety_check: Callable[[], None] | None = None,
+    ) -> None:
         self.page = page
         self.response_timeout_ms = response_timeout_ms
+        self.safety_check = safety_check
 
     @staticmethod
     def symbol_for(stock_code: str) -> str:
@@ -104,6 +111,8 @@ class XueqiuBrowserTransport:
                 else:
                     self._click_page(page)
             response = info.value
+            if self.safety_check is not None:
+                self.safety_check()
             safe_url = redact_xueqiu_url(response.url)
             self._validate_response_pagination(
                 safe_url, symbol=symbol, page=page, last_id=last_id

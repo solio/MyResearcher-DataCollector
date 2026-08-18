@@ -58,7 +58,11 @@ from myresearcher_collector.sources.eastmoney_guba.browser_host import (
 from myresearcher_collector.sources.eastmoney_guba.collector import Transport
 from myresearcher_collector.sources.xueqiu import (
     CollectorConfig as XueqiuCollectorConfig,
+    DEFAULT_XUEQIU_CDP_PORT,
+    DEFAULT_XUEQIU_PROFILE,
     XUEQIU_BOOTSTRAP_MIN_PAGES,
+    XueqiuBrowserTransport,
+    XueqiuDedicatedChromePage,
     symbol_for,
 )
 from myresearcher_collector.sources.xueqiu.dom_backfill import execute_xueqiu_dom_backfill
@@ -95,9 +99,17 @@ def _add_eastmoney_acquisition_argument(parser: argparse.ArgumentParser) -> None
     )
     parser.add_argument(
         "--acquisition-mode",
-        choices=("existing-chrome", "chrome-clean", "managed-chromium"),
+        choices=(
+            "existing-chrome",
+            "chrome-clean",
+            "managed-chromium",
+            "dedicated-chrome-cdp",
+        ),
         default=None,
-        help="browser runtime shared by list backfill and detail enrichment",
+        help=(
+            "browser runtime; Xueqiu defaults to process-isolated "
+            "dedicated-chrome-cdp"
+        ),
     )
     parser.add_argument("--profile-dir", type=Path, default=None)
 
@@ -121,6 +133,23 @@ def _json_default(value: object) -> str:
 
 def _iso_utc(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _xueqiu_acquisition_mode(args: argparse.Namespace) -> str:
+    if getattr(args, "acquisition_method", None) is not None:
+        raise BackfillConfigError(
+            "--acquisition-method is Eastmoney-only; use --acquisition-mode for Xueqiu"
+        )
+    mode = getattr(args, "acquisition_mode", None) or "dedicated-chrome-cdp"
+    if mode not in {"dedicated-chrome-cdp", "existing-chrome", "managed-chromium"}:
+        raise BackfillConfigError(f"unsupported Xueqiu acquisition mode: {mode}")
+    if mode == "dedicated-chrome-cdp":
+        port = getattr(args, "xueqiu_cdp_port", DEFAULT_XUEQIU_CDP_PORT)
+        if not 1024 <= port <= 65535:
+            raise BackfillConfigError(
+                "Xueqiu CDP port must be between 1024 and 65535"
+            )
+    return mode
 
 
 def _browser_socket_transport(args: argparse.Namespace) -> Transport:
@@ -282,6 +311,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="seconds to leave Chrome open for manual verification after an access block")
     _add_browser_socket_argument(backfill)
     _add_eastmoney_acquisition_argument(backfill)
+    backfill.add_argument(
+        "--xueqiu-cdp-port",
+        type=int,
+        default=DEFAULT_XUEQIU_CDP_PORT,
+        help="fixed loopback CDP port for Xueqiu dedicated-chrome-cdp",
+    )
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
     backfill_mode.add_argument("--plan-only", action="store_true")
     backfill_mode.add_argument("--confirm-live", action="store_true")
@@ -314,12 +349,17 @@ def build_parser() -> argparse.ArgumentParser:
     xueqiu.add_argument("--max-pages", type=int, default=XUEQIU_BOOTSTRAP_MIN_PAGES)
     xueqiu.add_argument("--timeout", type=float, default=20.0)
     xueqiu.add_argument("--min-interval", type=float, default=3.0)
+    xueqiu.add_argument("--profile-dir", type=Path, default=DEFAULT_XUEQIU_PROFILE)
+    xueqiu.add_argument(
+        "--xueqiu-cdp-port", type=int, default=DEFAULT_XUEQIU_CDP_PORT,
+        help="fixed loopback CDP port for the process-isolated normal Chrome",
+    )
     xueqiu_mode = xueqiu.add_mutually_exclusive_group(required=True)
     xueqiu_mode.add_argument("--plan-only", action="store_true")
     xueqiu_mode.add_argument(
         "--confirm-live",
         action="store_true",
-        help="acknowledge a future browser-managed live run",
+        help="run through the process-isolated normal Chrome/CDP runtime",
     )
     retention = subparsers.add_parser(
         "raw-retention",
@@ -574,6 +614,20 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
             # Backfill-created databases only carry the simple post schema;
             # the persistent checkpoint is absent there and that is expected.
             checkpoint = None
+    acquisition_method = (
+        _xueqiu_acquisition_mode(args)
+        if args.source == "xueqiu"
+        else (
+            getattr(args, "acquisition_mode", None)
+            or getattr(args, "acquisition_method", None)
+            or "browser-socket"
+        )
+    )
+    xueqiu_access = {
+        "dedicated-chrome-cdp": "DEDICATED_NORMAL_CHROME_FIXED_LOOPBACK_CDP",
+        "existing-chrome": "EXISTING_USER_CHROME_APPLE_EVENTS",
+        "managed-chromium": "PLAYWRIGHT_MANAGED_CHROMIUM_LEGACY",
+    }
     return {
         "mode": "PLAN_ONLY",
         "network_execution": False,
@@ -587,11 +641,7 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "checkpoint": checkpoint,
         "checkpoint_mutation": False,
         "estimated_mode": "BACKFILL",
-        "acquisition_method": (
-            getattr(args, "acquisition_mode", None)
-            or getattr(args, "acquisition_method", None)
-            or ("existing-chrome" if args.source == "xueqiu" else "browser-socket")
-        ),
+        "acquisition_method": acquisition_method,
         "collection_mode": "list-only",
         "resume_from_page": resume_from_page,
         "already_covered": already_covered,
@@ -599,9 +649,19 @@ def backfill_plan(args: argparse.Namespace) -> dict[str, object]:
         "page_anchor_count": anchor_count,
         "data_dir": str(data_dir),
         "source_access": (
-            "EXISTING_USER_CHROME_APPLE_EVENTS"
+            xueqiu_access[acquisition_method]
             if args.source == "xueqiu"
             else EASTMONEY_LIVE_ACCESS
+        ),
+        "xueqiu_profile_dir": (
+            str((getattr(args, "profile_dir", None) or DEFAULT_XUEQIU_PROFILE).expanduser().resolve())
+            if args.source == "xueqiu" and acquisition_method == "dedicated-chrome-cdp"
+            else None
+        ),
+        "xueqiu_cdp_port": (
+            getattr(args, "xueqiu_cdp_port", DEFAULT_XUEQIU_CDP_PORT)
+            if args.source == "xueqiu" and acquisition_method == "dedicated-chrome-cdp"
+            else None
         ),
         "unattended_production_ready": False,
     }
@@ -647,7 +707,17 @@ def execute_backfill_cli(
             close = getattr(transport, "close", None)
             if callable(close):
                 close()
-        return execution.as_dict()
+        report = execution.as_dict()
+        report["acquisition_method"] = _xueqiu_acquisition_mode(args)
+        page = getattr(transport, "page", None)
+        runtime_report = getattr(page, "runtime_report", None)
+        if runtime_report is not None:
+            report["browser_runtime"] = runtime_report
+            if runtime_report.get("cdp_port_closed_after_cleanup") is False:
+                raise RuntimeError(
+                    "dedicated Xueqiu Chrome cleanup left its fixed CDP port open"
+                )
+        return report
     if args.challenge_wait > 0 and callable(getattr(transport, "current_document", None)):
         transport = ChallengeAwareEastmoneyTransport(
             transport, challenge_wait_seconds=args.challenge_wait,
@@ -717,6 +787,8 @@ def xueqiu_plan(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("max_pages must be at least 1")
     if args.min_interval < 3.0:
         raise ValueError("Xueqiu min_interval must be at least 3.0 seconds")
+    if not 1024 <= args.xueqiu_cdp_port <= 65535:
+        raise ValueError("Xueqiu CDP port must be between 1024 and 65535")
     symbol = symbol_for(args.stock_code)
     data_dir = args.data_dir.expanduser().resolve()
     return {
@@ -724,6 +796,8 @@ def xueqiu_plan(args: argparse.Namespace) -> dict[str, object]:
         "network_execution": False,
         "source": "xueqiu",
         "access": "BROWSER_MANAGED_ANONYMOUS_SESSION",
+        "acquisition_method": "dedicated-chrome-cdp",
+        "source_access": "DEDICATED_NORMAL_CHROME_FIXED_LOOPBACK_CDP",
         "entry_url": f"https://xueqiu.com/S/{symbol}",
         "stock_code": args.stock_code,
         "symbol": symbol,
@@ -731,6 +805,9 @@ def xueqiu_plan(args: argparse.Namespace) -> dict[str, object]:
         "bootstrap_min_pages": XUEQIU_BOOTSTRAP_MIN_PAGES,
         "min_interval_seconds": args.min_interval,
         "data_dir": str(data_dir),
+        "profile_dir": str(args.profile_dir.expanduser().resolve()),
+        "fixed_cdp_port": args.xueqiu_cdp_port,
+        "unattended_production_ready": False,
         "secrets_required": "NONE",
     }
 
@@ -806,8 +883,9 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             transport = (
                 create_xueqiu_dom_transport(
-                    getattr(args, "acquisition_mode", None) or "existing-chrome",
+                    _xueqiu_acquisition_mode(args),
                     profile_dir=str(args.profile_dir) if getattr(args, "profile_dir", None) else None,
+                    cdp_port=getattr(args, "xueqiu_cdp_port", DEFAULT_XUEQIU_CDP_PORT),
                 )
                 if args.source == "xueqiu"
                 else _browser_socket_transport(args)
@@ -851,16 +929,39 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if not report["stopped"] else 1
 
     if args.command == "xueqiu":
+        runtime = None
         try:
             if args.plan_only:
                 print(json.dumps(xueqiu_plan(args), ensure_ascii=False, indent=2))
                 return 0
-            # A real browser Page is intentionally owned by the caller/runtime;
-            # this CLI safety gate does not silently fall back to plain HTTP.
-            raise RuntimeError("browser-managed Xueqiu transport must be supplied by the host")
+            runtime = XueqiuDedicatedChromePage(
+                profile_dir=args.profile_dir,
+                cdp_port=args.xueqiu_cdp_port,
+                timeout_ms=int(args.timeout * 1000),
+            )
+            summary = execute_xueqiu_run(
+                args,
+                transport=XueqiuBrowserTransport(
+                    runtime.browser_page(),
+                    response_timeout_ms=int(args.timeout * 1000),
+                    safety_check=runtime.assert_safe_state,
+                ),
+            )
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"xueqiu error: {exc}", file=sys.stderr)
             return 2
+        finally:
+            if runtime is not None:
+                runtime.close()
+        summary["browser_runtime"] = runtime.runtime_report
+        if runtime.runtime_report.get("cdp_port_closed_after_cleanup") is False:
+            print(
+                "xueqiu error: dedicated Chrome cleanup left its fixed CDP port open",
+                file=sys.stderr,
+            )
+            return 2
+        print(json.dumps(summary, ensure_ascii=False, indent=2, default=_json_default))
+        return 0 if summary["status"] in ("SUCCESS", "NO_NEW_DATA") else 1
 
     if args.command == "raw-retention":
         try:

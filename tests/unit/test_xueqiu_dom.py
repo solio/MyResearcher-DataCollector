@@ -156,6 +156,29 @@ def test_dom_transport_waits_for_active_page_and_id_progression() -> None:
     assert page.url == "https://xueqiu.com/S/SH601012"
 
 
+class _EmptyTransitionPage(_AsyncPage):
+    def active_page(self) -> int:
+        return 2
+
+    def read_dom_page(self):
+        self.reads += 1
+        if self.reads == 1:
+            return [_item("old")]
+        if self.reads == 2:
+            return []
+        return [_item("new")]
+
+
+def test_dom_transport_does_not_accept_transient_empty_target_page() -> None:
+    page = _EmptyTransitionPage()
+    transport = XueqiuDomTransport(page, timeout_ms=500)
+    transport.open_stock("601012")
+    first = transport.read_current_page()
+    second = transport.goto_page(2, previous_ids=first["active_ids"])
+    assert second["active_ids"] == ("new",)
+    assert page.reads >= 3
+
+
 class _RestorePage:
     def __init__(self) -> None:
         self.page_no = 1

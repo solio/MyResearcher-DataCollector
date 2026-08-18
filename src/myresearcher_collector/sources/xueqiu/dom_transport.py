@@ -169,7 +169,11 @@ class XueqiuDomTransport:
             page = self.read_current_page()
             last_page = page
             ids = tuple(str(item.get("status_id")) for item in page["items"])
-            if page["page_no"] == page_no and (not previous_ids or ids != previous_ids):
+            if (
+                page["page_no"] == page_no
+                and ids
+                and (not previous_ids or ids != previous_ids)
+            ):
                 self.current_page = page_no
                 return page
             time.sleep(0.05)
@@ -278,8 +282,27 @@ class XueqiuDomTransport:
 
 
 def create_xueqiu_dom_transport(
-    acquisition_mode: str = "existing-chrome", *, profile_dir: str | None = None,
+    acquisition_mode: str = "dedicated-chrome-cdp",
+    *,
+    profile_dir: str | None = None,
+    cdp_port: int | None = None,
+    chrome_executable: str | None = None,
 ) -> XueqiuDomTransport:
+    if acquisition_mode == "dedicated-chrome-cdp":
+        from .dedicated_chrome import (
+            DEFAULT_XUEQIU_CDP_PORT,
+            DEFAULT_XUEQIU_PROFILE,
+            XueqiuDedicatedChromePage,
+        )
+
+        page = XueqiuDedicatedChromePage(
+            profile_dir=profile_dir or DEFAULT_XUEQIU_PROFILE,
+            cdp_port=(
+                cdp_port if cdp_port is not None else DEFAULT_XUEQIU_CDP_PORT
+            ),
+            chrome_executable=chrome_executable,
+        )
+        return XueqiuDomTransport(page)
     if acquisition_mode == "existing-chrome":
         if profile_dir is not None:
             raise ValueError("existing-chrome uses the running user profile; --profile-dir is unsupported")
@@ -288,7 +311,8 @@ def create_xueqiu_dom_transport(
         return XueqiuDomTransport(XueqiuExistingChromePage())
     if acquisition_mode != "managed-chromium":
         raise ValueError(
-            "Xueqiu DOM production path requires existing-chrome or managed-chromium"
+            "Xueqiu DOM production path requires dedicated-chrome-cdp, "
+            "existing-chrome, or managed-chromium"
         )
     from ..eastmoney_guba.browser_runtime import ManagedChromiumTransport
 

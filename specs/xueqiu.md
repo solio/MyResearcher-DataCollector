@@ -35,6 +35,42 @@ login required: NO for the approved observed path
 “login required: NO”只表示 Final Gate 观察到的 v0.1 路径无需登录取得
 该 JSON；不表示雪球所有接口永远无需登录。
 
+### 2.1 Production browser runtime（2026-08-18）
+
+当前默认 production runtime 是：
+
+```text
+acquisition_mode: dedicated-chrome-cdp
+Chrome binary: official normal Google Chrome executable
+profile: .runtime/browser-profiles/xueqiu-dedicated
+CDP address: 127.0.0.1
+default fixed port: 9227
+Playwright role: connect_over_cdp client only
+playwright.launch: FORBIDDEN
+launch_persistent_context: FORBIDDEN
+context.new_page for visible main/detail targets: FORBIDDEN
+```
+
+主页面和详情必须通过浏览器级 CDP
+`Target.createTarget(background=true)` 创建。由于 Playwright 不会即时暴露连接建立后
+由外部 CDP 新建的 target，runtime 允许断开并重新 `connect_over_cdp` 以重新发现
+Page；该重连必须封装在稳定 page facade 内，parser/backfill 不得持有失效的原始 Page。
+
+默认 runtime 必须：
+
+- 使用 profile advisory lock，拒绝同 profile 的第二个 Collector；
+- 启动前确认固定 loopback port 未被占用；
+- 只终止本轮 `Popen` 记录的 owned Chrome PID；
+- 清理后确认固定端口已经关闭；
+- 不读取或复制 Cookie/storage/profile 内容；
+- 不修改 UA、webdriver、TLS、canvas 或其它浏览器指纹；
+- challenge 可短暂由正常页面自行恢复，但当前页面可见验证、超过有界导航预算、
+  空页、重复 ID 页或详情 ID 不一致必须 fail closed。
+
+`existing-chrome`（Apple Events 控制用户 Chrome）和 `managed-chromium` 只作为显式
+legacy/diagnostic mode 保留，不再是 Xueqiu 默认值。Apple Events 可用于只读焦点遥测，
+不得用于 `dedicated-chrome-cdp` 的导航、点击、JavaScript 执行或窗口控制。
+
 页面自身产生的 discussion request：
 
 ```text
@@ -274,7 +310,16 @@ approved contract 状态。
 
 ## 14. Production Boundary
 
-本 SOURCE_SPEC 现在授权 Developer 按本文件实现 Xueqiu v0.1 adapter，但本
-次 SOURCE_SPEC finalization 本身不实现 adapter。除本文件和必要 handoff
-artifact 外，本轮不得修改 `src/`、`tests/`、Persistence、Eastmoney 或
-Batch。
+Xueqiu v0.1 JSON-response Collector 与 DOM backfill 现在共用上述
+`dedicated-chrome-cdp` 进程隔离 runtime：
+
+- `myresearcher-collector xueqiu ... --confirm-live` 使用 runtime 提供的 owned raw
+  Page，并继续由 `XueqiuBrowserTransport` 观察页面自己产生的批准 JSON response；
+- `myresearcher-collector backfill --source xueqiu ... --confirm-live` 使用稳定 page
+  facade 读取公开 DOM、分页和必要详情；
+- plan-only 不创建 profile、port、Chrome、Playwright driver 或持久化写入；
+- 两条 live 入口都必须在 `finally` 中关闭 runtime 并输出 redacted runtime report。
+
+2026-08-18 的独立 live 实验证明入口、page 2 和一个详情在该架构下有界成功；这不构成
+30 股 × 100 天或无人值守长期可用性的承诺。生产实现完成后的新 live CLI smoke 和
+更长 backfill 仍需独立验收。

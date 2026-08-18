@@ -1,49 +1,82 @@
 # Xueqiu DOM integration implementation report
 
-## Source evidence used
+## Current production runtime
 
-The implementation follows the already archived Expert evidence in commit
-`f5f155ff73d7d37927dc296d4765839b858adf0a` and `experts/xueqiu-live-access/`:
-the stock page is `https://xueqiu.com/S/{symbol}`, posts are
-`article.timeline__item`, pagination is page-control/ID based while the URL
-stays stable, and list text beginning with `修改于` is not publication time.
+The default Xueqiu acquisition mode is now `dedicated-chrome-cdp`.
+
+```text
+ordinary official Chrome executable
+  + persistent .runtime/browser-profiles/xueqiu-dedicated
+  + fixed 127.0.0.1:9227 CDP port
+  + Playwright connect_over_cdp only
+  + Target.createTarget(background=true)
+  + stable facade across CDP reconnects
+```
+
+The implementation is based on the bounded live evidence in
+`experts/xueqiu-live-access/2026-08-18-independent-chrome-cdp.md`. That run
+loaded 9 page-1 posts, 10 page-2 posts with zero overlap, and detail
+`405329188`; the owned Chrome PID did not become frontmost and the user's
+Chrome baseline/final tab identity matched. Entry and detail each had one
+self-recovered redacted `md5__1038` navigation, so the evidence is bounded and
+does not prove long unattended availability.
 
 ## Components
 
-- `sources/xueqiu/dom_transport.py`: managed-Chromium page ownership, async
-  post wait, DOM extraction, active-page/ID progression, and
-  `window.SNOWMAN_STATUS` detail timestamp observation. Modified-post detail
-  lookup now creates a temporary page in the same browser context, closes it
-  in `finally`, and leaves the main list page at its current page/ID sequence.
-- `sources/xueqiu/dom_backfill.py`: modified-post resolution no longer calls
-  `restore_page`; it performs a non-navigating main-page state assertion and
-  writes resume rows only when the shared plan proves a frozen, resumable
-  range.
-- `sources/xueqiu/dom_parser.py`: deterministic DOM field and time parsing;
-  modified display times remain unresolved until detail lookup.
-- `sources/xueqiu/dom_backfill.py`: sequential range traversal, selective
-  detail resolution, page transaction/upsert/resume/anchor durability, and
-  shared coverage semantics.
-- `cli/main.py`: `backfill --source xueqiu` now selects the DOM transport while
-  retaining the existing Eastmoney path and plan-only boundary.
-- `simple_store.py`: optional `created_at` input lets the shared posts store
-  preserve source creation time while retaining idempotent `(source,
-  source_item_id)` upsert behavior.
+- `sources/xueqiu/dedicated_chrome.py`: owns binary/profile/port/PID, profile
+  lock, local proxy exclusion for the CDP driver, background target creation,
+  CDP reconnect, public DOM facade, detail target close, redacted navigation
+  diagnostics, action-boundary focus telemetry, and cleanup verification.
+- `sources/xueqiu/dom_scripts.py`: one shared selector/challenge/DOM script
+  source for both dedicated CDP and legacy Apple Events runtimes.
+- `sources/xueqiu/dom_transport.py`: defaults to `dedicated-chrome-cdp`; target
+  page progression now also requires a non-empty ID sequence, preventing a
+  transient empty DOM from being accepted as page progress.
+- `sources/xueqiu/browser_transport.py`: the approved JSON-response observer
+  accepts a runtime safety callback and refuses a response when the owned page
+  is in visible or repeated verification state.
+- `cli/main.py`: both `xueqiu --confirm-live` and
+  `backfill --source xueqiu --confirm-live` construct and close the dedicated
+  runtime. Plan-only reports the fixed profile/port without constructing it.
+- `sources/xueqiu/existing_chrome.py`: retained only as explicit legacy mode;
+  shared DOM scripts moved out, but Apple Events behavior is otherwise kept for
+  backward compatibility.
 
-The pre-existing JSON/browser-observed Xueqiu path remains available for its
-existing contract and tests; it was not deleted or rewritten.
+The DOM parser, range/coverage rules, page durability, post upsert semantics,
+approved JSON field mapping, Eastmoney source, and batch source semantics were
+not redesigned.
 
-## Safety boundary
+## Safety and lifecycle invariants
 
-The new transport does not construct the old discussion API URL, generate
-challenge parameters, export cookies, or persist credentials. It uses the
-existing managed Chromium runtime and only accepts the `managed-chromium`
-acquisition mode. Pacing is sequential and bounded to a random 3–10 seconds.
+1. Never add `playwright.launch`, `launch_persistent_context`, headless mode,
+   stealth or fingerprint overrides to `dedicated_chrome.py`.
+2. Never replace background `Target.createTarget` with `context.new_page()`;
+   the latter was live-observed to pull Chrome to the foreground.
+3. Every externally created target is discovered after reconnect. Raw Page
+   objects before reconnect are invalid and must remain inside the facade.
+4. Main page identity after a detail reconnect is resolved by the exact stock
+   path; zero or multiple candidates is a hard failure.
+5. Profile lock and fixed port are both required. Port cleanup failure is a
+   run failure, not a warning-only success.
+6. Only the exact owned `Popen` PID may be terminated. No broad `pkill` or
+   bundle-wide quit command is permitted.
+7. Query values, Cookie/storage values and unrelated user-tab URL/title text
+   must never be persisted. Focus telemetry stores only opaque hashes.
+8. A visible challenge or more than the bounded transient navigation budget is
+   an access failure. The code must not solve, click or bypass CAPTCHA.
+
+## Compatibility modes
+
+- `--acquisition-mode existing-chrome`: legacy Apple Events mode; may interfere
+  with the user's Chrome and requires Apple Events JavaScript permission.
+- `--acquisition-mode managed-chromium`: legacy Playwright-launched mode; live
+  evidence showed `md5__1038` loops and it is not the default.
+- `dedicated-chrome-cdp`: the only default production mode.
 
 ## Live state
 
-No live smoke was executed in this correction run, as required by the current
-scope. The prior attempted smoke failed during source acquisition before any
-post was read; its temporary profile/data directory was removed. No real source
-response, user browser profile, credential, or production database was read or
-written.
+The architecture itself has prior bounded live acceptance through the expert
+probe. This implementation pass has deterministic coverage and does not yet
+claim that the newly wired live CLI completed a new persisted production run.
+Run a bounded `SH601012` live CLI smoke before calling the integration fully
+production-accepted.

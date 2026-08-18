@@ -4,6 +4,11 @@
 标的：隆基绿能 `SH601012`  
 入口：<https://xueqiu.com/S/SH601012>
 
+> 后续状态更新：下面的 `NOT_DONE` 是本实验完成时的历史状态。同日后续已将该链路
+> 接入 production Collector；离线回归已通过，production live CLI 的独立重新验收
+> 尚待执行。维护交接见
+> [`runs/xueqiu-dom-integration/handoff.md`](../../runs/xueqiu-dom-integration/handoff.md)。
+
 ## 1. 结论
 
 ```text
@@ -19,7 +24,7 @@ OWNED_CHROME_PID_FRONTMOST = NO
 USER_CHROME_BASELINE_FINAL_TAB_MATCH = YES
 TRANSIENT_MD5_REDIRECT = YES (entry once, detail once; self-recovered)
 GRAPHICAL_CAPTCHA = NO
-PRODUCTION_COLLECTOR_INTEGRATION = NOT_DONE
+PRODUCTION_COLLECTOR_INTEGRATION = NOT_DONE_AT_EXPERIMENT_TIME
 ```
 
 这条技术路线真实可行，并且不依赖 Codex 浏览器。实验脚本由普通 Python 进程启动
