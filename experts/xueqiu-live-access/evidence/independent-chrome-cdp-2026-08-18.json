@@ -1,0 +1,241 @@
+{
+  "experiment": "external ordinary Chrome + dedicated profile + fixed CDP attach",
+  "observed_at": "2026-08-18T01:33:31+00:00",
+  "result": "PASS_WITH_TRANSIENT_MD5_REDIRECTS",
+  "stock_code": "601012",
+  "symbol": "SH601012",
+  "control_plane": {
+    "chrome_binary": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "profile_dir": ".runtime/browser-profiles/xueqiu-dedicated",
+    "fixed_cdp_endpoint": "http://127.0.0.1:9227",
+    "browser_control": "Playwright connect_over_cdp only",
+    "playwright_launch_used": false,
+    "playwright_launch_persistent_context_used": false,
+    "apple_events_browser_control_used": false,
+    "apple_events_focus_observation_only": true,
+    "main_and_detail_target_creation": "CDP Target.createTarget(background=true), followed by CDP reconnect"
+  },
+  "browser": {
+    "product": "Chrome/151.0.7922.138",
+    "protocol_version": "1.3",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+    "navigator_webdriver": false,
+    "languages": ["zh-CN", "zh"],
+    "plugin_count": 5,
+    "window_chrome": true
+  },
+  "urls": {
+    "entry_and_spa_pagination": "https://xueqiu.com/S/SH601012",
+    "detail": "https://xueqiu.com/9126453883/405329188",
+    "redacted_navigation_chain": [
+      "https://xueqiu.com/S/SH601012",
+      "https://xueqiu.com/S/SH601012?md5__1038=<redacted>",
+      "https://xueqiu.com/S/SH601012",
+      "https://xueqiu.com/9126453883/405329188",
+      "https://xueqiu.com/9126453883/405329188?md5__1038=<redacted>",
+      "https://xueqiu.com/9126453883/405329188"
+    ]
+  },
+  "entry_observation": {
+    "duration_seconds": 20,
+    "sample_count": 10,
+    "post_count_each_sample": 9,
+    "current_page_challenge_tokens": [],
+    "graphical_captcha_observed": false
+  },
+  "page1": {
+    "page_no": 1,
+    "count": 9,
+    "ids": [
+      "405401819",
+      "405394855",
+      "405375333",
+      "405373810",
+      "405371704",
+      "405363152",
+      "405360151",
+      "405346130",
+      "405334863"
+    ],
+    "posts": [
+      {
+        "status_id": "405401819",
+        "author_name": "hzsunwu",
+        "time_text_observed": "58分钟前· 来自雪球",
+        "title": null,
+        "url": "https://xueqiu.com/2060772171/405401819"
+      },
+      {
+        "status_id": "405394855",
+        "author_name": "蝴蝶日记_小蝶",
+        "time_text_observed": "修改于3小时前· 来自iPhone",
+        "title": null,
+        "url": "https://xueqiu.com/3440091840/405394855"
+      },
+      {
+        "status_id": "405375333",
+        "author_name": "棋行者",
+        "time_text_observed": "昨天 22:03· 来自雪球",
+        "title": "行业探讨丨光伏行业见底了吗？",
+        "url": "https://xueqiu.com/9317949837/405375333"
+      },
+      {
+        "status_id": "405373810",
+        "author_name": "PCHDriving",
+        "time_text_observed": "昨天 21:50· 来自Android",
+        "title": null,
+        "url": "https://xueqiu.com/3752709523/405373810"
+      },
+      {
+        "status_id": "405371704",
+        "author_name": "炼金术士的朝圣",
+        "time_text_observed": "昨天 21:34· 来自Android",
+        "title": null,
+        "url": "https://xueqiu.com/9956576292/405371704"
+      },
+      {
+        "status_id": "405363152",
+        "author_name": "我的投资札记",
+        "time_text_observed": "昨天 20:16· 来自Android",
+        "title": null,
+        "url": "https://xueqiu.com/7126574850/405363152"
+      },
+      {
+        "status_id": "405360151",
+        "author_name": "老奈",
+        "time_text_observed": "昨天 19:43· 来自iPhone",
+        "title": null,
+        "url": "https://xueqiu.com/4086512744/405360151"
+      },
+      {
+        "status_id": "405346130",
+        "author_name": "珠穆朗玛峰一样高",
+        "time_text_observed": "昨天 17:33· 来自雪球",
+        "title": "专栏BC量产拐点+反内卷价格重构，隆基剑指100元",
+        "url": "https://xueqiu.com/3822823837/405346130"
+      },
+      {
+        "status_id": "405334863",
+        "author_name": "海上骑鲸客灬",
+        "time_text_observed": "昨天 16:13· 来自雪球",
+        "title": null,
+        "url": "https://xueqiu.com/8868196100/405334863"
+      }
+    ]
+  },
+  "page2": {
+    "page_no": 2,
+    "random_delay_before_seconds": 6.665,
+    "count": 10,
+    "overlap_with_page1": 0,
+    "ids": [
+      "405329188",
+      "405327793",
+      "405317396",
+      "405276541",
+      "405273701",
+      "405269850",
+      "405257742",
+      "405255915",
+      "405238137",
+      "405235322"
+    ],
+    "posts": [
+      {
+        "status_id": "405329188",
+        "author_name": "远离夕阳价值陷阱",
+        "time_text_observed": "昨天 15:35· 来自Android",
+        "title": null,
+        "url": "https://xueqiu.com/9126453883/405329188"
+      },
+      {
+        "status_id": "405327793",
+        "author_name": "酱菜甜菜",
+        "time_text_observed": "昨天 15:28· 来自雪球",
+        "title": "2026年第3次定投",
+        "url": "https://xueqiu.com/5209209398/405327793"
+      },
+      {
+        "status_id": "405317396",
+        "author_name": "东亚病股",
+        "time_text_observed": "昨天 14:37· 来自Android",
+        "title": null,
+        "url": "https://xueqiu.com/6548333042/405317396"
+      },
+      {
+        "status_id": "405276541",
+        "author_name": "Olida",
+        "time_text_observed": "昨天 10:47· 来自iPhone",
+        "title": null,
+        "url": "https://xueqiu.com/1049998536/405276541"
+      },
+      {
+        "status_id": "405273701",
+        "author_name": "Charley-001",
+        "time_text_observed": "昨天 10:36· 来自iPhone",
+        "title": null,
+        "url": "https://xueqiu.com/9327846503/405273701"
+      },
+      {
+        "status_id": "405269850",
+        "author_name": "金不换又大了一岁",
+        "time_text_observed": "昨天 10:22· 来自HarmonyOS",
+        "title": null,
+        "url": "https://xueqiu.com/4261565256/405269850"
+      },
+      {
+        "status_id": "405257742",
+        "author_name": "蝴蝶日记_小蝶",
+        "time_text_observed": "昨天 09:44· 来自iPhone",
+        "title": null,
+        "url": "https://xueqiu.com/3440091840/405257742"
+      },
+      {
+        "status_id": "405255915",
+        "author_name": "轻身",
+        "time_text_observed": "昨天 09:40· 来自Android",
+        "title": null,
+        "url": "https://xueqiu.com/3386079363/405255915"
+      },
+      {
+        "status_id": "405238137",
+        "author_name": "爱英语娃",
+        "time_text_observed": "08-16 23:55· 来自iPhone",
+        "title": null,
+        "url": "https://xueqiu.com/7190805948/405238137"
+      },
+      {
+        "status_id": "405235322",
+        "author_name": "奥马哈农夫",
+        "time_text_observed": "修改于昨天 08:26· 来自Android",
+        "title": "《真假价投那些事》",
+        "url": "https://xueqiu.com/3187595729/405235322"
+      }
+    ]
+  },
+  "detail": {
+    "random_delay_before_seconds": 9.538,
+    "selected_status_id": "405329188",
+    "resolved_status_id": "405329188",
+    "created_at_present": true,
+    "main_page2_preserved": true,
+    "current_page_challenge_tokens": [],
+    "graphical_captcha_observed": false
+  },
+  "focus": {
+    "sampling_method": "read-only AppleScript; no activate, navigation, click, or execute-javascript",
+    "sample_count": 42,
+    "full_run_baseline_frontmost_application": "Google Chrome",
+    "full_run_owned_chrome_pid": 75613,
+    "full_run_owned_chrome_frontmost_count": 0,
+    "user_chrome_baseline_final_identity_match": true,
+    "background_target_precheck_baseline_frontmost_application": "Docker Desktop",
+    "background_target_precheck_frontmost_chrome_takeover_count": 0,
+    "background_target_precheck_user_chrome_baseline_final_identity_match": true,
+    "limitation": "Apple Events targets the Chrome application bundle and cannot unambiguously identify the user's Chrome while two same-bundle processes exist; unrelated URL/title values were persisted only as hashes"
+  },
+  "cleanup": {
+    "owned_chrome_process_terminated": true,
+    "fixed_cdp_port_closed": true
+  }
+}
