@@ -10,4 +10,6 @@ Scenarios:
 - `list_page_2.html`: one overlapping ID plus one new accepted row;
 - `empty_page.html`: valid source-success empty page;
 - `malformed_page.html`: missing embedded source object;
-- `detail_1001.html`, `detail_1002.html`: matching standard detail pages.
+- `detail_1001.html`, `detail_1002.html`: matching standard detail pages;
+- `detail_enrichment_40_success.html`, `detail_enrichment_failure.html`:
+  offline-only canonical list-title enrichment/version fixtures.

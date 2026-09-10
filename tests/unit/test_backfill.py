@@ -42,12 +42,14 @@ class MappingTransport:
         return value
 
 
-def synthetic_page(*rows: tuple[str, str]) -> HttpResponse:
+def synthetic_page(*rows: tuple[str, ...]) -> HttpResponse:
     values = []
     links = []
-    for item_id, published in rows:
+    for row in rows:
+        item_id, published = row[:2]
+        title = row[2] if len(row) == 3 else f"post {item_id}"
         values.append({
-            "post_id": int(item_id), "post_title": f"post {item_id}",
+            "post_id": int(item_id), "post_title": title,
             "stockbar_code": "600001", "stockbar_name": "Synthetic",
             "user_id": f"u-{item_id}", "user_nickname": f"author-{item_id}",
             "post_click_count": 0, "post_forward_count": 0,
@@ -114,7 +116,32 @@ def test_bf_001_range_success_and_bf_003_in_range_details() -> None:
     assert result.records_in_range == 2
     assert len(result.result.items) == 2
     assert all("detail" in item.raw_ref for item in result.result.items)
+    assert all(item.source_metadata["content_source"] == "detail_body" for item in result.result.items)
     assert transport.calls[:2] == [p1, d1]
+
+
+def test_list_only_marks_exactly_40_character_title_as_suspected_truncation() -> None:
+    p1 = EastmoneyGubaCollector.list_url("600001", 1)
+    p2 = EastmoneyGubaCollector.list_url("600001", 2)
+    title = "截" * 40
+    collector, transport = make_collector({
+        p1: synthetic_page(("1001", "2026-08-10 10:00:00", title)),
+        p2: synthetic_page(("1002", "2026-08-01 10:00:00")),
+    })
+
+    result = collector.collect_backfill(
+        "600001", from_time=datetime(2026, 8, 8, tzinfo=timezone.utc),
+        to_time=datetime(2026, 8, 11, tzinfo=timezone.utc), max_pages=2,
+        include_details=False,
+    )
+
+    assert result.result.status is CollectionStatus.SUCCESS
+    assert transport.calls == [p1, p2]
+    item = result.result.items[0]
+    assert item.content == title
+    assert item.source_metadata["content_source"] == "list_title"
+    assert item.source_metadata["list_title_length"] == 40
+    assert item.source_metadata["list_title_suspected_truncated"] is True
 
 
 def test_bf_002_newer_than_to_is_list_only_and_bf_004_crosses_old_page() -> None:

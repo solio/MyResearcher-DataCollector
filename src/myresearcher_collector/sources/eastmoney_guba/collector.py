@@ -33,6 +33,7 @@ from .parser import (
     is_access_block_page,
 )
 from .acquisition import BROWSER_DOM_SNAPSHOT, HTTP_RESPONSE
+from .content_rules import detail_body_metadata, list_title_metadata
 from myresearcher_collector.page_anchor import PageProbe
 
 
@@ -403,8 +404,14 @@ class EastmoneyGubaCollector:
 
     @staticmethod
     def _merged_fingerprint(merged: Mapping[str, Any]) -> tuple[Any, ...]:
+        metadata = detail_body_metadata(
+            merged["source_metadata"], title=merged["title"]
+        )
         return tuple(
-            (name, merged.get(name))
+            (
+                name,
+                metadata if name == "source_metadata" else merged.get(name),
+            )
             for name in (
                 "source_item_id", "canonical_bar_code", "canonical_bar_name",
                 "author_id", "author_name", "title", "content", "published_at",
@@ -606,7 +613,9 @@ class EastmoneyGubaCollector:
                 collected_at = self.clock()
                 if collected_at.tzinfo is None:
                     collected_at = collected_at.replace(tzinfo=timezone.utc)
-                source_metadata = dict(merged["source_metadata"])
+                source_metadata = detail_body_metadata(
+                    merged["source_metadata"], title=merged["title"]
+                )
                 source_metadata["final_urls"] = {"list": page_final_url, "detail": detail_final_url}
                 observation_version = observation_versions.get(row.source_item_id, 0) + 1
                 observation_versions[row.source_item_id] = observation_version
@@ -815,9 +824,8 @@ class EastmoneyGubaCollector:
             collected_at = self.clock()
             if collected_at.tzinfo is None:
                 collected_at = collected_at.replace(tzinfo=timezone.utc)
-            metadata = dict(row.source_metadata)
+            metadata = list_title_metadata(row.source_metadata, row.title)
             metadata["final_urls"] = {"list": list_final_url}
-            metadata["content_source"] = "list_title"
             return GubaSourceItem(
                 source=SOURCE, schema_version=SCHEMA_VERSION,
                 source_item_id=row.source_item_id,
@@ -844,7 +852,9 @@ class EastmoneyGubaCollector:
             collected_at = self.clock()
             if collected_at.tzinfo is None:
                 collected_at = collected_at.replace(tzinfo=timezone.utc)
-            metadata = dict(merged["source_metadata"])
+            metadata = detail_body_metadata(
+                merged["source_metadata"], title=merged["title"]
+            )
             metadata["final_urls"] = {"list": list_final_url, "detail": detail_final_url}
             return GubaSourceItem(
                 source=SOURCE, schema_version=SCHEMA_VERSION,

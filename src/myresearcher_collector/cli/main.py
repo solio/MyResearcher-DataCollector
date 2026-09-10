@@ -320,7 +320,10 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_mode = backfill.add_mutually_exclusive_group(required=True)
     backfill_mode.add_argument("--plan-only", action="store_true")
     backfill_mode.add_argument("--confirm-live", action="store_true")
-    enrich = subparsers.add_parser("enrich-details", help="fill missing content for 40-character Eastmoney titles")
+    enrich = subparsers.add_parser(
+        "enrich-details",
+        help="enrich Eastmoney list-title rows in legacy or canonical storage",
+    )
     enrich.add_argument("--source", choices=("eastmoney_guba",), required=True)
     enrich.add_argument("--stock", required=True)
     enrich.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
@@ -331,6 +334,11 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--challenge-retries", type=int, default=3)
     enrich.add_argument("--limit", type=int, default=None,
                         help="diagnostic bound on detail candidates")
+    enrich.add_argument(
+        "--include-short-titles",
+        action="store_true",
+        help="explicitly enrich titles shorter than 40 characters; default is exactly 40 only",
+    )
     enrich.add_argument("--profile-dir", type=Path, default=None)
     enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean", "managed-chromium"), default="existing-chrome")
     enrich_mode = enrich.add_mutually_exclusive_group(required=True)
@@ -909,7 +917,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("challenge wait/retries must be non-negative")
             if args.plan_only:
                 print(json.dumps({"mode":"PLAN_ONLY","source":args.source,"stock":args.stock,
-                                  "data_dir":str(args.data_dir.expanduser().resolve())}, indent=2))
+                                  "data_dir":str(args.data_dir.expanduser().resolve()),
+                                  "title_policy": (
+                                      "length_lte_40_explicit"
+                                      if args.include_short_titles
+                                      else "length_eq_40_suspected_truncation"
+                                  )}, indent=2))
                 return 0
             mode = args.acquisition_mode
             profile = args.profile_dir
@@ -917,16 +930,18 @@ def main(argv: list[str] | None = None) -> int:
             resolved_profile = getattr(transport, "profile_dir", None)
             report = execute_detail_enrichment(
                 db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
-                transport=transport, min_delay=args.min_delay, max_delay=args.max_delay,
+                transport=transport, raw_data_dir=args.data_dir.expanduser().resolve(),
+                min_delay=args.min_delay, max_delay=args.max_delay,
                 challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
                 log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
+                include_short_titles=args.include_short_titles,
                 acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None,
                 profile_mode=getattr(transport, "profile_mode", None))
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"detail enrichment error: {exc}", file=sys.stderr)
             return 2
         print(json.dumps(report, ensure_ascii=False, indent=2, default=_json_default))
-        return 0 if not report["stopped"] else 1
+        return 0 if not report["stopped"] and report["failed"] == 0 else 1
 
     if args.command == "xueqiu":
         runtime = None
