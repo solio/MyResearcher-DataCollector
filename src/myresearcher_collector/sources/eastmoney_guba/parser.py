@@ -22,6 +22,12 @@ _ACCESS_TITLES = {"身份核实", "访问验证", "安全验证", "人机验证"
 # 身份核实 shell (list,601888,f_51.html); the script markers above also
 # match that shell, and emcaptcha holds when its assets differ.
 _ACCESS_MARKERS = ("fd_guba_validate", "em_capt.js", "validate.js", "emcaptcha")
+# A deleted/unavailable post returns the site error shell instead of a detail
+# page: <div id="pageContent" class="error404_page"> plus the error404 stylesheet,
+# and no embedded `post_article` payload. Both conditions are required so that a
+# genuine future detail-page schema change is never reclassified as a missing
+# post (which would permanently skip a live article).
+_NOT_FOUND_MARKERS = ("error404_page", "error404.css")
 
 
 class GubaParseError(ValueError):
@@ -51,6 +57,22 @@ def is_access_block_page(html: str) -> bool:
     title = " ".join(title_match.group(1).split())
     lowered = html.lower()
     return title in _ACCESS_TITLES and any(marker in lowered for marker in _ACCESS_MARKERS)
+
+
+def is_not_found_page(html: str) -> bool:
+    """Recognize the observed Eastmoney "post unavailable" (404) HTML shell.
+
+    Requires the source-specific error container/stylesheet marker *and* the
+    absence of any embedded ``post_article`` payload. The payload guard keeps a
+    real detail page from ever being misread as a missing post, because a
+    misread would cause a live article to be permanently skipped.
+    """
+    if not isinstance(html, str) or not html:
+        return False
+    lowered = html.lower()
+    if "post_article" in lowered:
+        return False
+    return any(marker in lowered for marker in _NOT_FOUND_MARKERS)
 
 
 @dataclass(frozen=True)

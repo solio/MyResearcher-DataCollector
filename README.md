@@ -63,12 +63,29 @@ boundaries:
 - `enrich-details` detects which of those two database contracts it was given
   and applies the same title eligibility rule to both.
 
-By default, enrichment requests details only when the trimmed list title has
-exactly 40 characters. Canonical success appends a new observation with
+By default, enrichment requests details when the trimmed list title is at least
+40 characters long (`>= 40`). A length of exactly 40 uses the historical
+`list_title_length_eq_40` trigger; a length greater than 40 uses the additive
+`list_title_length_gt_40` trigger. Canonical success appends a new observation with
 `content_source=detail_body` and a `detail` raw-evidence link; it never updates
 the earlier `list_title` observation. Failure leaves that observation in place
 and records the reason in `collection_failures`. Titles shorter than 40 are not
 requested unless `--include-short-titles` is explicitly supplied.
+
+A detail URL whose post has been deleted returns the site's error shell
+(`error404_page`) instead of an article payload. Such rows are **never removed**:
+the legacy `posts` row or the canonical `list_title` observation is kept intact
+(its `content` simply stays `NULL`), and the post id is recorded in a sidecar
+skip ledger (`<collector-stem>.detail_enrichment_skips.db`, next to
+`collector.db`) with reason `detail_not_found`. Later runs exclude ledgered ids
+from the candidate set, so a known-missing post is requested once and then never
+re-visited; the run report exposes the count as `skipped_not_found_added`.
+Detection deliberately requires both the 404 markers *and* the absence of a
+`post_article` payload, so a genuine future schema change is never mistaken for
+a deleted post (which would permanently skip a live article). The ledger lives
+outside `collector.db` because the canonical collector schema is a frozen
+contract re-validated on every open, so an extra table there would be rejected
+as drift.
 
 For newly collected canonical data under `data/`, run:
 

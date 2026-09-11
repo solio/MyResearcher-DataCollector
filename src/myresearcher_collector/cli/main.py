@@ -337,7 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument(
         "--include-short-titles",
         action="store_true",
-        help="explicitly enrich titles shorter than 40 characters; default is exactly 40 only",
+        help="explicitly enrich titles shorter than 40 characters; default is length >= 40 only",
     )
     enrich.add_argument("--profile-dir", type=Path, default=None)
     enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean", "managed-chromium"), default="existing-chrome")
@@ -919,9 +919,9 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"mode":"PLAN_ONLY","source":args.source,"stock":args.stock,
                                   "data_dir":str(args.data_dir.expanduser().resolve()),
                                   "title_policy": (
-                                      "length_lte_40_explicit"
+                                      "all_lengths_short_titles_explicit"
                                       if args.include_short_titles
-                                      else "length_eq_40_suspected_truncation"
+                                      else "length_gte_40_suspected_truncation"
                                   )}, indent=2))
                 return 0
             mode = args.acquisition_mode

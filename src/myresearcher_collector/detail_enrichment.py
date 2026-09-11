@@ -30,6 +30,7 @@ from .sources.eastmoney_guba.parser import (
     SCHEMA_VERSION,
     SOURCE,
     is_access_block_page,
+    is_not_found_page,
     merge_list_and_detail,
     parse_detail_page,
 )
@@ -86,6 +87,101 @@ def _table_names(db_path: Path) -> set[str]:
         conn.close()
 
 
+SKIP_LEDGER_TABLE = "detail_enrichment_skips"
+SKIP_REASON_NOT_FOUND = "detail_not_found"
+_SKIP_LEDGER_SUFFIX = ".detail_enrichment_skips.db"
+
+
+def _skip_ledger_path(db_path: Path) -> Path:
+    """Sidecar sqlite file remembering detail posts that no longer exist.
+
+    The ledger deliberately lives *outside* the collector database. That schema
+    is a frozen contract re-validated on every open (see ``storage.schema``), so
+    an extra table there is rejected as drift. A sibling file also means a
+    missing or corrupt ledger can never block enrichment.
+    """
+    return db_path.with_name(f"{db_path.stem}{_SKIP_LEDGER_SUFFIX}")
+
+
+class _SkipLedger:
+    """Best-effort record of posts known not to exist at their detail URL.
+
+    Every method degrades to a no-op / empty result on error: skipping is an
+    optimisation, never a correctness gate. Reads fall back to the previous
+    re-request behaviour rather than failing.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            f"""CREATE TABLE IF NOT EXISTS {SKIP_LEDGER_TABLE} (
+                  source TEXT NOT NULL,
+                  source_item_id TEXT NOT NULL,
+                  stock_code TEXT NOT NULL,
+                  reason TEXT NOT NULL,
+                  first_seen_at TEXT NOT NULL,
+                  last_seen_at TEXT NOT NULL,
+                  attempts INTEGER NOT NULL,
+                  PRIMARY KEY(source, source_item_id))"""
+        )
+        conn.commit()
+        return conn
+
+    def skipped_ids(self, source: str) -> set[str]:
+        try:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    f"SELECT source_item_id FROM {SKIP_LEDGER_TABLE} WHERE source=?",
+                    (source,),
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            print(
+                f"[detail-enrichment] skip-ledger unavailable ({exc}); "
+                "continuing without skips",
+                file=sys.stderr,
+            )
+            return set()
+        return {str(row[0]) for row in rows}
+
+    def record(
+        self,
+        *,
+        source: str,
+        source_item_id: str,
+        stock_code: str,
+        reason: str,
+        observed_at: datetime,
+    ) -> None:
+        stamp = observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        try:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    f"""INSERT INTO {SKIP_LEDGER_TABLE}
+                          (source, source_item_id, stock_code, reason, first_seen_at, last_seen_at, attempts)
+                        VALUES (?, ?, ?, ?, ?, ?, 1)
+                        ON CONFLICT(source, source_item_id) DO UPDATE SET
+                          last_seen_at=excluded.last_seen_at,
+                          reason=excluded.reason,
+                          attempts={SKIP_LEDGER_TABLE}.attempts + 1""",
+                    (source, source_item_id, stock_code, reason, stamp, stamp),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            print(
+                f"[detail-enrichment] could not record skip for {source_item_id}: {exc}",
+                file=sys.stderr,
+            )
+
+
 def _failure_reason(exc: BaseException) -> str:
     if isinstance(exc, _DetailFetchFailure):
         return exc.kind
@@ -105,6 +201,7 @@ def _canonical_candidates(
     stock_code: str,
     *,
     include_short_titles: bool,
+    skipped: set[str] | frozenset[str] = frozenset(),
 ) -> list[_Candidate]:
     result: list[_Candidate] = []
     for item in store.latest_observations(SOURCE, f"stock:{stock_code}").values():
@@ -124,6 +221,7 @@ def _canonical_candidates(
                 canonical_item=item,
             )
         )
+    result = [candidate for candidate in result if candidate.source_item_id not in skipped]
     return sorted(result, key=lambda candidate: candidate.canonical_item.published_at)
 
 
@@ -132,6 +230,7 @@ def _legacy_candidates(
     stock_code: str,
     *,
     include_short_titles: bool,
+    skipped: set[str] | frozenset[str] = frozenset(),
 ) -> list[_Candidate]:
     rows = store.conn.execute(
         """SELECT source_item_id,url,title,published_at FROM posts
@@ -147,7 +246,7 @@ def _legacy_candidates(
         )
         if trigger is not None:
             result.append(_Candidate(str(item_id), str(url), title, trigger))
-    return result
+    return [candidate for candidate in result if candidate.source_item_id not in skipped]
 
 
 def _canonical_item(
@@ -235,6 +334,9 @@ def execute_detail_enrichment(
             "collector database must contain exactly one supported observation contract"
         )
 
+    skip_ledger = _SkipLedger(_skip_ledger_path(path))
+    known_missing = skip_ledger.skipped_ids(SOURCE)
+
     persistence: SQLitePersistence | None = None
     legacy_store: SimplePostStore | None = None
     if canonical:
@@ -246,6 +348,7 @@ def execute_detail_enrichment(
             persistence,
             stock_code,
             include_short_titles=include_short_titles,
+            skipped=known_missing,
         )
         storage_mode = "canonical_observations"
     else:
@@ -254,6 +357,7 @@ def execute_detail_enrichment(
             legacy_store,
             stock_code,
             include_short_titles=include_short_titles,
+            skipped=known_missing,
         )
         storage_mode = "legacy_posts"
     if limit is not None:
@@ -390,6 +494,7 @@ def execute_detail_enrichment(
     success = 0
     legacy_filled = 0
     canonical_versioned = 0
+    skipped_not_found = 0
     failures: list[dict[str, str]] = []
     samples: list[dict[str, object]] = []
     stopped = False
@@ -505,6 +610,11 @@ def execute_detail_enrichment(
                     raise _DetailFetchFailure(
                         "access_block", "Eastmoney detail remained behind verification"
                     )
+                if is_not_found_page(html):
+                    raise _DetailFetchFailure(
+                        SKIP_REASON_NOT_FOUND,
+                        "Eastmoney detail returned the not-found shell",
+                    )
                 detail = parse_detail_page(html)
                 if detail.source_item_id != candidate.source_item_id:
                     raise GubaDetailMismatch("list/detail source_item_id mismatch")
@@ -588,6 +698,15 @@ def execute_detail_enrichment(
                 failures.append(
                     {"source_item_id": candidate.source_item_id, "reason": reason}
                 )
+                if reason == SKIP_REASON_NOT_FOUND:
+                    skip_ledger.record(
+                        source=SOURCE,
+                        source_item_id=candidate.source_item_id,
+                        stock_code=stock_code,
+                        reason=reason,
+                        observed_at=_utc_now(clock),
+                    )
+                    skipped_not_found += 1
                 if candidate.canonical_item is not None and persistence is not None:
                     counters.details_failed += 1
                     counters.records_failed += 1
@@ -620,12 +739,14 @@ def execute_detail_enrichment(
                 counters=counters,
             )
 
+        refreshed_skips = skip_ledger.skipped_ids(SOURCE)
         if canonical:
             remaining = len(
                 _canonical_candidates(
                     persistence,
                     stock_code,
                     include_short_titles=include_short_titles,
+                    skipped=refreshed_skips,
                 )
             )
         else:
@@ -634,6 +755,7 @@ def execute_detail_enrichment(
                     legacy_store,
                     stock_code,
                     include_short_titles=include_short_titles,
+                    skipped=refreshed_skips,
                 )
             )
         if current_window is not None:
@@ -653,6 +775,7 @@ def execute_detail_enrichment(
             "candidates_remaining": int(remaining),
             "stopped": stopped,
             "access_block_count": access_blocks,
+            "skipped_not_found_added": skipped_not_found,
             "challenge_windows": windows,
             "jsonl_path": str(log_file),
             "acquisition_mode": acquisition_mode,

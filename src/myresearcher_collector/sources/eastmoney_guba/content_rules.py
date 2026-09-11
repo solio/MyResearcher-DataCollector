@@ -9,6 +9,7 @@ TRUNCATED_LIST_TITLE_LENGTH = 40
 LIST_TITLE_CONTENT_SOURCE = "list_title"
 DETAIL_BODY_CONTENT_SOURCE = "detail_body"
 TRUNCATION_TRIGGER = "list_title_length_eq_40"
+TRUNCATION_OVERFLOW_TRIGGER = "list_title_length_gt_40"
 EXPLICIT_SHORT_TITLE_TRIGGER = "explicit_short_title"
 
 
@@ -22,8 +23,17 @@ def detail_enrichment_trigger(
     *,
     include_short_titles: bool = False,
 ) -> str | None:
-    """Return why a list title is eligible for detail enrichment, if at all."""
+    """Return why a list title is eligible for detail enrichment, if at all.
+
+    The default eligibility rule is "title length is at least 40" (>=40), i.e.
+    any list title at or beyond the 40-character truncation length is treated as
+    suspected truncated. ``length == 40`` keeps its historical trigger identity;
+    ``length > 40`` reports the additive overflow trigger. Titles shorter than
+    40 are only requested when ``include_short_titles`` is explicitly set.
+    """
     length = normalized_title_length(title)
+    if length > TRUNCATED_LIST_TITLE_LENGTH:
+        return TRUNCATION_OVERFLOW_TRIGGER
     if length == TRUNCATED_LIST_TITLE_LENGTH:
         return TRUNCATION_TRIGGER
     if include_short_titles and length < TRUNCATED_LIST_TITLE_LENGTH:

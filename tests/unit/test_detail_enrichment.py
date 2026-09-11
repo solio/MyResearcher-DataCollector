@@ -279,3 +279,103 @@ def test_canonical_short_title_can_be_explicitly_enriched(tmp_path):
         assert metadata["detail_enrichment_trigger"] == "explicit_short_title"
     finally:
         store.close()
+
+
+def test_canonical_404_is_marked_skipped_without_touching_frozen_schema(tmp_path):
+    """A missing post is ledgered in a sidecar file, never in the collector DB."""
+    _seed_canonical_list_observation(tmp_path)
+    transport = FixtureTransport("detail_enrichment_404.html")
+
+    report = execute_detail_enrichment(
+        db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
+        stock_code="601012", transport=transport, sleep_fn=lambda _: None,
+        clock=lambda: NOW,
+    )
+
+    assert report["success"] == 0 and report["failed"] == 1
+    assert report["failures"][0]["reason"] == "detail_not_found"
+    assert report["skipped_not_found_added"] == 1
+    # The only candidate is now remembered as missing.
+    assert report["candidates_remaining"] == 0
+
+    # The frozen collector schema is untouched: reopening it must not raise.
+    store = SQLitePersistence(
+        tmp_path / "collector.db", RawEvidenceStore(tmp_path, SOURCE)
+    )
+    try:
+        assert store.conn.execute(
+            "SELECT count(*) FROM source_item_observations"
+        ).fetchone()[0] == 1
+    finally:
+        store.close()
+
+    # The skip lives in a sibling ledger, keyed by the collector db stem.
+    ledger = tmp_path / "collector.detail_enrichment_skips.db"
+    assert ledger.is_file()
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(ledger)
+    try:
+        rows = conn.execute(
+            "SELECT source, source_item_id, reason FROM detail_enrichment_skips"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [(SOURCE, "1754555652", "detail_not_found")]
+
+
+def test_canonical_404_is_not_refetched_on_second_run(tmp_path):
+    _seed_canonical_list_observation(tmp_path)
+    first = FixtureTransport("detail_enrichment_404.html")
+    execute_detail_enrichment(
+        db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
+        stock_code="601012", transport=first, sleep_fn=lambda _: None,
+        clock=lambda: NOW,
+    )
+    assert len(first.calls) == 1
+
+    second = FixtureTransport("detail_enrichment_404.html")
+    report = execute_detail_enrichment(
+        db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
+        stock_code="601012", transport=second, sleep_fn=lambda _: None,
+        clock=lambda: NOW,
+    )
+    # The known-missing post is skipped: no request is issued at all.
+    assert second.calls == []
+    assert report["requested"] == 0
+    assert report["success"] == report["failed"] == 0
+
+
+def test_legacy_404_is_marked_skipped_and_not_refetched(tmp_path):
+    store = SimplePostStore(tmp_path / "collector.db")
+    store.upsert_post(
+        source="eastmoney_guba", source_item_id="1", stock_code="601012",
+        title="x" * 40, content=None, author_id="u", author_name="n",
+        published_at="2026-08-01T02:00:00.000000Z",
+        url="https://guba.eastmoney.com/news,601012,1.html",
+        read_count=0, reply_count=0, like_count=0, forward_count=0,
+    )
+    store.close()
+
+    first = FixtureTransport("detail_enrichment_404.html")
+    report = execute_detail_enrichment(
+        db_path=tmp_path / "collector.db", stock_code="601012",
+        transport=first, sleep_fn=lambda _: None, clock=lambda: NOW,
+    )
+    assert report["skipped_not_found_added"] == 1
+    assert report["candidates_remaining"] == 0
+    assert len(first.calls) == 1
+
+    second = FixtureTransport("detail_enrichment_404.html")
+    report2 = execute_detail_enrichment(
+        db_path=tmp_path / "collector.db", stock_code="601012",
+        transport=second, sleep_fn=lambda _: None, clock=lambda: NOW,
+    )
+    assert second.calls == []
+    assert report2["requested"] == 0
+
+    # The legacy posts table is still readable after the sidecar write.
+    reopened = SimplePostStore(tmp_path / "collector.db")
+    try:
+        assert reopened.rows("eastmoney_guba", "601012")[0]["content"] is None
+    finally:
+        reopened.close()
