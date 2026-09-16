@@ -18,6 +18,7 @@ documented home for network/browser-driving runbooks.
 | per-stock run reports | `runtime/enrich-runs/<stock>.json` / `.err` | no |
 | driver wrapper log | `runtime/enrich-runs/driver.log` | no |
 | request log (jsonl) | `runtime/logs/eastmoney-detail-enrichment.jsonl` | no |
+| backfill run reports | `runtime/logs/backfill-<stock>-<yyyymmdd>.json` / `.err` | no |
 | skip ledger | `data/collector.detail_enrichment_skips.db` | no |
 
 Everything these scripts *write* stays under the gitignored `runtime/` and
@@ -103,16 +104,76 @@ cd <repo>
   --from-line 0 --run-start 2026-09-16T03:00:00Z
 ```
 
+## `backfill_all_stocks.sh`
+
+Resume-safe, fail-closed historical **collection** driver over the same 16
+Eastmoney stocks. This is the counterpart to `enrich_all_stocks.sh`: enrich
+fills `content` for rows that already exist, backfill acquires the list rows
+themselves.
+
+- One `backfill` invocation per stock, `managed-chromium`, `--list-only`, so it
+  writes the legacy mutable `posts` table (the same contract
+  `backfill_coverage` is keyed to).
+- The window is `--days DAYS` (env `DAYS`, default `14`) ending today in
+  Asia/Shanghai. Windows deliberately overlap on re-run, and that is free: a
+  fully covered range short-circuits to `SUCCESS` with `pages_scanned=0`
+  (`already_covered`), so re-running is idempotent and doubles as the resume
+  cursor.
+- Traversal starts at `--start-page 1` — see the header comment in the script
+  for why the default time-seek must be bypassed, and note that it still yields
+  `coverage_eligible=True`.
+- `coverage_stop` ends the traversal on the first page wholly inside already
+  covered territory, so the run collects the gap and stops at the boundary
+  instead of rescanning the whole history.
+- **Fail-closed:** any `status != SUCCESS` halts the job (`ALL_DONE_HALTED`);
+  re-run to resume from that stock.
+
+Terminal markers: `ALL_DONE <ts>` / `ALL_DONE_HALTED <ts>`, plus
+`HALT_ON_COLLECTION_FAILED stock=<s>` or `HALT_ON_UNREADABLE_REPORT stock=<s>`.
+It also prints `COVERAGE <stock> <from> -> <to>` rows before the run and on
+every exit path.
+
+### Report-counter caveat
+
+For this legacy path `records_new`, `records_existing` and `records_versioned`
+are **hardcoded to 0** (`integration.py`,
+`execute_and_persist_simple_backfill_collection`). They are not a write signal
+and must never be quoted as evidence that nothing was written. Rows are written
+by `persist_page`; the honest signals are `records_in_range`, `pages_scanned`,
+the `posts` row delta, and the `backfill_coverage` rows.
+
+### Known defect this driver works around
+
+`seek_historical_page` fails on stale anchors. `choose_anchor` picks the anchor
+nearest `target_to`, which for a range ending "now" is the newest page from the
+*previous* run — stale by the whole collection pause. `predict_page` then
+projects a plausible-looking far page, and the walk loop steps with an
+exponentially growing `step` in the "toward lower page numbers" direction,
+undershooting page 0 and raising
+`SeekFailure: time seek exhausted valid page candidates`. Because
+`execute_and_persist_simple_backfill_collection` catches broad `Exception`, the
+run reports only `status=COLLECTION_FAILED, stop_reason=time_seek_failure` with
+`pages_scanned=0` — no traceback, no failures list, nothing in the `.err` file.
+
+Observed 2026-09-16 on stock 601888. `--start-page 1` avoids it entirely. The
+algorithm itself is still unfixed; a proper fix should clamp the step so it
+cannot cross below page 1 rather than raising.
+
 ## Running
 
 ```bash
 cd <repo>
-# single pass, halts on first access block
+# enrichment: single pass, halts on first access block
 zsh scripts/ops/enrich_all_stocks.sh
 
-# or with bounded auto-retry
+# enrichment: bounded auto-retry wrapper
 zsh scripts/ops/mop_up.sh
+
+# collection: close the gap since the last run (DAYS=14 by default)
+zsh scripts/ops/backfill_all_stocks.sh
 ```
 
-These are enrichment drivers. They are not used for collection/backfill; that is
-the `backfill` CLI subcommand.
+`enrich_all_stocks.sh` / `mop_up.sh` / `check_revisit.py` are enrichment
+drivers; `backfill_all_stocks.sh` is the collection driver. Both are thin
+wrappers over the CLI — all parsing, schema and persistence contracts live in
+`src/myresearcher_collector/`.
