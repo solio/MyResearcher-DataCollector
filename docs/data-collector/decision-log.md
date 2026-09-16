@@ -49,3 +49,13 @@ Evidence: DataClean state/knowledge files and legacy scraper/database inspection
 Alternatives: Declare the candidate YAML fields final. Rejected as unsupported.  
 Impact: Phase 1 must close the blocking DataClean and first-source schema questions before adapter output is approved.  
 Evidence level: `CONFIRMED — downstream/repository fact`; field proposal remains `PROVISIONAL`.
+
+## D-006
+
+Date: 2026-09-16  
+Decision: Track the Eastmoney detail-enrichment runbooks as source under `scripts/ops/` (`enrich_all_stocks.sh`, `mop_up.sh`, `check_revisit.py`) instead of leaving them untracked in `runtime/`.  
+Reason: `runtime/` is deliberately gitignored as runtime artifacts, but these files are drivers and one read-only guard — reproducible operating logic, not evidence. `AGENTS.md` makes the Git repository the authoritative shared project memory and forbids relying on local/untracked state; an untracked driver cannot be reviewed, diffed, or reproduced by another client. The revisit guard in particular encodes a regression contract (already-marked 404 posts must never be re-requested) that must be durable.  
+Evidence: `git ls-files runtime/` returned nothing; both drivers hardcoded an absolute repo path and `check_revisit.py` resolved `parents[1]`, so none could run from a fresh clone.  
+Alternatives: `git add -f` under `runtime/` (rejected — defeats the ignore, mixes source with logs/reports/browser profiles); place them in the `scripts/` root (rejected — `scripts/README.md` reserves it for deterministic utilities and these touch network/browser); keep them untracked (rejected — violates D-006's own reason).  
+Impact: They move to `scripts/ops/`, each documented in `scripts/ops/README.md`; repo root is now derived from the script location; all outputs continue to land in the gitignored `runtime/` and `data/`. `scripts/README.md` and the root `README.md` layout note point at the new subdirectory.  
+Evidence level: `CONFIRMED — repository fact + AGENTS.md collaboration contract`.

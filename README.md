@@ -24,7 +24,7 @@ MyResearcher-DataClean
 - `src/myresearcher_collector/`: source-isolated adapter, internal raw models and minimal CLI boundary.
 - `tests/`: unit, integration and sanitized fixture boundaries.
 - `runs/`: phase/round scope and evidence.
-- `scripts/`: future deterministic project utilities.
+- `scripts/`: deterministic project utilities; `scripts/ops/`: documented operational runbooks for detail enrichment.
 
 ## Development gate
 
