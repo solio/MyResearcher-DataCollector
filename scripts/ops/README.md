@@ -214,6 +214,40 @@ worker pool, a **shared** rate limiter so the combined request rate stays inside
 the proven-safe single-stream envelope, a single ledger writer (or WAL +
 `busy_timeout`), and a guard that knows how many streams are in flight.
 
+## `enrich_tail_worker.sh`
+
+A bounded rolling worker that makes use of the concurrency finding above
+*without* the unsafe parts. It runs alongside `enrich_all_stocks.sh`.
+
+- The driver walks its list head -> tail. This worker walks **tail -> head**: on
+  every round it re-reads the backlog and takes the **smallest non-zero** stock,
+  so it clears the quick wins while the driver is still grinding the big ones.
+  The two meet in the middle.
+- It never touches the stock the driver currently holds. "Currently held" is
+  read from the driver's own log (the last `===== stock=<code> ... =====`
+  line), so no coordination file is needed.
+- Every candidate query applies the same skip-ledger exclusion as the driver, so
+  the driver's end-of-run `check_revisit.py` verdict stays valid even though
+  this stream's requests land inside the driver's log window.
+- It exits by itself: `TAIL_DRIVER_DONE` if the driver finished, `TAIL_DONE`
+  once the only remaining backlog belongs to the driver, `TAIL_HALTED` on an
+  access block or an unreadable report (fail-closed, same as the driver).
+- Its own pacing defaults to `MIN_DELAY=7.0` / `MAX_DELAY=10.0` — deliberately
+  the **slow end** of the allowed 3..10s envelope, so the *combined* request
+  rate stays near the single-stream rate that is known to work instead of
+  doubling it. There is also a `COOLDOWN_SECONDS` (default 20) quiet gap
+  between stocks. Lower `MIN_DELAY` to buy speed at higher block risk.
+- `DRIVER_LOG` points at the driver log to read the held stock from; it defaults
+  to `runtime/enrich-runs/driver.log` (the `mop_up.sh` log).
+
+Because both streams are idempotent, a stock this worker finishes first is
+simply skipped (`skip reason=no_pending`) when the driver later reaches it — no
+duplicated work. Where the two streams converge they can briefly select the same
+stock and re-request its candidates; that is wasteful, not corrupting.
+
+Note this still runs two processes against one SQLite file with no WAL and no
+`busy_timeout`. Keep an eye on the `.err` files for `database is locked`.
+
 ## Running
 
 ```bash
@@ -224,11 +258,14 @@ zsh scripts/ops/enrich_all_stocks.sh
 # enrichment: bounded auto-retry wrapper
 zsh scripts/ops/mop_up.sh
 
+# enrichment: rolling tail worker, run ALONGSIDE the driver (separate terminal)
+DRIVER_LOG=$PWD/runtime/enrich-runs/driver.log zsh scripts/ops/enrich_tail_worker.sh
+
 # collection: close the gap since the last run (DAYS=14 by default)
 zsh scripts/ops/backfill_all_stocks.sh
 ```
 
-`enrich_all_stocks.sh` / `mop_up.sh` / `check_revisit.py` are enrichment
-drivers; `backfill_all_stocks.sh` is the collection driver. Both are thin
-wrappers over the CLI — all parsing, schema and persistence contracts live in
-`src/myresearcher_collector/`.
+`enrich_all_stocks.sh` / `mop_up.sh` / `enrich_tail_worker.sh` /
+`check_revisit.py` are enrichment drivers; `backfill_all_stocks.sh` is the
+collection driver. All are thin wrappers over the CLI — parsing, schema and
+persistence contracts live in `src/myresearcher_collector/`.
