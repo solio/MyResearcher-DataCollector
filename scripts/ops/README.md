@@ -15,6 +15,7 @@ documented home for network/browser-driving runbooks.
 | | location | tracked |
 |---|---|---|
 | scripts (this dir) | `scripts/ops/` | yes |
+| published work split | `runtime/enrich-runs/plan.txt` | no |
 | per-stock run reports | `runtime/enrich-runs/<stock>.json` / `.err` | no |
 | driver wrapper log | `runtime/enrich-runs/driver.log` | no |
 | request log (jsonl) | `runtime/logs/eastmoney-detail-enrichment.jsonl` | no |
@@ -28,11 +29,68 @@ that has Playwright installed) and can be overridden by exporting `PY`.
 Repo root is derived from the script's own location, so the scripts are not
 pinned to one machine's absolute path.
 
+## `enrich_plan.py`
+
+The single source of truth for *what work exists* and *which stream owns it*.
+All backlog accounting lives here so the eligibility predicate cannot drift
+between the driver, the tail worker and any ad-hoc query.
+
+| command | output |
+|---|---|
+| `list` | `<stock>\t<pending>` for every stock with pending work, pending desc |
+| `pending <stock>` | the pending count as a bare integer (`0` if none) |
+| `write-split <outdir>` | writes `<outdir>/plan.txt` atomically, prints `PLAN_SPLIT` + `PLAN_DRIVER`/`PLAN_TAIL` rows |
+| `pick <driver\|tail> [plan]` | `<stock> <pending>` — smallest unclaimed backlog on that side |
+
+Eligibility = `source='eastmoney_guba'` **and** trimmed list-title length `>= 40`
+**and** `content IS NULL`, minus ids already in the sidecar skip ledger. The
+database is opened `mode=ro`; the ledger is attached read-only and a broken or
+missing ledger degrades to "no exclusions" instead of failing the plan.
+
+### The work list is computed, not hardcoded
+
+Until 2026-09-16 `enrich_all_stocks.sh` carried a hardcoded 16-code array
+labelled *"Ordered by original pending count (desc)"*, frozen on 2026-09-10.
+That produced a false finding: the driver always started on 601888, which looked
+like the work was concentrated there, when 601012 actually held the largest
+backlog (251 vs 159) and simply sat later in a stale queue. The list is now
+derived from the database on every run. **Do not reintroduce a literal list in
+the drivers** — a stock can go from 251 pending to 0 in one run, and a frozen
+queue silently misrepresents that.
+
+### Two-stream split (`plan.txt`)
+
+`plan.txt` is **one** file holding both sides, replaced by write-then-rename:
+
+```
+driver	002648	86
+driver	002028	4
+tail	600312	50
+tail	300666	42
+```
+
+One file rather than two queue files on purpose: `mop_up.sh` re-runs the driver
+in a loop and each round republishes the plan, so a reader that saw a fresh tail
+list beside a stale driver list could pick an overlapping stock. A single atomic
+replace cannot be torn.
+
+The split is LPT — largest backlog first, always onto the currently lighter
+stream — so the two sides balance by **pending rows**, not by stock count (one
+stock can hold half the backlog: 86 of 182 above). The driver keeps the largest
+single job, being the fail-closed stream.
+
+To run everything on one stream instead, set `STOCKS="..."`. That publishes a
+driver-only plan and makes `enrich_tail_worker.sh` refuse to start
+(`TAIL_NO_PLAN`), so an ad-hoc hand-run can never collide with a background
+worker.
+
 ## `enrich_all_stocks.sh`
 
-Resume-safe, fail-closed driver over the 16 Eastmoney stocks in
-`data/collector.db` (legacy `posts` contract).
+Resume-safe, fail-closed driver over whatever stock has pending detail work in
+`data/collector.db` (legacy `posts` contract). It owns the `driver` side of
+`plan.txt`; `enrich_tail_worker.sh` owns the `tail` side.
 
+- The work list is computed at run start — see `enrich_plan.py` above.
 - Eligibility: trimmed list-title length `>= 40` (see `content_rules.py`).
 - Each stock is one `enrich-details` invocation, `--acquisition-mode
   managed-chromium`, `--challenge-wait 180 --challenge-retries 1`.
@@ -45,6 +103,9 @@ Resume-safe, fail-closed driver over the 16 Eastmoney stocks in
   is `1` whenever *any* candidate failed (e.g. a deleted 404 post), so exit code
   is deliberately not the stop signal — the halt is driven by the JSON report.
 - If a report is unreadable/missing, that is also a halt condition.
+- `DRY_RUN=1` publishes the plan, resolves each stock's pending count and exits
+  before launching a browser (`DRY_RUN_OK <ts>`). Use it to see exactly what a
+  run would do, and to confirm the two queues are disjoint, before committing.
 
 Terminal markers written to stdout (this is what the wrapper matches on):
 
@@ -52,6 +113,10 @@ Terminal markers written to stdout (this is what the wrapper matches on):
 |---|---|
 | `ALL_DONE <ts>` | every stock with pending work finished, no halt |
 | `ALL_DONE_HALTED <ts>` | halted early; re-run to resume |
+| `NO_BACKLOG <ts>` + `ALL_DONE <ts>` | nothing had pending work; a free no-op |
+| `PLAN_DRIVER_QUEUE <codes>` | the resolved work list for this run |
+| `DRY_RUN_OK <ts>` | `DRY_RUN=1` finished; nothing was fetched |
+| `HALT_ON_PLAN_FAILED` | `enrich_plan.py write-split` failed; nothing was run |
 | `HALT_ON_ACCESS_BLOCK stock=<s>` / `HALT_ON_UNREADABLE_REPORT stock=<s>` | why it halted |
 
 Historical note: the halt `case` patterns must keep the leading `*`
@@ -62,11 +127,17 @@ silently failed to fire — fixed 2026-09-11.
 
 Bounded "retry until clean" wrapper around `enrich_all_stocks.sh`.
 
-The driver always restarts from the head of its stock list, so a persistently
-blocked early stock starves every stock after it. This wrapper re-runs the
-driver until a round ends in `ALL_DONE ` (matched on the log's last line). Each
-round is still fail-closed; a fresh browser session plus a cooldown gives the
-next round a new chance.
+The driver halts the whole job on the first access block, so a persistently
+blocked stock ends each round early. Because the work list is recomputed from the
+database every round, a retry resumes on whatever is *currently* the largest
+backlog rather than on a frozen head, but the starvation window still exists
+within a round. This wrapper re-runs the driver until a round ends in `ALL_DONE `
+(matched on the log's last line). Each round is still fail-closed; a fresh
+browser session plus a cooldown gives the next round a new chance.
+
+Each round republishes `plan.txt`. A running `enrich_tail_worker.sh` follows the
+new tail side on its next pick; the sides are always disjoint, so a republish can
+never make them overlap.
 
 - `MAX_ROUNDS` (default `12`), `COOLDOWN_SECONDS` (default `90`) are overridable
   by environment.
@@ -214,36 +285,68 @@ worker pool, a **shared** rate limiter so the combined request rate stays inside
 the proven-safe single-stream envelope, a single ledger writer (or WAL +
 `busy_timeout`), and a guard that knows how many streams are in flight.
 
+The two-stream split above (`enrich_plan.py` + `plan.txt`) is a deliberately
+smaller step in that direction: it removes the *selection* hazard (two streams
+picking the same stock) without pretending to solve the four hazards listed here.
+It does not add a shared rate limiter, a single ledger writer, or a
+stream-aware revisit guard — those remain open.
+
 ## `enrich_tail_worker.sh`
 
-A bounded rolling worker that makes use of the concurrency finding above
-*without* the unsafe parts. It runs alongside `enrich_all_stocks.sh`.
+A bounded rolling worker that uses the concurrency finding above *without* the
+unsafe parts. It runs alongside `enrich_all_stocks.sh`.
 
-- The driver walks its list head -> tail. This worker walks **tail -> head**: on
-  every round it re-reads the backlog and takes the **smallest non-zero** stock,
-  so it clears the quick wins while the driver is still grinding the big ones.
-  The two meet in the middle.
-- It never touches the stock the driver currently holds. "Currently held" is
-  read from the driver's own log (the last `===== stock=<code> ... =====`
-  line), so no coordination file is needed.
+- It does **not** choose its own stocks. It reads the `tail` rows of the plan the
+  driver published (`runtime/enrich-runs/plan.txt`) and works only those. The two
+  sides are disjoint by construction, so the streams cannot collide.
+- Within its own list it rolls **smallest backlog first**, so it clears quick wins
+  while the driver grinds the big ones, then moves to the next by itself.
+  Pending counts are re-read from the database at pick time, so a stock cleared by
+  an earlier round is skipped rather than re-requested.
 - Every candidate query applies the same skip-ledger exclusion as the driver, so
-  the driver's end-of-run `check_revisit.py` verdict stays valid even though
-  this stream's requests land inside the driver's log window.
-- It exits by itself: `TAIL_DRIVER_DONE` if the driver finished, `TAIL_DONE`
-  once the only remaining backlog belongs to the driver, `TAIL_HALTED` on an
-  access block or an unreadable report (fail-closed, same as the driver).
+  the driver's end-of-run `check_revisit.py` verdict stays valid even though this
+  stream's requests land inside the driver's log window.
+- It refuses to start without a plan: `TAIL_NO_PLAN`, exit 0. This is also what
+  stops it from running against an ad-hoc `STOCKS=...` driver invocation.
+- It exits by itself: `TAIL_DONE` once its own queue has no pending rows left,
+  `TAIL_HALTED` on an access block or an unreadable report (fail-closed, same as
+  the driver). It does **not** stop just because the driver printed `ALL_DONE` —
+  the driver finishing says nothing about this worker's disjoint queue, so that
+  case only emits a `TAIL_NOTE`.
 - Its own pacing defaults to `MIN_DELAY=7.0` / `MAX_DELAY=10.0` — deliberately
   the **slow end** of the allowed 3..10s envelope, so the *combined* request
   rate stays near the single-stream rate that is known to work instead of
-  doubling it. There is also a `COOLDOWN_SECONDS` (default 20) quiet gap
-  between stocks. Lower `MIN_DELAY` to buy speed at higher block risk.
-- `DRIVER_LOG` points at the driver log to read the held stock from; it defaults
-  to `runtime/enrich-runs/driver.log` (the `mop_up.sh` log).
+  doubling it. There is also a `COOLDOWN_SECONDS` (default 20) quiet gap between
+  stocks. Lower `MIN_DELAY` to buy speed at higher block risk.
+- `PLAN_FILE` defaults to `runtime/enrich-runs/plan.txt` and `DRIVER_LOG` to
+  `runtime/enrich-runs/driver.log`; the latter is now used only for the
+  `driver_holds=` audit field, not for correctness.
 
-Because both streams are idempotent, a stock this worker finishes first is
-simply skipped (`skip reason=no_pending`) when the driver later reaches it — no
-duplicated work. Where the two streams converge they can briefly select the same
-stock and re-request its candidates; that is wasteful, not corrupting.
+### Incident: why this worker was rewritten (2026-09-16)
+
+The first version had the worker walk the **same** work list from the tail while
+excluding only the stock the driver was *currently* holding, read out of the
+driver's log. That is not a safe exclusion, and it failed in production:
+
+- 05:25:44Z the worker read `driver_holds=002463` (correct — the driver was
+  mid-002463) and picked 002028, the last stock with a backlog on the tail side.
+- 05:29:19Z the driver finished 002463 and started 002028 itself.
+- Both streams then ran `enrich-details` for 002028 concurrently, in two separate
+  browser profiles (`…/20260916-052544-661732` and `…/20260916-052919-566141`).
+
+Measured cost: in the ≥05:20Z window there were 169 request-log events across 5
+run ids, of which **8 source_item_ids were requested twice** — once by each of
+the two 002028 run ids (`3cb61f48…` and `de83b05a…`). No corruption (the writes
+are identical-value upserts) and the revisit guard stayed clean, because a
+*successful* fetch is not recorded in the skip ledger. It was pure waste, plus a
+user-visible surprise: two processes apparently working the same stock.
+
+The unreserved gap was **the stock the driver was about to take next**. The
+driver's head→tail walk and the worker's tail→head walk necessarily converge, and
+"exclude what the driver holds" leaves the convergence point unowned. No amount
+of tightening that check fixes it: on a shared queue the meeting point is always
+unreserved. Hence the split — the queues are made disjoint up front instead of
+being arbitrated at runtime.
 
 Note this still runs two processes against one SQLite file with no WAL and no
 `busy_timeout`. Keep an eye on the `.err` files for `database is locked`.
@@ -253,19 +356,31 @@ Note this still runs two processes against one SQLite file with no WAL and no
 ```bash
 cd <repo>
 # enrichment: single pass, halts on first access block
+#   (publishes runtime/enrich-runs/plan.txt first)
 zsh scripts/ops/enrich_all_stocks.sh
 
 # enrichment: bounded auto-retry wrapper
 zsh scripts/ops/mop_up.sh
 
-# enrichment: rolling tail worker, run ALONGSIDE the driver (separate terminal)
-DRIVER_LOG=$PWD/runtime/enrich-runs/driver.log zsh scripts/ops/enrich_tail_worker.sh
+# enrichment: rolling tail worker. Start it AFTER the driver, so the plan exists.
+zsh scripts/ops/enrich_tail_worker.sh
+
+# enrichment: one stock by hand. Publishes a driver-only plan, so a background
+# tail worker will refuse to start rather than race you.
+STOCKS="002648" zsh scripts/ops/enrich_all_stocks.sh
+
+# enrichment: what would the driver do? (publishes plan.txt, fetches nothing)
+DRY_RUN=1 zsh scripts/ops/enrich_all_stocks.sh
+
+# what is left, without running anything
+/opt/homebrew/anaconda3/bin/python scripts/ops/enrich_plan.py list
 
 # collection: close the gap since the last run (DAYS=14 by default)
 zsh scripts/ops/backfill_all_stocks.sh
 ```
 
 `enrich_all_stocks.sh` / `mop_up.sh` / `enrich_tail_worker.sh` /
-`check_revisit.py` are enrichment drivers; `backfill_all_stocks.sh` is the
-collection driver. All are thin wrappers over the CLI — parsing, schema and
-persistence contracts live in `src/myresearcher_collector/`.
+`check_revisit.py` / `enrich_plan.py` are enrichment tools;
+`backfill_all_stocks.sh` is the collection driver. All are thin wrappers over the
+CLI — parsing, schema and persistence contracts live in
+`src/myresearcher_collector/`.

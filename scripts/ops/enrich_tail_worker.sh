@@ -1,81 +1,62 @@
 #!/bin/zsh
-# Rolling "tail worker": keeps pulling the smallest-backlog stock while the
-# main fail-closed driver works from the head of the list.
+# Rolling "tail worker": runs a second, low-rate enrichment stream alongside
+# scripts/ops/enrich_all_stocks.sh without ever touching the same stock.
 #
 # Rationale and the risks it does NOT remove are documented in
 # scripts/ops/README.md ("Concurrency: experiment result"). Summary:
-#   * the main driver walks its list head -> tail and halts the whole job on any
-#     access block it sees;
-#   * this worker walks tail -> head, so the two meet in the middle;
-#   * it never touches the stock the driver is currently holding, and every
-#     candidate query excludes ids already in the skip ledger, so the driver's
-#     end-of-run revisit guard stays valid;
-#   * it exits as soon as the only remaining backlog belongs to the driver.
+#   * the work list comes from the plan the DRIVER publishes at run start
+#     (runtime/enrich-runs/plan.txt, written atomically by enrich_plan.py). The
+#     driver owns its rows, this worker owns the `tail` rows; the two sets are
+#     disjoint by construction, so a collision is impossible rather than
+#     improbable;
+#   * this replaced a design where the worker walked the *same* list from the
+#     tail and excluded only the stock the driver currently held. On 2026-09-16
+#     that collided: both streams landed on 002028 and 8 of its candidates were
+#     requested twice. The unreserved gap was the stock the driver was about to
+#     take next — "exclude what the driver holds" cannot work on a shared queue;
+#   * within its own list it rolls smallest-backlog-first, so it clears quick
+#     wins while the driver grinds the big ones, then moves on by itself;
+#   * every candidate query applies the same skip-ledger exclusion as the
+#     driver, so the driver's end-of-run check_revisit.py verdict stays valid
+#     even though this stream's requests land inside the driver's log window;
+#   * it REFUSES to start without a plan (`TAIL_NO_PLAN`), which is also what
+#     stops it from running against an ad-hoc `STOCKS=...` driver invocation.
 #
 # Because its own pacing is deliberately the slow end of the allowed 3..10s
 # envelope, the COMBINED request rate stays near the single-stream envelope that
 # is known to work, instead of doubling it. Override MIN_DELAY/MAX_DELAY to
 # trade safety for speed.
 #
-# Terminal markers: TAIL_DONE, TAIL_HALTED, TAIL_DRIVER_DONE.
+# Terminal markers: TAIL_DONE, TAIL_NO_PLAN, TAIL_HALTED.
 
 set -u
 
 SCRIPT_DIR=${0:A:h}
 REPO=${SCRIPT_DIR:h:h}
 PY=${PY:-/opt/homebrew/anaconda3/bin/python}
-DRIVER_LOG=${DRIVER_LOG:-"$REPO/runtime/enrich-runs/driver.log"}
+RUNLOG_DIR="$REPO/runtime/enrich-runs"
+PLAN_FILE=${PLAN_FILE:-"$RUNLOG_DIR/plan.txt"}
+DRIVER_LOG=${DRIVER_LOG:-"$RUNLOG_DIR/driver.log"}
 MIN_DELAY=${MIN_DELAY:-7.0}
 MAX_DELAY=${MAX_DELAY:-10.0}
 CHALLENGE_WAIT=${CHALLENGE_WAIT:-180}
 COOLDOWN_SECONDS=${COOLDOWN_SECONDS:-20}
-RUNLOG_DIR="$REPO/runtime/enrich-runs"
 mkdir -p "$RUNLOG_DIR"
 cd "$REPO" || exit 9
 
-# Pick the smallest non-zero backlog, excluding the stock the driver holds.
-# Prints "<stock> <pending>" or nothing when there is no work left for us.
+# The stocks this worker owns, smallest backlog first, skipping any that has no
+# pending rows left (the driver may have reached it, or an earlier round here
+# cleared it). The plan file carries the stock codes; the pending counts are
+# re-read from the database at pick time so the ordering reflects reality now
+# rather than the snapshot taken when the driver started.
+# Prints "<stock> <pending>", or nothing when the queue is drained.
 pick_next() {
-  "$PY" - "$1" <<'PY'
-import os, sqlite3, sys
-exclude_stock = sys.argv[1] if len(sys.argv) > 1 else ""
-con = sqlite3.connect("file:data/collector.db?mode=ro", uri=True)
-LEDGER = "data/collector.detail_enrichment_skips.db"
-ex = ""
-if os.path.exists(LEDGER):
-    try:
-        con.execute(f"ATTACH DATABASE 'file:{LEDGER}?mode=ro' AS skips")
-        present = con.execute(
-            "SELECT COUNT(*) FROM skips.sqlite_master"
-            " WHERE type='table' AND name='detail_enrichment_skips'"
-        ).fetchone()[0]
-        if present:
-            ex = (" AND p.source_item_id NOT IN ("
-                  "SELECT source_item_id FROM skips.detail_enrichment_skips"
-                  " WHERE source='eastmoney_guba')")
-    except sqlite3.Error:
-        ex = ""
-L = "LENGTH(TRIM(COALESCE(p.title,'')))"
-stocks = ("601888 601012 002463 002028 002648 300054 605020 688676 "
-          "300666 600312 603039 603179 002891 603997 603806 300487").split()
-work = []
-for s in stocks:
-    if s == exclude_stock:
-        continue
-    n = con.execute(
-        f"SELECT COUNT(*) FROM posts p WHERE p.stock_code=? AND {L}>=40"
-        f" AND p.content IS NULL{ex}",
-        (s,),
-    ).fetchone()[0]
-    if n:
-        work.append((n, s))
-if work:
-    work.sort()
-    print(f"{work[0][1]} {work[0][0]}")
-PY
+  [ -f "$PLAN_FILE" ] || return 0
+  "$PY" "$SCRIPT_DIR/enrich_plan.py" pick tail "$PLAN_FILE"
 }
 
-# The stock the driver is currently holding, from its own log.
+# The stock the driver is currently holding, read from its own log. Kept purely
+# as an audit line — correctness no longer depends on it.
 driver_current_stock() {
   [ -f "$DRIVER_LOG" ] || { print ""; return }
   sed -n 's/^===== stock=\([0-9][0-9]*\) .*/\1/p' "$DRIVER_LOG" | tail -1
@@ -89,23 +70,28 @@ driver_finished() {
   esac
 }
 
-echo "TAIL_WORKER_START $(date -u +%FT%TZ) driver_log=$DRIVER_LOG min_delay=$MIN_DELAY max_delay=$MAX_DELAY"
+echo "TAIL_WORKER_START $(date -u +%FT%TZ) plan=$PLAN_FILE min_delay=$MIN_DELAY max_delay=$MAX_DELAY"
+if [ ! -f "$PLAN_FILE" ]; then
+  echo "TAIL_NO_PLAN plan=$PLAN_FILE at=$(date -u +%FT%TZ)"
+  echo "TAIL_NO_PLAN: start enrich_all_stocks.sh first — it publishes the split."
+  exit 0
+fi
+echo "TAIL_QUEUE $(awk -F'\t' '$1=="tail" && $2!="" {printf "%s ", $2}' "$PLAN_FILE")"
+
 for round in $(seq 1 64); do
   if driver_finished; then
-    echo "TAIL_DRIVER_DONE round=$round at=$(date -u +%FT%TZ)"
-    exit 0
+    echo "TAIL_NOTE round=$round driver=ALL_DONE at=$(date -u +%FT%TZ) (still draining own queue)"
   fi
 
-  held=$(driver_current_stock)
-  pick=$(pick_next "$held")
+  pick=$(pick_next)
   if [ -z "$pick" ]; then
-    echo "TAIL_DONE round=$round held=$held at=$(date -u +%FT%TZ) reason=no_unheld_backlog"
+    echo "TAIL_DONE round=$round driver_holds=$(driver_current_stock) at=$(date -u +%FT%TZ) reason=tail_queue_drained"
     exit 0
   fi
 
   stock=${pick%% *}
   pend=${pick##* }
-  echo "TAIL_PICK round=$round stock=$stock pending=$pend driver_holds=$held at=$(date -u +%FT%TZ)"
+  echo "TAIL_PICK round=$round stock=$stock pending=$pend driver_holds=$(driver_current_stock) at=$(date -u +%FT%TZ)"
 
   out="$RUNLOG_DIR/tail-$stock.json"
   err="$RUNLOG_DIR/tail-$stock.err"

@@ -3,14 +3,20 @@
 #
 # Why: enrich_all_stocks.sh halts the whole job on the first access block. That
 # is correct for unattended safety, but it also starves every stock after the
-# blocking one -- the driver always restarts from the head of its list, so a
-# persistently-blocked early stock means later stocks never run.
+# blocking one. The driver's work list is recomputed from the database on every
+# round (see enrich_plan.py), so a retry starts on whatever is currently the
+# biggest backlog rather than on a stale frozen head — but a persistently
+# blocked stock still ends each round early.
 #
 # This wrapper re-runs the driver until a round completes with no halt. Each
 # round is still fail-closed (it stops at the first block); a fresh browser
 # session per stock gives the next round a new chance, and a cooldown between
 # rounds lets the source throttle relax. Rounds are capped so this can never
 # grind forever.
+#
+# Each round republishes plan.txt. If enrich_tail_worker.sh is running, it will
+# follow the new tail side on its next pick; the two sides are always disjoint,
+# so a republish can never make them overlap.
 #
 # See scripts/ops/README.md for the full operating contract.
 

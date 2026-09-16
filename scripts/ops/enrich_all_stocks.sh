@@ -1,8 +1,15 @@
 #!/bin/zsh
-# Resume-safe, fail-closed detail-enrichment driver for the 16 Eastmoney Guba
-# stocks in data/collector.db (legacy `posts` contract).
+# Resume-safe, fail-closed detail-enrichment driver for the Eastmoney Guba rows
+# in data/collector.db (legacy `posts` contract).
 #
 # See scripts/ops/README.md for the full operating contract. Summary:
+#   * the work list is computed from the database at run start by
+#     scripts/ops/enrich_plan.py, ordered by pending count (desc); it is NOT
+#     hardcoded. Override with STOCKS="601888 002463" for an ad-hoc single pass;
+#   * the same helper publishes a disjoint head/tail split
+#     (runtime/enrich-runs/plan.txt) so this driver and enrich_tail_worker.sh can
+#     run at the same time without ever selecting the same stock. See
+#     "Two-stream split" in the README;
 #   * eligibility = trimmed list-title length >= 40 (see content_rules.py);
 #   * each stock runs as its own `enrich-details` invocation, managed-chromium;
 #   * stocks with no pending rows are skipped, so the script is idempotent and
@@ -36,41 +43,72 @@ RUNLOG_DIR="$REPO/runtime/enrich-runs"
 mkdir -p "$RUNLOG_DIR"
 cd "$REPO" || exit 9
 
-# Ordered by original pending count (desc).
-stocks=(601888 601012 002463 002028 002648 300054 605020 688676 300666 600312 603039 603179 002891 603997 603806 300487)
+# --- Work list: computed at run time, never hardcoded -----------------------
+# Until 2026-09-16 this was a hardcoded 16-code array "ordered by original
+# pending count (desc)" frozen on 2026-09-10. It made the driver *look* biased
+# toward whichever stock happened to sit first, and it silently rotted every
+# time the backlog moved. The list is now derived from the database by
+# scripts/ops/enrich_plan.py (one source of truth for the eligibility predicate
+# and for the two-stream split).
+#
+# The stripped form is:
+#   PLAN_FILE     runtime/enrich-runs/plan.txt — one atomic file holding BOTH
+#                 sides, so the two streams can never read a torn split;
+#   this process  the stocks on the `driver` rows, in published order.
+#
+# Set STOCKS to force a specific set/order instead (e.g. STOCKS="002648" to
+# resume one stock by hand); then no plan is published and the tail worker
+# refuses to start, so an ad-hoc run can never collide with it.
+PLAN_FILE="$RUNLOG_DIR/plan.txt"
+
+# NOTE: must be a function, not `PLAN="$PY $SCRIPT_DIR/enrich_plan.py"`.
+# zsh does not word-split unquoted parameter expansions (unlike bash/sh), so
+# `$PLAN write-split ...` would be looked up as one command named
+# "<python> <path>" and fail with "no such file or directory".
+plan() {
+  "$PY" "$SCRIPT_DIR/enrich_plan.py" "$@"
+}
 
 pending_count() {
-  "$PY" - "$1" <<'PY'
-import os, sqlite3, sys
-con = sqlite3.connect("file:data/collector.db?mode=ro", uri=True)
-LEDGER = "data/collector.detail_enrichment_skips.db"
-# Exclude posts already recorded as missing in the sidecar skip ledger, so a
-# stock whose only remaining candidates are known-404 stops being retried.
-exclude = ""
-if os.path.exists(LEDGER):
-    try:
-        con.execute(f"ATTACH DATABASE 'file:{LEDGER}?mode=ro' AS skips")
-        present = con.execute(
-            "SELECT COUNT(*) FROM skips.sqlite_master"
-            " WHERE type='table' AND name='detail_enrichment_skips'"
-        ).fetchone()[0]
-        if present:
-            exclude = (
-                " AND p.source_item_id NOT IN ("
-                "SELECT source_item_id FROM skips.detail_enrichment_skips"
-                " WHERE source='eastmoney_guba')"
-            )
-    except sqlite3.Error:
-        exclude = ""
-L = "LENGTH(TRIM(COALESCE(p.title,'')))"
-row = con.execute(
-    f"SELECT COUNT(*) FROM posts p WHERE p.stock_code=? AND {L}>=40"
-    f" AND p.content IS NULL{exclude}",
-    (sys.argv[1],),
-).fetchone()
-print(row[0])
-PY
+  plan pending "$1"
 }
+
+if [ -n "${STOCKS:-}" ]; then
+  tmp="$PLAN_FILE.tmp.$$"
+  printf '%s\n' "# PLAN_OVERRIDE stocks=${STOCKS}" > "$tmp"
+  for s in ${=STOCKS}; do
+    printf 'driver\t%s\t0\n' "$s" >> "$tmp"
+  done
+  # Atomic replace, same as enrich_plan.py: a tail worker reading mid-write must
+  # never see a partial driver list and mistake the rest for unclaimed work.
+  mv -f "$tmp" "$PLAN_FILE"
+  echo "PLAN_OVERRIDE stocks=${STOCKS} (no split published; tail worker will refuse)"
+else
+  plan write-split "$RUNLOG_DIR" || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+fi
+
+stocks=()
+while IFS=$'\t' read -r role code _pending; do
+  [ "$role" = "driver" ] && [ -n "$code" ] && stocks+=("$code")
+done < "$PLAN_FILE"
+if [ ${#stocks[@]} -eq 0 ]; then
+  echo "NO_BACKLOG $(date -u +%FT%TZ)"
+  echo "ALL_DONE $(date -u +%FT%TZ)"
+  exit 0
+fi
+echo "PLAN_DRIVER_QUEUE ${stocks[*]}"
+
+# DRY_RUN=1 resolves the plan and the per-stock pending counts, then exits
+# without launching a browser. Use it to see exactly what a run would do — and,
+# with the tail worker, to confirm the two queues are disjoint — before
+# committing to a live run.
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  for s in "${stocks[@]}"; do
+    echo "DRY_RUN stock=$s pending=$(pending_count "$s")"
+  done
+  echo "DRY_RUN_OK $(date -u +%FT%TZ)"
+  exit 0
+fi
 
 # Guard: no post already marked missing may be re-requested by this run.
 revisit_guard() {
