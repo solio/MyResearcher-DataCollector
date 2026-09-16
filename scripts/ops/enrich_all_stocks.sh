@@ -59,6 +59,13 @@ cd "$REPO" || exit 9
 # Set STOCKS to force a specific set/order instead (e.g. STOCKS="002648" to
 # resume one stock by hand); then no plan is published and the tail worker
 # refuses to start, so an ad-hoc run can never collide with it.
+#
+# SPLIT=1 opts into the two-stream plan: half the backlog is assigned to
+# enrich_tail_worker.sh and this process will NOT touch it. That mode is only
+# correct if the worker is actually started — ALL_DONE then means "done with my
+# half". The default (SPLIT unset) assigns everything here, so ALL_DONE means
+# the whole backlog is exhausted.
+SPLIT=${SPLIT:-0}
 PLAN_FILE="$RUNLOG_DIR/plan.txt"
 
 # NOTE: must be a function, not `PLAN="$PY $SCRIPT_DIR/enrich_plan.py"`.
@@ -83,8 +90,11 @@ if [ -n "${STOCKS:-}" ]; then
   # never see a partial driver list and mistake the rest for unclaimed work.
   mv -f "$tmp" "$PLAN_FILE"
   echo "PLAN_OVERRIDE stocks=${STOCKS} (no split published; tail worker will refuse)"
+elif [ "$SPLIT" = "1" ]; then
+  plan write-plan "$RUNLOG_DIR" --split || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+  echo "SPLIT_MODE: this process owns only the driver rows; the tail rows need enrich_tail_worker.sh"
 else
-  plan write-split "$RUNLOG_DIR" || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+  plan write-plan "$RUNLOG_DIR" || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
 fi
 
 stocks=()

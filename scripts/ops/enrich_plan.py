@@ -17,27 +17,41 @@ fell out of that on 2026-09-16:
    8 of its candidates were requested twice. "Exclude what the driver holds"
    cannot be made to work while both streams share one queue.
 
-The fix is a split computed once, by the driver, before either stream starts:
-each stream gets its own queue file and neither ever reads the other's stocks.
+The fix is a plan computed once, by the driver, before either stream starts:
+each stream gets its own queue and neither ever reads the other's stocks.
 
 Usage
 -----
-    enrich_plan.py list                      # "<stock>\t<pending>", pending desc
-    enrich_plan.py pending <stock>           # pending count for one stock
-    enrich_plan.py write-split <outdir>      # writes <outdir>/plan.txt
-    enrich_plan.py pick <driver|tail> [plan] # "<stock> <pending>", smallest first
+    enrich_plan.py list                        # "<stock>\t<pending>", pending desc
+    enrich_plan.py pending <stock>             # pending count for one stock
+    enrich_plan.py write-plan <outdir> [--split]
+    enrich_plan.py pick <driver|tail> [plan]   # "<stock> <pending>", smallest first
 
-`plan.txt` is a single file, replaced atomically, holding both sides:
+`plan.txt` is a single file, replaced atomically. **Without `--split` every stock
+is assigned to `driver`**, so a single-stream run covers the whole backlog and
+`enrich_tail_worker.sh` finds an empty queue and exits `TAIL_DONE` immediately:
+
+    driver\t002648\t86
+    driver\t002028\t4
+    driver\t600312\t50
+    driver\t300666\t42
+
+With `--split`, the same backlog is divided by LPT between the two streams:
 
     driver\t002648\t86
     driver\t002028\t4
     tail\t600312\t50
     tail\t300666\t42
 
-One file rather than two queue files on purpose: the driver republishes the plan
-whenever it restarts (`mop_up.sh` re-runs it in a loop), and a reader that saw a
-fresh tail list next to a stale driver list could pick an overlapping stock. A
-single atomic replace cannot be torn.
+`--split` is opt-in on purpose. The driver cannot know whether a tail worker will
+ever show up, so a default split would let `ALL_DONE` mean "done with *my* half"
+while the other half sat untouched — a silent under-run. Default (=single) keeps
+`ALL_DONE` meaning "the whole backlog is exhausted".
+
+One file rather than two queue files: the driver republishes the plan whenever it
+restarts (`mop_up.sh` re-runs it in a loop), and a reader that saw a fresh tail
+list next to a stale driver list could pick an overlapping stock. A single atomic
+replace cannot be torn.
 
 Eligibility mirrors the collector's own rule (trimmed list-title length >= 40,
 `content IS NULL`) minus ids already recorded in the sidecar skip ledger, i.e.
@@ -47,8 +61,8 @@ database is opened read-only.
 The split is a longest-processing-time-first (LPT) assignment: stocks are handed
 to the currently lighter stream, largest backlog first. That balances the two
 sides by *pending rows*, not by number of stocks (the counts are wildly uneven —
-one stock can hold half the backlog), and it keeps the largest single job on the
-driver, which is the fail-closed stream.
+one stock can hold half the backlog: 86 of 182 above), and it keeps the largest
+single job on the driver, which is the fail-closed stream.
 """
 
 from __future__ import annotations
@@ -223,9 +237,16 @@ def cmd_pick(role: str, plan: Path) -> int:
     return 0
 
 
-def cmd_write_split(outdir: Path) -> int:
+def cmd_write_plan(outdir: Path, do_split: bool) -> int:
     work = backlog()
-    driver, tail = split(work)
+    if do_split:
+        driver, tail = split(work)
+        mode = "split"
+    else:
+        # Single-stream: this process owns everything, so an ALL_DONE means the
+        # whole backlog really is exhausted.
+        driver, tail = list(work), []
+        mode = "single"
     outdir.mkdir(parents=True, exist_ok=True)
     body = "".join(
         f"{role}\t{code}\t{n}\n"
@@ -244,7 +265,8 @@ def cmd_write_split(outdir: Path) -> int:
         raise
     total = sum(n for _, n in work)
     print(
-        f"PLAN_SPLIT stocks={len(work)} total_pending={total}"
+        f"PLAN_MODE {mode}"
+        f" stocks={len(work)} total_pending={total}"
         f" driver_stocks={len(driver)} driver_pending={sum(n for _, n in driver)}"
         f" tail_stocks={len(tail)} tail_pending={sum(n for _, n in tail)}"
     )
@@ -262,8 +284,12 @@ def main(argv: list[str]) -> int:
         return cmd_list()
     if args[:1] == ["pending"] and len(args) >= 2:
         return cmd_pending(args[1])
-    if args[:1] == ["write-split"] and len(args) >= 2:
-        return cmd_write_split(Path(args[1]))
+    if args[:1] == ["write-plan"] and len(args) >= 2:
+        rest = args[2:]
+        if rest and rest[0] not in ("--split", "--single"):
+            print(f"unknown flag: {rest[0]}", file=sys.stderr)
+            return 2
+        return cmd_write_plan(Path(args[1]), do_split=(rest[:1] == ["--split"]))
     if args[:1] == ["pick"] and len(args) >= 2:
         plan = Path(args[2]) if len(args) >= 3 else REPO / "runtime/enrich-runs/plan.txt"
         return cmd_pick(args[1], plan)
@@ -271,7 +297,7 @@ def main(argv: list[str]) -> int:
     print(
         "usage: enrich_plan.py list"
         " | pending <stock>"
-        " | write-split <outdir>"
+        " | write-plan <outdir> [--split]"
         " | pick <driver|tail> [plan.txt]",
         file=sys.stderr,
     )

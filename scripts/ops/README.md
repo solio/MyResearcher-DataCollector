@@ -39,7 +39,7 @@ between the driver, the tail worker and any ad-hoc query.
 |---|---|
 | `list` | `<stock>\t<pending>` for every stock with pending work, pending desc |
 | `pending <stock>` | the pending count as a bare integer (`0` if none) |
-| `write-split <outdir>` | writes `<outdir>/plan.txt` atomically, prints `PLAN_SPLIT` + `PLAN_DRIVER`/`PLAN_TAIL` rows |
+| `write-plan <outdir> [--split]` | writes `<outdir>/plan.txt` atomically, prints `PLAN_MODE` + `PLAN_DRIVER`/`PLAN_TAIL` rows |
 | `pick <driver\|tail> [plan]` | `<stock> <pending>` — smallest unclaimed backlog on that side |
 
 Eligibility = `source='eastmoney_guba'` **and** trimmed list-title length `>= 40`
@@ -58,9 +58,25 @@ derived from the database on every run. **Do not reintroduce a literal list in
 the drivers** — a stock can go from 251 pending to 0 in one run, and a frozen
 queue silently misrepresents that.
 
-### Two-stream split (`plan.txt`)
+### Single-stream (default) vs two-stream split (`plan.txt`)
 
-`plan.txt` is **one** file holding both sides, replaced by write-then-rename:
+`SPLIT` is **unset by default**, and the default plan assigns **every** stock to
+`driver`:
+
+```
+driver	002648	86
+driver	600312	50
+driver	300666	42
+driver	002028	4
+```
+
+A single-stream run therefore covers the whole backlog, `ALL_DONE` means the
+backlog is genuinely exhausted, and `enrich_tail_worker.sh` finds an empty queue
+and exits `TAIL_DONE` at once.
+
+`SPLIT=1` opts into the two-way division (LPT — largest backlog first, onto the
+currently lighter stream, so the sides balance by **pending rows**, not by stock
+count; one stock can hold half the backlog: 86 of 182 here):
 
 ```
 driver	002648	86
@@ -69,17 +85,18 @@ tail	600312	50
 tail	300666	42
 ```
 
-One file rather than two queue files on purpose: `mop_up.sh` re-runs the driver
-in a loop and each round republishes the plan, so a reader that saw a fresh tail
-list beside a stale driver list could pick an overlapping stock. A single atomic
-replace cannot be torn.
+**`SPLIT=1` is only correct if `enrich_tail_worker.sh` is actually started.** In
+that mode `ALL_DONE` means "done with *my* half", not "done" — the driver prints
+`SPLIT_MODE:` first to make that explicit. This is why the split is opt-in: the
+driver cannot know whether a worker will ever appear, and a default split would
+turn `ALL_DONE` into a silent under-run.
 
-The split is LPT — largest backlog first, always onto the currently lighter
-stream — so the two sides balance by **pending rows**, not by stock count (one
-stock can hold half the backlog: 86 of 182 above). The driver keeps the largest
-single job, being the fail-closed stream.
+`plan.txt` is **one** file holding both sides, replaced by write-then-rename.
+`mop_up.sh` re-runs the driver in a loop and each round republishes the plan, so a
+reader that saw a fresh tail list beside a stale driver list could pick an
+overlapping stock. A single atomic replace cannot be torn.
 
-To run everything on one stream instead, set `STOCKS="..."`. That publishes a
+To run everything on one stream regardless, set `STOCKS="..."`. That publishes a
 driver-only plan and makes `enrich_tail_worker.sh` refuse to start
 (`TAIL_NO_PLAN`), so an ad-hoc hand-run can never collide with a background
 worker.
@@ -87,8 +104,9 @@ worker.
 ## `enrich_all_stocks.sh`
 
 Resume-safe, fail-closed driver over whatever stock has pending detail work in
-`data/collector.db` (legacy `posts` contract). It owns the `driver` side of
-`plan.txt`; `enrich_tail_worker.sh` owns the `tail` side.
+`data/collector.db` (legacy `posts` contract). By default it owns **the whole**
+backlog; with `SPLIT=1` it owns only the `driver` side of `plan.txt` and
+`enrich_tail_worker.sh` owns the rest.
 
 - The work list is computed at run start — see `enrich_plan.py` above.
 - Eligibility: trimmed list-title length `>= 40` (see `content_rules.py`).
@@ -116,7 +134,7 @@ Terminal markers written to stdout (this is what the wrapper matches on):
 | `NO_BACKLOG <ts>` + `ALL_DONE <ts>` | nothing had pending work; a free no-op |
 | `PLAN_DRIVER_QUEUE <codes>` | the resolved work list for this run |
 | `DRY_RUN_OK <ts>` | `DRY_RUN=1` finished; nothing was fetched |
-| `HALT_ON_PLAN_FAILED` | `enrich_plan.py write-split` failed; nothing was run |
+| `HALT_ON_PLAN_FAILED` | `enrich_plan.py write-plan` failed; nothing was run |
 | `HALT_ON_ACCESS_BLOCK stock=<s>` / `HALT_ON_UNREADABLE_REPORT stock=<s>` | why it halted |
 
 Historical note: the halt `case` patterns must keep the leading `*`
@@ -359,11 +377,13 @@ cd <repo>
 #   (publishes runtime/enrich-runs/plan.txt first)
 zsh scripts/ops/enrich_all_stocks.sh
 
-# enrichment: bounded auto-retry wrapper
+# enrichment: bounded auto-retry wrapper (single stream, covers the whole backlog)
 zsh scripts/ops/mop_up.sh
 
-# enrichment: rolling tail worker. Start it AFTER the driver, so the plan exists.
-zsh scripts/ops/enrich_tail_worker.sh
+# enrichment: two streams. SPLIT=1 on the driver, then the worker. BOTH are
+# required — the driver alone leaves the tail half untouched.
+SPLIT=1 zsh scripts/ops/mop_up.sh          # terminal 1
+zsh scripts/ops/enrich_tail_worker.sh      # terminal 2, AFTER the driver
 
 # enrichment: one stock by hand. Publishes a driver-only plan, so a background
 # tail worker will refuse to start rather than race you.
