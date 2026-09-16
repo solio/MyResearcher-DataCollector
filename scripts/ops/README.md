@@ -159,6 +159,61 @@ Observed 2026-09-16 on stock 601888. `--start-page 1` avoids it entirely. The
 algorithm itself is still unfixed; a proper fix should clamp the step so it
 cannot cross below page 1 rather than raising.
 
+## Concurrency: experiment result (2026-09-16)
+
+**Do not naively run two drivers in parallel.** A bounded experiment was run to
+find out what actually happens, and the honest answer is "it worked, but it was
+unsafe and the plumbing does not model it".
+
+What was tested: the running driver was on stock 601012 (the largest backlog)
+and a second, independent `enrich-details` was launched for stock 300487 —
+i.e. head and tail of the pending list — for 29s.
+
+Observed, all on the shared live database:
+
+| window | throughput | per request |
+|---|---|---|
+| driver alone, before overlap (640s) | 9.1 req/min | 6.6s |
+| during overlap, both streams (29s) | 14.5 req/min | 4.1s |
+| driver alone, after overlap (41s) | 11.7 req/min | 5.1s |
+
+- 4/4 requests succeeded, `access_block_count=0`, `stopped=False`, no
+  `database is locked` anywhere, and the driver was not disturbed.
+- Concurrency is real, not an illusion: within one 55s window the request log
+  interleaves 601012 and 300487 ids, two of them in the *same second*, and two
+  independent browser-profile directories exist side by side.
+- Measured gain ≈ 1.6x on a 29s sample. Treat that as an upper bound: the two
+  streams each self-throttle 3-10s, so the gain comes from overlapping page-load
+  latency and browser startup, not from a free 2x.
+
+Why it is nevertheless unsafe, and why a real parallel design needs an
+orchestrator rather than N independent driver processes:
+
+1. **Fail-closed coupling.** The driver halts the *whole job* on any access
+   block it observes. Doubling the instantaneous request rate raises the chance
+   of a block, and a block seen by the driver stops the run — so a parallel
+   experiment can kill the main job. That it survived here was luck, not design.
+2. **The revisit guard assumes a single stream.** `check_revisit.py` is invoked
+   with `--from-line <baseline> --run-start <run start>`, i.e. it treats the
+   whole log window as one run. A parallel stream's lines fall inside that
+   window. The verdict stays valid only because parallel candidates apply the
+   same ledger exclusion — a parallel run that touched an already-marked id
+   would produce a false `REVISIT_CHECK VIOLATION`.
+3. **The database has no `busy_timeout` and is not in WAL mode**
+   (`journal_mode=delete`, relying on Python's 5s default). Four light writes
+   did not exercise this. Two streams committing for an hour on large stocks can
+   produce `database is locked`, which surfaces as `failed` posts needing a
+   re-run — recoverable, but it looks like source breakage.
+4. **Skip-ledger writes are best-effort** and degrade to a no-op on any sqlite
+   error. A lock during a 404 mark would *silently drop the mark*, and the next
+   run would re-request a deleted post — precisely the regression the guard
+   exists to catch.
+
+If parallelism is wanted later, build it as one orchestrator with a bounded
+worker pool, a **shared** rate limiter so the combined request rate stays inside
+the proven-safe single-stream envelope, a single ledger writer (or WAL +
+`busy_timeout`), and a guard that knows how many streams are in flight.
+
 ## Running
 
 ```bash
