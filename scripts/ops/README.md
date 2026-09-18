@@ -218,13 +218,41 @@ Net: 81 rows in 64 minutes ≈ 47s/row, against a healthy ~6.5s/row — **7× sl
 than the single-stream baseline measured on 2026-09-16. Rounds 2–12 alone
 produced 11 rows in 53 minutes.
 
-What actually helps: **stop**, wait hours, then resume. `--challenge-wait 180`
-and a fresh profile cannot talk the source out of a server-side cap. If it recurs
+What actually helps: **stop**, wait, then resume. `--challenge-wait 180` and a
+fresh profile cannot talk the source out of a server-side cap. If it recurs
 immediately on resume, drop the rate hard (`MIN_DELAY=30 MAX_DELAY=60`) and
 expect the backlog to clear over days rather than hours.
 
 What makes it worse: more rounds. Twelve sessions hitting a refusal in one hour
 is more likely to extend the block than to find a gap in it.
+
+### Resolution (same day, 05:48Z): the cap was not a quota
+
+Retried 58 minutes later and the remaining 192 rows went through in one clean
+round (`MOPUP_DONE round=1`, 35m19s, 190 success + 1 self-recovered
+`access_block`). So the earlier cut-off was **not** a hard daily quota.
+
+**But do not read this as "the slowdown fixed it".** Two variables changed at
+once and the experiment does not separate them:
+
+| | failed run (03:55Z) | successful retry (05:48Z) |
+|---|---|---|
+| rate | 6.4 req/min (3–10s) | 5.39 rows/min (8–15s) |
+| minutes since the backfill burst | ~0 | ~58 |
+
+The rate only fell 16%, while the gap before it went from 0 to 58 minutes — so
+the likelier dominant factor is **the burst context**, not the pacing. The
+trigger was most plausibly the combination of 62 backfill page loads in 5
+minutes immediately followed by an enrichment run; the source appears to cap on
+a *recent burst*, not on a sustained rate.
+
+Practical consequence, and the reason this is written down: **do not start detail
+enrichment immediately after a backfill.** Leave a gap. Crossing the old
+~70-request cut-off point at 5.4 rows/min produced just 1 self-recovered block,
+so neither a 16% slowdown nor request 70 is the operative threshold here.
+
+To actually isolate the cause would take a controlled re-run (same gap, default
+rate), which was not worth spending against a source that had just throttled us.
 
 ## `check_revisit.py`
 
