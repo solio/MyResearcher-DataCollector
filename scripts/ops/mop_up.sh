@@ -65,6 +65,10 @@ MAX_BARREN_ROUNDS=${MAX_BARREN_ROUNDS:-2}
 
 cd "$REPO" || exit 9
 
+# Pacing is inherited by enrich_all_stocks.sh through the environment; echo what
+# is in force so a run's rate can be read back out of the log afterwards.
+echo "MOPUP_START $(date -u +%FT%TZ) max_rounds=$MAX_ROUNDS cooldown=${COOLDOWN_SECONDS}s min_delay=${MIN_DELAY:-3.0} max_delay=${MAX_DELAY:-10.0} min_round_yield=$MIN_ROUND_YIELD max_barren_rounds=$MAX_BARREN_ROUNDS"
+
 barren=0
 for ((round = 1; round <= MAX_ROUNDS; round++)); do
   echo "MOPUP_ROUND $round start=$(date -u +%FT%TZ)"

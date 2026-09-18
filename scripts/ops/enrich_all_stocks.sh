@@ -66,6 +66,16 @@ cd "$REPO" || exit 9
 # half". The default (SPLIT unset) assigns everything here, so ALL_DONE means
 # the whole backlog is exhausted.
 SPLIT=${SPLIT:-0}
+# Pacing. These were previously left to the CLI defaults (3.0/10.0) with no way
+# to override and no record of what was used, so a run could not be slowed down
+# or analysed after the fact. The defaults here match the CLI, but now the rate
+# is explicit, overridable, and echoed into the log (see RUN_START).
+#
+# Why you would slow down: on 2026-09-18 the source capped us after ~70 detail
+# fetches in 11 minutes at the default rate. See "Sustained rate limiting" in
+# scripts/ops/README.md.
+MIN_DELAY=${MIN_DELAY:-3.0}
+MAX_DELAY=${MAX_DELAY:-10.0}
 PLAN_FILE="$RUNLOG_DIR/plan.txt"
 
 # NOTE: must be a function, not `PLAN="$PY $SCRIPT_DIR/enrich_plan.py"`.
@@ -135,7 +145,7 @@ if [ -f "$JSONL" ]; then
 fi
 
 RUN_START_ISO=$(date -u +%FT%TZ)
-echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE"
+echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY"
 for s in "${stocks[@]}"; do
   pend=$(pending_count "$s")
   if [ "${pend:-0}" -eq 0 ]; then
@@ -149,6 +159,7 @@ for s in "${stocks[@]}"; do
   PYTHONPATH=src "$PY" -m myresearcher_collector.cli.main enrich-details \
     --source eastmoney_guba --stock "$s" --data-dir data \
     --acquisition-mode managed-chromium --confirm-live \
+    --min-delay "$MIN_DELAY" --max-delay "$MAX_DELAY" \
     --challenge-wait 180 --challenge-retries 1 \
     > "$RUNLOG_DIR/$s.json" 2> "$RUNLOG_DIR/$s.err"
   rc=$?
