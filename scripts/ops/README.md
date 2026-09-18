@@ -153,14 +153,78 @@ within a round. This wrapper re-runs the driver until a round ends in `ALL_DONE 
 (matched on the log's last line). Each round is still fail-closed; a fresh
 browser session plus a cooldown gives the next round a new chance.
 
+| marker | meaning |
+|---|---|
+| `MOPUP_DONE round=<n>` | clean completion (`ALL_DONE`), exit 0 |
+| `MOPUP_HALTED round=<n> yield=<n> barren_streak=<n>` | round halted; how much it achieved |
+| `MOPUP_BARREN rounds=<n> barren_streak=<n>` | yield collapsed → source-side cap, exit 1 |
+| `MOPUP_MAX_ROUNDS_REACHED rounds=<n>` | round budget exhausted, exit 1 |
+
+`MAX_ROUNDS` (12), `COOLDOWN_SECONDS` (90), `MIN_ROUND_YIELD` (1) and
+`MAX_BARREN_ROUNDS` (2) are overridable by environment.
+
+### Barren rounds: the guard the wrapper used to lack (2026-09-18)
+
+The wrapper's original premise — "a fresh browser session plus a cooldown gives
+the next round a new chance" — is **true for a transient block and false for a
+source-side rate cap**, because a fresh session does not change our IP or reset a
+server-side counter. `MOPUP_MAX_ROUNDS_REACHED` also looks identical whether the
+12 rounds yielded 70 rows each or 1 row each, so the wrapper could not tell that
+it had stopped making progress.
+
+It now measures each round's yield (`sum of success=` across the STAT lines that
+round appended) and aborts after `MAX_BARREN_ROUNDS` consecutive rounds at or
+below `MIN_ROUND_YIELD`. Replayed against the real 2026-09-18 log it stops at
+**round 3** instead of grinding to round 12 — saving ~29 minutes and 36 pointless
+requests. `ALL_DONE` is checked *before* the yield logic, so a legitimately tiny
+final round is never misread as barren.
+
+If `MOPUP_BARREN` fires, the answer is a real cooldown (hours) or much slower
+pacing (`MIN_DELAY=30 MAX_DELAY=60 zsh mop_up.sh`) — **not** another 12 rounds.
+See "Sustained rate limiting" below.
+
 Each round republishes `plan.txt`. A running `enrich_tail_worker.sh` follows the
 new tail side on its next pick; the sides are always disjoint, so a republish can
 never make them overlap.
 
-- `MAX_ROUNDS` (default `12`), `COOLDOWN_SECONDS` (default `90`) are overridable
-  by environment.
-- Exit `0` = clean completion (`MOPUP_DONE`), exit `1` = rounds exhausted
-  (`MOPUP_MAX_ROUNDS_REACHED`).
+## Sustained rate limiting: what it looks like (2026-09-18)
+
+Worth recognising, because it is indistinguishable from "unlucky transient
+blocks" until you measure the request log.
+
+Trigger: a 14-day backfill collected 4963 records in 5 minutes (62 page loads),
+then detail enrichment started immediately on the largest backlog (105 rows).
+
+The signature, from `runtime/logs/eastmoney-detail-enrichment.jsonl`:
+
+| round | requests | successes | outcome |
+|---|---|---|---|
+| 1 (03:55:54) | `success` ×70, `access_block` ×3, `fetch_failure` ×1 | **70** | halted after ~11 min |
+| 2–12 | `success` ×1, `access_block` ×2, `fetch_failure` ×1 each | **1 each** | halted every ~3.2 min |
+
+1. **The block responses come back in 0.2–0.3s.** That is an immediate refusal,
+   not an anti-bot interstitial being served. The only successful request in each
+   round takes 1.4–1.8s (a real page load), then the *next* request is refused at
+   once.
+2. **A fresh browser session still gets exactly one request through.** So the cap
+   tracks IP/fingerprint, not session or cookie state — which is precisely why
+   the cooldown-and-retry loop could not recover.
+3. **Yield collapses by a factor of ~70** (70 rows in round 1, then 1 per round).
+4. 25 `access_block` + 12 `fetch_failure` events; `REVISIT_CHECK OK` throughout
+   (the ledger exclusion held), so this is a *capacity* problem, not a
+   correctness one.
+
+Net: 81 rows in 64 minutes ≈ 47s/row, against a healthy ~6.5s/row — **7× slower**
+than the single-stream baseline measured on 2026-09-16. Rounds 2–12 alone
+produced 11 rows in 53 minutes.
+
+What actually helps: **stop**, wait hours, then resume. `--challenge-wait 180`
+and a fresh profile cannot talk the source out of a server-side cap. If it recurs
+immediately on resume, drop the rate hard (`MIN_DELAY=30 MAX_DELAY=60`) and
+expect the backlog to clear over days rather than hours.
+
+What makes it worse: more rounds. Twelve sessions hitting a refusal in one hour
+is more likely to extend the block than to find a gap in it.
 
 ## `check_revisit.py`
 
