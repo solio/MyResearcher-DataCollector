@@ -222,6 +222,35 @@ Terminal markers: `ALL_DONE <ts>` / `ALL_DONE_HALTED <ts>`, plus
 It also prints `COVERAGE <stock> <from> -> <to>` rows before the run and on
 every exit path.
 
+### The stock list is hardcoded, and that is a known hazard
+
+`backfill_all_stocks.sh` carries a literal 16-code array — the same class of
+defect that made the enrichment driver look biased toward 601888 (see
+`enrich_plan.py`). It is **deliberately not auto-derived yet**, because this repo
+has no single authoritative stock registry:
+
+- `backfill_coverage` lists exactly those 16, but a newly added stock has no
+  coverage row, so deriving from it can never bootstrap a new stock;
+- `config/targets.short-term.json` is internally inconsistent — 38 codes in
+  `stocks`, 43 in `stock_names`, and 002648 / 600312 / 603997 appear only in
+  `stock_names`.
+
+Picking the wrong source would silently drop a stock from collection, which is
+worse than a literal list that currently matches reality. Until that question is
+settled the driver **fails loudly instead**:
+
+```
+DRIFT_CHECK driver_stocks=16 coverage_rows=16 uncovered_by_driver=0
+WARN_COVERAGE_DRIFT not_in_driver_list=300487      # only when they diverge
+```
+
+`DRIFT_CHECK_ONLY=1` runs the checks and exits without collecting
+(`DRIFT_CHECK_OK <ts>`). Use it to confirm the driver still agrees with the
+database — e.g. after a new stock is added — without committing to a live run.
+
+**Open question:** which artifact is the stock registry? Once that is decided,
+both this driver and `enrich_plan.py` should read it instead of inferring.
+
 ### Report-counter caveat
 
 For this legacy path `records_new`, `records_existing` and `records_versioned`

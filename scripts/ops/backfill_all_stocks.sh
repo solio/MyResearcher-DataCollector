@@ -48,7 +48,39 @@ cd "$REPO" || exit 9
 
 RUN_TAG=$(date -u +%Y%m%d)
 # Ordered by expected volume (desc), matching the enrichment driver.
+#
+# NOTE: this list is hardcoded, and that is a known hazard -- the same class of
+# bug that made the enrichment driver look biased toward 601888 (see
+# enrich_plan.py). It is deliberately NOT auto-derived yet, because there is no
+# single authoritative stock registry in this repo:
+#   * backfill_coverage lists exactly these 16, but a newly added stock has no
+#     coverage row yet, so deriving from it can never bootstrap a new stock;
+#   * config/targets.short-term.json is internally inconsistent (38 codes in
+#     `stocks`, 43 in `stock_names`; 002648 / 600312 / 603997 appear only in
+#     `stock_names`).
+# Picking the wrong source would silently drop a stock from collection, which is
+# worse than a literal list that currently matches reality. Until the registry
+# question is settled, coverage_drift_check() below fails loudly instead.
 stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997)
+
+# Diagnostic only: report any stock that backfill_coverage knows about but this
+# list does not. That divergence means real collection work is being skipped, so
+# it must be visible at the top of every run rather than discovered later.
+coverage_drift_check() {
+  "$PY" - "${stocks[@]}" <<'PY'
+import sqlite3, sys
+known = set(sys.argv[1:])
+con = sqlite3.connect("file:data/collector.db?mode=ro", uri=True)
+covered = {c for (c,) in con.execute(
+    "SELECT stock_code FROM backfill_coverage WHERE source='eastmoney_guba'")}
+missing = sorted(covered - known)
+print(f"DRIFT_CHECK driver_stocks={len(known)} coverage_rows={len(covered)}"
+      f" uncovered_by_driver={len(covered - known)}")
+if missing:
+    print(f"WARN_COVERAGE_DRIFT not_in_driver_list={' '.join(missing)}")
+    print("WARN_COVERAGE_DRIFT this run will NOT collect them; reconcile stocks[] first")
+PY
+}
 
 coverage_report() {
   "$PY" - <<'PY'
@@ -65,7 +97,16 @@ PY
 }
 
 echo "RUN_START $(date -u +%FT%TZ) days=$DAYS tag=$RUN_TAG"
+coverage_drift_check
 coverage_report
+
+# DRIFT_CHECK_ONLY=1 runs the health checks above and exits without collecting.
+# Use it to confirm the driver still agrees with the database, e.g. after a new
+# stock is added, without committing to a live run.
+if [ "${DRIFT_CHECK_ONLY:-0}" = "1" ]; then
+  echo "DRIFT_CHECK_OK $(date -u +%FT%TZ)"
+  exit 0
+fi
 for s in "${stocks[@]}"; do
   out="$LOG_DIR/backfill-$s-$RUN_TAG.json"
   err="$LOG_DIR/backfill-$s-$RUN_TAG.err"
