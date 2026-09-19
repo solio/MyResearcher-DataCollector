@@ -394,6 +394,77 @@ WHERE created_at BETWEEN '2026-09-18T03:48' AND '2026-09-18T03:54' GROUP BY d;
 with `created_at` before it were **counter refreshes** (read/reply/like), not new
 rows, and do not move `COUNT(*)`.
 
+### What the login / ad / captcha interstitials mean for validity (2026-09-19)
+
+Running with `--acquisition-mode managed-chromium` and `profile_mode=fresh` opens a
+**brand-new browser profile per stock**, so the source treats every stock as a
+first-time anonymous visitor and shows the interstitial sequence: login prompt →
+ad layer → sometimes the identity-verification (captcha) shell. An operator
+watching the windows will see this on every stock, and the browser is closed
+before the challenge can be completed. **That is expected and it does not
+corrupt or block the collection**, for three separate reasons:
+
+1. **The data is not read from the rendered DOM.** `parse_list_page` calls
+   `_embedded_json(html, "article_list")` — the list is parsed out of the
+   *server-sent HTML payload*, explicitly "without executing JavaScript". Login
+   prompts and ad interstitials are additional DOM layers; they do not remove the
+   inline `article_list` payload, so they cannot replace or pollute the parsed
+   rows.
+2. **A challenge shell has no `article_list`, so it cannot masquerade as data.**
+   `is_access_block_page` requires a known `<title>` (`身份核实` / `访问验证` /
+   `安全验证` / `人机验证`) **and** a source marker (`fd_guba_validate`,
+   `em_capt.js`, `validate.js`, `emcaptcha`); `browser_host` additionally gates on
+   `"var article_list=" in html`. Anything else is a schema mismatch, which
+   raises — it is never silently stored. **A verification page yields 0 items, not
+   160.**
+3. **The collector never solves a challenge.** `ChallengeAwareEastmoneyTransport`
+   leaves the visible browser open, polls the live DOM every 5s up to
+   `--challenge-wait` (180s), and consumes the recovered document *in place* (no
+   re-navigation). On timeout it returns the original blocked response so the
+   collector fails closed.
+
+**Cheap arithmetic check that no challenge fired:** the challenge window is 180s
+and the whole 16-stock run took **190s** with the slowest single stock at **51s**.
+One fired challenge-wait would have added ≥180s to the run. So none can have
+occurred — and independently, all 16 `.err` files contained no `access_block`,
+`manual_verification` or schema-mismatch text, and every stock returned 2–4 full
+pages (`received` 160/161/240/320/322).
+
+**Confirming validity by hand** (do this rather than trusting `status=SUCCESS`):
+fetch a sample of collected URLs and compare against the row. On 2026-09-19 two
+were checked and matched the database on `title`, `published_at` **to the
+second**, `author_name` and `stock_code`. Structural checks over the 704 new rows:
+all 10-digit ids, all `published_at` as `+08:00` ISO, no empty authors, all URLs on
+`guba.eastmoney.com/news`, zero duplicate ids within the run, and id↔time
+monotonic for 703 of 704 adjacent pairs.
+
+Two benign patterns that look alarming if you go looking:
+
+* **11 of 704 URLs carry a bar code that is not the row's `stock_code`.** These are
+  cross-bar posts: the URL holds the post's *own* forum (a sector peer, or a
+  commodity bar). Examples: 601012 (隆基绿能) carrying `news,002459,…` (晶澳) and
+  `news,600732,…` (爱旭); 002648 (卫星化学) carrying `news,600989,…` (宝丰能源) and
+  `news,ufnymexcl00y,…` (the NYMEX crude-oil bar, whose cashtag is in the title).
+  The titles corroborate the sector. This is normal Eastmoney behaviour, not
+  mis-attribution.
+* **A title that is only a cashtag** (e.g. `$沪电股份(SZ002463)$`) is a real post
+  whose body begins with the cashtag, by 5 different authors — not injected ad
+  spam. Keyword scans for `登录/验证/广告/扫码` produce false positives because
+  `安全` appears in ordinary prose ("指数相对安全的", "安全下车").
+
+### `covered_to` is optimistic at page granularity
+
+`backfill_coverage.covered_to` records the newest published time the run *walked
+through*, not the newest time it successfully **persisted**. List pages hold ~80
+posts, and posts shift down the ordering as new ones arrive, so a post can cross a
+page boundary between two runs and be skipped by a walk that stops on
+`existing_coverage_reached` — leaving a hole *below* the watermark. Measured
+2026-09-19: **1 of 704** new rows (601012, `1774862173` @ 09-18 10:49:49) was
+older than that stock's pre-run watermark of 11:48:23. Small, real, and currently
+unfixed — the walk writes whatever page it read, so such holes are usually closed
+by a later run rather than by design. Do not read `covered_to` as "no gaps exist
+before this time".
+
 ### Known defect this driver works around
 
 `seek_historical_page` fails on stale anchors. `choose_anchor` picks the anchor
