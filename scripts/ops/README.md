@@ -472,7 +472,17 @@ corrupt or block the collection**, for three separate reasons:
    `em_capt.js`, `validate.js`, `emcaptcha`); `browser_host` additionally gates on
    `"var article_list=" in html`. Anything else is a schema mismatch, which
    raises — it is never silently stored. **A verification page yields 0 items, not
-   160.**
+   160.** Measured directly 2026-09-19 by tripping the block for real (a burst of
+   anonymous `curl` list requests was enough): the response was 2834 bytes,
+   `<title>身份核实</title>`, `<body><div id="root"></div></body>` plus
+   `em_capt.js` / `validate.js`, **no `article_list`** — and feeding it to the
+   project's own functions gives `is_access_block_page(...) = True` and
+   `parse_list_page(...) -> GubaParseError: missing embedded article_list`. It
+   cannot be parsed into "a few posts"; it hard-fails. The block is IP-level and
+   persists across hosts (601012 was blocked too), and it is **not** shown on
+   every request — the same anonymous session read ~16 list pages across two
+   stocks before tripping it, which is why "sometimes there is no captcha" is
+   expected rather than contradictory.
 3. **The collector never solves a challenge.** `ChallengeAwareEastmoneyTransport`
    leaves the visible browser open, polls the live DOM every 5s up to
    `--challenge-wait` (180s), and consumes the recovered document *in place* (no
@@ -507,6 +517,71 @@ Two benign patterns that look alarming if you go looking:
   whose body begins with the cashtag, by 5 different authors — not injected ad
   spam. Keyword scans for `登录/验证/广告/扫码` produce false positives because
   `安全` appears in ordinary prose ("指数相对安全的", "安全下车").
+
+### Cross-session anchor: is the served list complete? (`served_vs_stored_diff.py`)
+
+Everything above proves the *pages we read* are genuine. It does **not** prove they
+are *complete* — a site can serve a crawler a **degraded but self-consistent** page
+(real titles, contiguous ids, 80 rows/page, `rc=1`, no time gaps) that passes every
+internal consistency check. Proving non-degradation needs an anchor from **outside
+the session being judged**.
+
+```zsh
+python scripts/ops/served_vs_stored_diff.py 601012 8
+```
+
+It walks the publish-ordered `f` surface and compares what the site serves *now*
+against what an **earlier, different-day collection session** actually stored. Read
+the two numbers in this order:
+
+* **`served-not-stored` (real gap)** — the list offers a `post_type == 0` post the
+  database lacks. Must be **0** for "we got everything". This is the honest
+  completeness number.
+* **`stored-not-served`** — an earlier session stored it, today's list does not
+  serve it. **Not automatically bad**: a post the site has deleted is legitimately
+  absent from *every* list. So each one is probed at its own URL — the site 302s
+  removed posts to `/error?type=2`. Only a post that is **still live at its own URL
+  yet missing from the list** would be evidence of shrinkage. The script prints a
+  positive control (three ids it *did* serve) so you can see the probe can return
+  `STILL-LIVE`; without that, `REMOVED` would be a property of the probe, not the site.
+
+**Result, 601012, 2026-09-19** (walk window 09-17 09:45 → 09-19 22:36, 8 pages):
+
+| quantity | value |
+| --- | --- |
+| served rows / `type0` / `非0` | 640 / 601 / 39 |
+| DB rows inside the walked window | 605 |
+| **`served-not-stored`, `type0`** | **0** |
+| `stored-not-served` | 4 |
+
+All 4 `stored-not-served` were confirmed **deleted** (`302 -> /error?type=2`), with
+the 3-id control group all `STILL-LIVE`. So of 605 posts a different-day session had
+stored, today's list still serves every one that has not been removed (601/605), and
+nothing is missing from the database. Per-day inside the window: 09-17 `275` stored /
+`274` served (1 deleted), 09-18 `293` / `290` (3 deleted), 09-19 `37` / `37`
+(exact). The database's newest 601012 row is `2026-09-19T22:36:33+08:00` — identical
+to the newest served row, to the second.
+
+**Two traps that produced false alarms on the way here — both are now handled in the
+script, and both are worth knowing before you write your own comparison:**
+
+1. **Window mismatch manufactures gaps.** The first version compared
+   `published_at >= '2026-09-18'` against a walk that reached back to 09-17, and
+   reported **44** `served-not-stored` posts. All 44 were already in the database,
+   dated 09-17 — purely an artefact of the DB filter being narrower than the walk.
+   Fix: derive the window **from the walk itself** and compare nothing outside it.
+2. **Timestamp formats are not comparable as strings.** The database writes
+   `2026-09-17T09:45:08+08:00`; the list payload writes `2026-09-17 09:45:08`.
+   `'T' > ' '`, so a naive `substr(published_at,1,10) >= ?` filter shifts whole days
+   and a naive range comparison silently admits rows outside the window. Fix: one
+   `norm()` that turns `T` into a space, strips the offset, and truncates to seconds,
+   applied to **both** sides before any comparison.
+
+**Scope note:** this was verified for 601012 only. The same run against other stocks
+could not be completed because the probing itself tripped the IP-level block
+(above) — that is a measurement limitation, not a negative result. Re-run
+`served_vs_stored_diff.py <code> 6` for other codes and read the
+`served-not-stored` line.
 
 ### `covered_to` is optimistic at page granularity
 
