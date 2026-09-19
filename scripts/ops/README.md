@@ -428,6 +428,23 @@ artifacts alone:
 
 `received = in_range + out_of_scope + (accepted-but-outside-window or duplicate)`.
 
+It closes exactly, with **zero residual**, on the first full run after the counter
+was surfaced. 2026-09-19 15:51Z, all 16 stocks, `pages` 1–2:
+
+| stock | received | in_range | out_of_scope | failed |
+| --- | --- | --- | --- | --- |
+| 002028 | 160 | 149 | 11 | 0 |
+| 002463 | 82 | 51 | 31 | 0 |
+| 300487 | 80 | 58 | 22 | 0 |
+| 605020 | 80 | 59 | 21 | 0 |
+| 002891 / 300666 / 601012 / 688676 | 80 / 81 / 80 / 80 | 63 / 64 / 66 / 66 | 17 / 17 / 14 / 14 | 0 |
+| 300054 / 603179 / 600312 / 603997 / 002648 | 80 each | 66 / 69 / 70 / 71 / 71 | 14 / 11 / 10 / 9 / 9 | 0 |
+| 601888 / 603806 / 603039 | 80 each | 72 / 74 / 75 | 8 / 6 / 5 | 0 |
+| all 16 | — | — | — | **0 mismatches** |
+
+`out_of_scope` runs from **5 to 31 rows per stock per page** (6%–38%), which is the
+same order as `in_range` — worth knowing before treating "received" as "collected".
+
 **Worked example that closes the arithmetic exactly** (measured live over a
 browser session on 2026-09-19, 601012 page 1 — and this is the shape of every
 "the page shows more than the database" report):
@@ -541,12 +558,27 @@ corrupt or block the collection**, for three separate reasons:
    re-navigation). On timeout it returns the original blocked response so the
    collector fails closed.
 
-**Cheap arithmetic check that no challenge fired:** the challenge window is 180s
-and the whole 16-stock run took **190s** with the slowest single stock at **51s**.
-One fired challenge-wait would have added ≥180s to the run. So none can have
-occurred — and independently, all 16 `.err` files contained no `access_block`,
-`manual_verification` or schema-mismatch text, and every stock returned 2–4 full
-pages (`received` 160/161/240/320/322).
+**Cheap arithmetic check that no challenge fired:** the challenge window is 180s.
+Two independent runs confirm it never opened:
+
+* 15:04Z run — whole 16-stock job **190s**, slowest single stock **51s**, every
+  stock returned 2–4 full pages (`received` 160/161/240/320/322).
+* 15:51Z run — whole job **41s**, slowest stock **8s**, every stock `pages` 1–2.
+
+One fired challenge-wait would have added ≥180s to the job and would have made a
+single stock take ≥180s. Neither happened — and independently, all 16 `.err`
+files in both runs contained no `access_block`, `manual_verification` or
+schema-mismatch text (`7296` bytes total = 16 × 456, i.e. exactly the benign
+`runpy` warning plus the acquisition-mode line).
+
+**The 15:51Z run is also the cleanest end-to-end evidence that the anonymous
+client block is *not* a collection block.** At that moment the same machine's
+plain-HTTP client was being served the 2834-byte `身份核实` shell on
+`list,601012,f.html`, while `--acquisition-mode managed-chromium` completed
+16/16 SUCCESS with **zero** blocks and picked up a genuinely new post
+(`002028` / `1775290229`, published 2026-09-19 23:33:22+08:00, i.e. 18 minutes
+before the run). So "the crawler is blocked" and "our HTTP client is blocked"
+are different claims; the managed browser path is the one that matters.
 
 **Confirming validity by hand** (do this rather than trusting `status=SUCCESS`):
 fetch a sample of collected URLs and compare against the row. On 2026-09-19 two
