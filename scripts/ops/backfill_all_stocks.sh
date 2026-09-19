@@ -160,6 +160,11 @@ print(
     f" pages={d.get('pages_scanned')}"
     f" received={d.get('records_received')}"
     f" in_range={d.get('records_in_range')}"
+    # Post-type rows fetched but routed to `out_of_scope` (news/转发), i.e. never
+    # persisted. Reported so `received - in_range` is explainable without code
+    # archaeology; see D-012. Present only in reports written after 2026-09-19,
+    # so it renders as None on older files.
+    f" out_of_scope={d.get('records_out_of_scope')}"
     f" failed={d.get('records_failed')}"
     f" from={d.get('effective_from_time')}"
     f" to={d.get('effective_to_time')}"

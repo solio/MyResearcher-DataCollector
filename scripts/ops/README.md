@@ -349,8 +349,9 @@ For this legacy path `records_new`, `records_existing` and `records_versioned`
 are **hardcoded to 0** (`integration.py`,
 `execute_and_persist_simple_backfill_collection`). They are not a write signal
 and must never be quoted as evidence that nothing was written. Rows are written
-by `persist_page`; the honest signals are `records_in_range`, `pages_scanned`,
-the `posts` row delta, and the `backfill_coverage` rows.
+by `persist_page`; the honest signals are `records_in_range`,
+`records_out_of_scope` (added 2026-09-19 — see the `post_type` section below),
+`pages_scanned`, the `posts` row delta, and the `backfill_coverage` rows.
 
 Every run now also prints its own baseline, so the row delta never has to be
 differenced against a number quoted from an earlier session:
@@ -393,6 +394,61 @@ WHERE created_at BETWEEN '2026-09-18T03:48' AND '2026-09-18T03:54' GROUP BY d;
 `updated_at` is the other half of the ledger: rows touched in the run window but
 with `created_at` before it were **counter refreshes** (read/reply/like), not new
 rows, and do not move `COUNT(*)`.
+
+### Only `post_type == 0` is collected — and the drop used to be invisible
+
+The parser accepts a list row **only if `post_type == 0`**. `_parse_item` ends with
+
+```python
+if post_type != 0:
+    return row          # -> page.out_of_scope_rows, never persisted
+```
+
+so 资讯 (news) posts (`post_type` 1) and 转发/长文 items (`post_type` 20) are
+**fetched, counted as received, and then dropped**. They are not errors: no
+`records_failed`, no schema mismatch, nothing in the `.err`. The frozen
+`source_item_observations` snapshot is 8251/8251 `post_type = 0`, so this has
+always been the contract — it was just never *reported*, because
+`RuntimeCounters.records_out_of_scope` existed but was omitted from the report
+dict. `received - in_range` therefore looked like an unexplained hole.
+
+Measured on 601012, 2026-09-19: the raw `article_list` payload for page 1 of
+`list,601012,f.html` splits **80 rows = 66 × `post_type` 0, 2 × 1, 12 × 20**, and
+the report said `received=320, in_range=303` across 4 pages. `320 − 303 = 17` was
+exactly the out-of-scope count, and all 17 are `post_type` 1/20. Every
+"missing" post on that page — the sticky news item, `隆基绿能资讯`'s 融资净买入
+bulletin, `光伏头条`'s 周事迹, and the `首个钙钛矿…` reposts — is in that set.
+
+The counter is now surfaced in both places, so the arithmetic closes from the
+artifacts alone:
+
+* the run report JSON carries `records_out_of_scope`;
+* the driver's `STAT` line prints `out_of_scope=` (rendering `None` on reports
+  written before 2026-09-19, so old logs still parse).
+
+`received = in_range + out_of_scope + (accepted-but-outside-window or duplicate)`.
+
+**Decision needed:** whether news/转发 items should be collected at all. The
+scope filter is deliberate (the frozen contract has no non-zero `post_type`), but
+`post_type` 1/20 is not noise — it includes exchange filings and 资讯 the research
+may want. Changing it changes what "a post" means for the whole corpus, so this
+is recorded as an open question rather than flipped (see D-012).
+
+### Counting nuance: the date you see on the site is not `published_at`
+
+Two different Eastmoney list surfaces, two different meanings:
+
+* `list,<code>,f.html` — **sorted by publish time**, column header 发帖时间. This
+  is what `EastmoneyGubaCollector.list_url` requests.
+* `list,<code>.html` — the default, **sorted by last reply**, column header
+  **最后更新**. An old post that gets a reply today appears dated today.
+
+Reading the default page and comparing its dates to `published_at` therefore
+invents a gap that is not there. Measured 2026-09-19 on 601012: the default page
+showed ~66 entries dated 09-19, but the publish-ordered page showed **46** and the
+database held **37** `post_type = 0` rows — with the balance being out-of-scope
+items, not omissions. Posts dated 09-18 06:09, 09-18 11:04 and 09-18 21:09 all
+appeared as "09-19" on the default page.
 
 ### What the login / ad / captcha interstitials mean for validity (2026-09-19)
 

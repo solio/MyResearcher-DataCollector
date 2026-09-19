@@ -768,6 +768,17 @@ def execute_backfill_cli(
         "pages_scanned": stats.pages_scanned,
         "records_received": stats.records_received,
         "records_in_range": stats.records_in_range,
+        # Post-type rows the parser routed to `out_of_scope` instead of accepting:
+        # `_parse_item` returns any row whose `post_type != 0`, so news/转发 items
+        # are fetched and counted in `records_received` but never persisted. The
+        # counter has always existed on RuntimeCounters and was simply never
+        # reported, which made the exclusion invisible: 601012 2026-09-19 read 320
+        # rows, reported 303 in range, and silently dropped 17 -- including every
+        # `post_type` 1/20 item on the page. Surfaced so `received - in_range` is
+        # explainable from the report alone.
+        "records_out_of_scope": getattr(
+            getattr(result, "counters", None), "records_out_of_scope", 0
+        ),
         "records_new": execution.records_new,
         "records_existing": execution.records_existing,
         "records_versioned": execution.records_versioned,
