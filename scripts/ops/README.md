@@ -428,11 +428,46 @@ artifacts alone:
 
 `received = in_range + out_of_scope + (accepted-but-outside-window or duplicate)`.
 
+**Worked example that closes the arithmetic exactly** (measured live over a
+browser session on 2026-09-19, 601012 page 1 — and this is the shape of every
+"the page shows more than the database" report):
+
+| quantity | count |
+| --- | --- |
+| entries on page 1 published on 2026-09-19 | **46** |
+| of those, `post_type == 0` | **37** |
+| of those, `post_type` 1 / 20 | **9** (2 + 7) |
+| database rows with `published_at` on 2026-09-19 | **37** |
+| **page-1 `post_type == 0` entries missing from the database** | **0** |
+
+`46 = 37 + 9`, and `37 == 37`. The nine, with titles, are all `资讯`/转发:
+
+| id | type | time | title | author |
+| --- | --- | --- | --- | --- |
+| 1775236574 | 1 | 07:49:10 | 隆基绿能：融资净买入2355.28万元，融资余额46.26亿元 | 隆基绿能资讯 |
+| 1775241397 | 1 | 08:30:40 | 首个钙钛矿光伏领域国家标准出炉 (置顶) | 隆基绿能资讯 |
+| 1775245497 | 20 | 09:28:03 | 首个钙钛矿光伏领域国家标准出炉 | 股友d36G661376 |
+| 1775247916 | 20 | 10:01:04 | 首个钙钛矿…（转发） | 不染的林泉 |
+| 1775249604 | 20 | 10:24:12 | 我想说，中国光伏企业多年深耕发展… | 潮头鱼捕快 |
+| 1775252138 | 20 | 11:02:14 | 首个钙钛矿…（转发） | hjdueb008008 |
+| 1775255483 | 20 | 11:48:47 | 八十万隆基今年不换股！换股就换电解铝！… | 股友855228mn50 |
+| 1775264543 | 20 | 14:43:36 | 感谢，主力开始做多光伏产业… | 否极泰来一伟 |
+| 1775271532 | 20 | 17:06:42 | 光伏「周事迹」国家电投、华能高层变动… | 光伏头条 |
+
+Note the author/bar fields: the type-1 rows are `隆基绿能资讯` posting **in the
+隆基绿能 bar**, while several type-20 rows have `stockbar_name` of *another* bar
+(财富号评论吧 / 帝科股份吧 / 金银河吧) and are reposts pulled in. So the excluded
+set is not homogeneous: it contains official 资讯 plus cross-bar reposts.
+
 **Decision needed:** whether news/转发 items should be collected at all. The
-scope filter is deliberate (the frozen contract has no non-zero `post_type`), but
-`post_type` 1/20 is not noise — it includes exchange filings and 资讯 the research
-may want. Changing it changes what "a post" means for the whole corpus, so this
-is recorded as an open question rather than flipped (see D-012).
+scope filter is deliberate and **spec-frozen** — `specs/eastmoney_guba.md` states
+`item scope: list entries with source post_type=0`, that alternate types "remain
+in raw list evidence and explicit out-of-scope counters; they are not silently
+discarded", that the boundary is "a frozen source-object scope, **not a content
+decision**", and that "**adding an alternate type requires a spec change with
+detail evidence**". So flipping this is a spec change, not a parser tweak. `post_type`
+1/20 is not noise — it includes exchange filings and 资讯 the research may want —
+but changing it changes what "a post" means for the whole corpus (see D-012, D-014).
 
 ### Counting nuance: the date you see on the site is not `published_at`
 
@@ -444,7 +479,24 @@ Two different Eastmoney list surfaces, two different meanings:
   **最后更新**. An old post that gets a reply today appears dated today.
 
 Reading the default page and comparing its dates to `published_at` therefore
-invents a gap that is not there. Measured 2026-09-19 on 601012: the default page
+invents a gap that is not there.
+
+**The trap is worse than "two URLs": the same page carries two date columns and
+they disagree.** The payload has both `post_publish_time` (发帖时间) and
+`post_last_time` (最后更新). Counting "09-19" against the wrong one changes the
+answer, measured live on 601012 page 1 (2026-09-19):
+
+| surface | 发帖时间 = 09-19 | 最后更新 = 09-19 |
+| --- | --- | --- |
+| `list,601012,f.html` (publish-ordered) | **46** | 51 |
+| `list,601012.html` (reply-ordered) | **46** | 66 |
+
+So "how many posts did Longi get on 09-19" has three defensible-looking answers
+(46 / 51 / 66) and only one of them (`46`, the 发帖时间 count) is comparable to
+`published_at`. A reader who can only see the 最后更新 column is looking at a
+number that counts *posts touched on* that day, not *posts made* on it. When
+reconciling, always ask which column the number came from before assuming a gap.
+ Measured 2026-09-19 on 601012: the default page
 showed ~66 entries dated 09-19, but the publish-ordered page showed **46** and the
 database held **37** `post_type = 0` rows — with the balance being out-of-scope
 items, not omissions. Posts dated 09-18 06:09, 09-18 11:04 and 09-18 21:09 all
