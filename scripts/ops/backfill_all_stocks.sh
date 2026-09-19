@@ -96,9 +96,33 @@ for code, frm, to in rows:
 PY
 }
 
+# Per-day row counts, printed BEFORE and AFTER so every run carries its own
+# baseline. Without this, reconciling "what did this run actually add?" means
+# differencing against numbers someone quoted from an earlier session -- which
+# is exactly how a phantom "39 rows changed day" was chased on 2026-09-19 (the
+# real answer was a stale baseline: 09-17 was 1198 not 1191, 09-18 was 726 not
+# 694). Deltas must come from the database, never from memory.
+day_count_report() {
+  "$PY" - "$1" <<'PY'
+import sqlite3, sys
+tag = sys.argv[1]
+con = sqlite3.connect("file:data/collector.db?mode=ro", uri=True)
+total = con.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+rows = con.execute(
+    "SELECT substr(published_at,1,10) d, COUNT(*) FROM posts"
+    " WHERE substr(published_at,1,10) >= date('now','-30 days')"
+    " GROUP BY d ORDER BY d"
+).fetchall()
+print(f"DAYCOUNT {tag} posts_total={total}")
+for d, n in rows:
+    print(f"DAYCOUNT {tag} {d} {n}")
+PY
+}
+
 echo "RUN_START $(date -u +%FT%TZ) days=$DAYS tag=$RUN_TAG"
 coverage_drift_check
 coverage_report
+day_count_report BEFORE
 
 # DRIFT_CHECK_ONLY=1 runs the health checks above and exits without collecting.
 # Use it to confirm the driver still agrees with the database, e.g. after a new
@@ -154,6 +178,7 @@ PY
       echo "HALT_ON_UNREADABLE_REPORT stock=$s exit=$rc at=$(date -u +%FT%TZ)"
       echo "RESUME_HINT: re-run this script to continue from stock=$s"
       coverage_report
+      day_count_report AFTER
       echo "ALL_DONE_HALTED $(date -u +%FT%TZ)"
       exit 0
       ;;
@@ -161,6 +186,7 @@ PY
       echo "HALT_ON_COLLECTION_FAILED stock=$s exit=$rc at=$(date -u +%FT%TZ)"
       echo "RESUME_HINT: re-run this script to continue from stock=$s"
       coverage_report
+      day_count_report AFTER
       echo "ALL_DONE_HALTED $(date -u +%FT%TZ)"
       exit 0
       ;;
@@ -168,4 +194,5 @@ PY
 done
 
 coverage_report
+day_count_report AFTER
 echo "ALL_DONE $(date -u +%FT%TZ)"

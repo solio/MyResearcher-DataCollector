@@ -352,6 +352,48 @@ and must never be quoted as evidence that nothing was written. Rows are written
 by `persist_page`; the honest signals are `records_in_range`, `pages_scanned`,
 the `posts` row delta, and the `backfill_coverage` rows.
 
+Every run now also prints its own baseline, so the row delta never has to be
+differenced against a number quoted from an earlier session:
+
+```
+DAYCOUNT BEFORE posts_total=85936
+DAYCOUNT BEFORE 2026-09-18 1321
+DAYCOUNT BEFORE 2026-09-19 109
+…
+DAYCOUNT AFTER  posts_total=86640
+```
+
+`AFTER` is emitted on the normal path and on both `ALL_DONE_HALTED` paths, so a
+halted run still records what it managed to write. The window is the last 30
+days; `posts_total` is unfiltered.
+
+**Why it exists.** On 2026-09-19 the per-day counts were reported as
+`09-17: 1191 → 1198`, `09-18: 694 → 1321`, which reconciles to +743 rows while
+the `posts` table had only grown by 704 — a 39-row gap that looked like rows
+silently changing their `published_at` day. It was not. The baselines were
+stale: reconstructing the true post-2026-09-18 state from `created_at` gives
+`09-17 = 1198` and `09-18 = 726`, whereupon `726 + 595 = 1321` and
+`1198 + 0 = 1198` both close exactly. The 39 rows never existed.
+`published_at` was separately proven stable against the frozen
+`source_item_observations` snapshot (8251/8251 matched within 60s, 0 drifted).
+
+**Rule: take deltas from the database, never from memory or from a chat summary.**
+`created_at` is set on insert and never rewritten, so it is also the way to
+reconstruct what any past run left behind:
+
+```sql
+-- state of each day as of the end of the 2026-09-18 run
+SELECT substr(published_at,1,10) d, COUNT(*) FROM posts
+WHERE created_at <= '2026-09-18T03:54' GROUP BY d ORDER BY d;
+-- inserts made by a specific run
+SELECT substr(published_at,1,10) d, COUNT(*) FROM posts
+WHERE created_at BETWEEN '2026-09-18T03:48' AND '2026-09-18T03:54' GROUP BY d;
+```
+
+`updated_at` is the other half of the ledger: rows touched in the run window but
+with `created_at` before it were **counter refreshes** (read/reply/like), not new
+rows, and do not move `COUNT(*)`.
+
 ### Known defect this driver works around
 
 `seek_historical_page` fails on stale anchors. `choose_anchor` picks the anchor
