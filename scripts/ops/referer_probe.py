@@ -276,7 +276,20 @@ class Harness:
     def _on_request(self, request) -> None:
         try:
             if ALLOWED in request.url:
-                headers = request.headers
+                # `request.headers` does NOT expose sec-fetch-* (only the
+                # sec-ch-ua client hints), so reading it there returns None for
+                # every arm -- which reads as "the site sent no Sec-Fetch-Site"
+                # when the truth is that this reader cannot see it. Verified
+                # against a local http.server in referer_probe_selftest.py.
+                # `all_headers()` does expose them. Measured there (browser-
+                # determined, so site-independent):
+                #   A bare            -> referer absent, sec-fetch-site=none
+                #   B goto(referer=)  -> referer set,    sec-fetch-site=none
+                #   C list then js    -> referer set,    sec-fetch-site=same-origin
+                try:
+                    headers = request.all_headers()
+                except Exception:  # noqa: BLE001
+                    headers = request.headers
                 self.wire.setdefault(request.url, {})["request"] = {
                     "referer": headers.get("referer"),
                     "sec-fetch-site": headers.get("sec-fetch-site"),
@@ -368,6 +381,12 @@ def main() -> int:
     ap.add_argument("--cooldown-min", type=float, default=15.0)
     ap.add_argument("--force", action="store_true", help="ignore the cooldown")
     ap.add_argument("--no-stop-on-block", action="store_true")
+    ap.add_argument(
+        "--retry-on-dead", action="store_true",
+        help="relaunch the browser if it dies mid-arm. OFF by default ON PURPOSE: "
+             "if the operator closed the window, relaunching would fight them and "
+             "add traffic. Default behaviour is to stop the run.",
+    )
     args = ap.parse_args()
 
     arms = tuple(a.strip().upper() for a in args.arms.split(",") if a.strip())
@@ -401,6 +420,7 @@ def main() -> int:
 
     results: list[dict] = []
     blocked_any = False
+    died_any = False
     with sync_playwright() as pw:
         harness = Harness(pw, profile, args.headful)
         for index, detail in enumerate(targets):
@@ -412,7 +432,8 @@ def main() -> int:
             for arm in order:
                 started = time.monotonic()
                 shot = SHOTS / f"{index:02d}-{arm}-{bar}.png"
-                observed, diag = harness.fetch(arm, detail, lst, shot, retry=True)
+                observed, diag = harness.fetch(
+                    arm, detail, lst, shot, retry=args.retry_on_dead)
                 html, dom = observed["html"], observed["dom"]
                 elapsed = round(time.monotonic() - started, 2)
 
@@ -448,8 +469,13 @@ def main() -> int:
                     print(f"\n  ** 撞上验证码（{'; '.join(reasons)}）-> 按 fail-closed 立即停止，不再继续 **")
                     print(f"  ** 截图：{shot.relative_to(REPO)} **")
                     break
+                if diag.get("error") and not harness.alive():
+                    died_any = True
+                    print(f"\n  ** 浏览器在本次导航中死亡/被关闭（{diag['error'][:60]}）-> 停止 **")
+                    print(f"  ** 不重启、不重试：默认 --retry-on-dead 关闭，免得跟你关窗的动作对着干 **")
+                    break
                 time.sleep(random.uniform(args.min_delay, args.max_delay))
-            if blocked_any and stop_on_block:
+            if (blocked_any and stop_on_block) or died_any:
                 break
         events = harness.events
         try:
@@ -470,10 +496,12 @@ def main() -> int:
               f"content_ok(未被拦)={okc}  带Referer={sent}  Sec-Fetch-Site={sites}")
 
     print("\n判定：")
+    if died_any:
+        print("  浏览器中途死亡/被关闭 -> 本次运行**不完整**，未跑到的臂不要下任何结论。")
     if blocked_any:
         print("  本次至少撞到一次验证码 -> **Referer 有效性问题无法回答**；")
         print("  但被拦的那一臂，其 blocked 原因与截图就是下一次修复的输入。")
-    else:
+    elif not died_any:
         print("  本次未触发封锁 -> **对“Referer 能否降低封锁”无结论**（只是此刻没在拦）。")
     for arm in arms:
         rows = [r for r in results if r["arm"] == arm]

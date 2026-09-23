@@ -723,25 +723,56 @@ The probe runs three arms, order rotated per URL:
 | `B` | `page.goto(detail, referer=list_url)` — the one-line fix, if it works |
 | `C` | `page.goto(list_url)` then `page.evaluate("location.href = detail")` — a real same-origin navigation, so the browser sets `Referer` itself |
 
-It reports the `Referer` **and** `Sec-Fetch-Site` read off the wire via
-`page.on("request")`. Those differ, and the difference matters: a forged
-`referer=` arrives with `Sec-Fetch-Site: none` (no initiator), where a real in-page
-navigation carries `same-origin`. A WAF checking the pair can tell them apart even
-though both show a `Referer`.
+It reports the `Referer` **and** `Sec-Fetch-Site` read off the wire.
 
-**`A` and `B` are settled; `C` is not.** `A` sends no `Referer` (0/6). `B` really
-does put one on the wire (6/6) — so the one-line change is mechanically viable.
-Arm `C` has not yet produced a valid measurement: v1 failed on a probe bug
-(`wait_for_load_state` resolves against the *outgoing* document, then `page.content()`
-races the navigation), and v2 navigated successfully — `History` confirms the
-detail was visited — and then the browser was closed mid-arm. **Do not read v1/v2's
-`blocked=0` as "no captcha was shown"**: both ran under the blind detector
-described above.
+**Measured** (`referer_probe_selftest.py` phase 2, against a loopback
+`http.server`; `Sec-Fetch-Site` is computed by Chromium from the *initiator*, so
+these values are **site-independent** and settle what guba sees without touching
+guba):
+
+| arm | `Referer` | `Sec-Fetch-Site` |
+| --- | --- | --- |
+| `A` bare (status quo) | absent | `none` |
+| `B` `goto(referer=list)` | set | `none` |
+| `C` list → JS → detail | set | **`same-origin`** |
+
+**`B` and `C` are therefore not equivalent.** Both carry a `Referer`, but only `C`
+looks like a real in-page navigation; `B`'s forged header arrives with no
+initiator and the pair (`Referer`, `Sec-Fetch-Site`) still gives it away. So the
+list-page-then-JS approach is not merely an alternative to the one-line change —
+it is the one that reproduces what a human click produces.
+
+**Reader trap — do not read this header with `request.headers`.**
+Playwright's `request.headers` does **not** expose `sec-fetch-*` (only the
+`sec-ch-ua` client hints), so `headers.get("sec-fetch-site")` returns `None` for
+every arm. That reads as "the site sent no `Sec-Fetch-Site`" when the truth is
+that the reader is blind; it produced exactly that false reading during this
+investigation. CDP `Network.requestWillBeSent` does not carry it either.
+**`request.all_headers()` does**, and that is what the probe now uses. The
+self-test asserts `"sec-fetch-site" not in request.headers` so the comment gets
+revisited if Playwright ever changes.
+
+**Result of the 2026-09-23 09:48Z run** (`--urls 2 --headful`, v4 detector, all
+six screenshots kept under `runtime/referer-probe-shots/`): **6/6 no block** —
+`overlays=[]`, real post titles, and the visible text is the ordinary guba page
+header. Arm `C` produced a valid measurement for the first time: it navigates
+successfully and carries a `Referer`, corroborated by a screenshot of the real
+detail page (上证指数吧 › 帖子正文, author, timestamp, full body — no modal). This
+is the first run in which "no captcha" rests on an image rather than on a
+heuristic.
+
+Arm `A` and `B` remain as previously established. What is still **not** answered is
+the effectiveness question — whether a `Referer` reduces blocking — because none
+of these runs was made while the source was blocking. Zero blocks does not mean
+the header is useless.
 
 Run it with `--urls 1 --arms A --cooldown-min 0` for a single-request sanity check.
 It refuses to start within `--cooldown-min` of the previous run (default 15 min)
 so that repeated cold-start fingerprints cannot pile up, which is the failure mode
-that made the first three runs progressively worse.
+that made the first three runs progressively worse. If the browser dies mid-arm it
+**stops the whole run** — `--retry-on-dead` is OFF by default on purpose, because
+relaunching when the operator has just closed the window means fighting them and
+adding traffic.
 
 ### Cross-session anchor: is the served list complete? (`served_vs_stored_diff.py`)
 

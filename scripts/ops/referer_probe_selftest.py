@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Positive/negative controls for the referer probe's block detector.
+"""Positive/negative controls for the referer probe's two oracles.
 
 WHY THIS EXISTS
 ---------------
@@ -12,9 +12,12 @@ injected on top of a fully loaded, normal-looking page -- underlying title and
 `post_article` payload intact -- so both the block check AND the content check
 said "fine".
 
-Claiming the v4 detector fixes that is itself a claim that needs a control. This
-script builds three local fixtures and asserts the classifier's answer on each,
-with no network traffic at all:
+Claiming that a detector fixes that is itself a claim that needs a control, and so
+is claiming that a header was or was not sent. This script has two phases and
+**no external network traffic** (phase 2 runs a loopback `http.server`, bound to
+port 0).
+
+PHASE 1 -- the block classifier (`file://` fixtures)
 
   F1  real page, no overlay                 -> NOT blocked, content parses
   F2  real page + overlay whose class contains `captcha` AND slider text
@@ -27,12 +30,31 @@ with no network traffic at all:
 F3 is the case v3 missed by construction; if F3 does not fire, v4 does not fix
 anything and this script fails.
 
-`parse_detail_page` is run on all three so the script also demonstrates why the
-content check cannot be used as the block check: it succeeds even on F2/F3.
+PHASE 2 -- the wire reader (loopback `http.server`)
+
+Asserts what the three arms actually put on the wire, and in particular pins a
+reader trap that produced a **false claim** during this investigation:
+Playwright's `request.headers` does **not** expose `sec-fetch-*` (only the
+`sec-ch-ua` client hints), so reading `sec-fetch-site` from it returns `None` for
+every arm. That reads as "the site sent no `Sec-Fetch-Site`" when the truth is
+that the reader is blind. `all_headers()` does expose it.
+
+Because `Sec-Fetch-Site` is computed by Chromium from the *initiator*, these
+values are **site-independent** -- measuring them against 127.0.0.1 settles what
+guba would see, without touching guba:
+
+  A bare            referer absent   sec-fetch-site=none
+  B goto(referer=)  referer set      sec-fetch-site=none
+  C list then js    referer set      sec-fetch-site=same-origin
+
+The last two lines are the point: B and C are **not equivalent**. Both carry a
+`Referer`, but a forged one arrives with no initiator, so the pair
+(`Referer`, `Sec-Fetch-Site`) still separates a scripted jump from a real
+in-page navigation.
 
 USAGE
     python scripts/ops/referer_probe_selftest.py [--headful]
-Exit 0 = every fixture matched its expected verdict.
+Exit 0 = every fixture and every header assertion matched.
 """
 
 from __future__ import annotations
@@ -122,6 +144,109 @@ FIXTURES = [
 ]
 
 
+def wire_header_phase(browser) -> tuple[list[dict], list[str]]:
+    """Phase 2: can the wire reader actually see the headers it reports?
+
+    `Sec-Fetch-Site` is computed by Chromium from the initiator, so these values
+    are **site-independent** -- measuring them against a loopback `http.server`
+    settles what guba will see, without touching guba.
+
+    It also pins the reader trap that produced a false claim: Playwright's
+    `request.headers` does NOT expose `sec-fetch-*` (only the `sec-ch-ua` client
+    hints), so reading the header there yields `None` for every arm, which reads
+    as "the site sent none" when in fact the reader is blind. `all_headers()`
+    does expose them.
+    """
+    import http.server
+    import socketserver
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"<html><head><title>local</title></head><body>ok</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # keep the test output clean
+            pass
+
+    server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    detail = f"http://127.0.0.1:{port}/news,601012,9.html"
+    lst = f"http://127.0.0.1:{port}/list,601012,f_3.html"
+
+    context = browser.new_context()
+    page = context.new_page()
+    captured: dict[str, list[dict]] = {}
+    current = {"arm": "A"}
+
+    def on_request(request):
+        if request.url != detail:
+            return
+        entry = {"arm": current["arm"]}
+        try:
+            allh = request.all_headers()
+            entry.update({k: allh.get(k) for k in
+                          ("referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-user")})
+        except Exception as exc:  # noqa: BLE001
+            entry["all_headers_error"] = str(exc)[:60]
+        entry["headers_sees_sfc"] = "sec-fetch-site" in request.headers
+        captured.setdefault(current["arm"], []).append(entry)
+
+    page.on("request", on_request)
+
+    current["arm"] = "A"
+    page.goto(detail, wait_until="domcontentloaded", timeout=15000)
+    current["arm"] = "B"
+    page.goto(detail, wait_until="domcontentloaded", timeout=15000, referer=lst)
+    current["arm"] = "C"
+    page.goto(lst, wait_until="domcontentloaded", timeout=15000)
+    page.evaluate("u => { location.href = u; }", detail)
+    page.wait_for_url(lambda url: str(url) == detail, wait_until="domcontentloaded", timeout=15000)
+    context.close()
+    server.shutdown()
+
+    failures: list[str] = []
+    rows: list[dict] = []
+    expect = {
+        "A": {"referer": None, "sfcs": "none"},
+        "B": {"referer": lst, "sfcs": "none"},
+        "C": {"referer": lst, "sfcs": "same-origin"},
+    }
+    for arm in ("A", "B", "C"):
+        entries = captured.get(arm) or []
+        if not entries:
+            failures.append(f"arm {arm}: 一个请求头都没抓到")
+            continue
+        entry = entries[-1]
+        rows.append({"arm": arm, **entry})
+        print(f"\n--- arm {arm} ---")
+        print(f"  referer={entry.get('referer')!r}  sec-fetch-site={entry.get('sec-fetch-site')!r}"
+              f"  mode={entry.get('sec-fetch-mode')!r}  user={entry.get('sec-fetch-user')!r}")
+        expected = expect[arm]
+        if entry.get("referer") != expected["referer"]:
+            failures.append(
+                f"arm {arm}: referer={entry.get('referer')!r}, 期望 {expected['referer']!r}")
+        if entry.get("sec-fetch-site") != expected["sfcs"]:
+            failures.append(
+                f"arm {arm}: sec-fetch-site={entry.get('sec-fetch-site')!r}, 期望 {expected['sfcs']!r}")
+        if entry.get("headers_sees_sfc"):
+            failures.append(
+                f"arm {arm}: request.headers 竟然能看见 sec-fetch-site —— "
+                f"探针里那条注释需要更新"
+            )
+
+    print("\n  so: A 无 referer；B/C 都带 referer；但只有 C 的 Sec-Fetch-Site 是 "
+          "same-origin，B 是 none。")
+    print("  B 与 C 因此**不是等价方案**：只看 Referer 一样，看这一对头就能分开。")
+    return rows, failures
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--headful", action="store_true")
@@ -195,20 +320,33 @@ def main() -> int:
 
         browser.close()
 
+    # ---- phase 2: is the wire reader itself trustworthy? -------------------
+    print("\n=== 第二段：三臂到底发出什么头（本机 http.server，零外网）===")
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=not args.headful, channel="chrome")
+        header_rows, header_failures = wire_header_phase(browser)
+        browser.close()
+    failures.extend(header_failures)
+
     print("\n=== 断言 ===")
-    print("  设计前提：三档 fixture 都带合法 post_article，所以 content_ok 必须全为 True；")
+    print("  第一段前提：三档 fixture 都带合法 post_article，所以 content_ok 必须全为 True；")
     print("  而 F2/F3 必须 blocked=True。两者同时成立即证明内容检查不能替代封锁检查。")
+    print("  第二段前提：三臂发出的 referer / sec-fetch-site 必须分别符合上表。")
     if failures:
         for f in failures:
             print(f"  FAIL  {f}")
-        print(f"\n{len(failures)} 条断言失败 —— v4 检测器不成立。")
+        print(f"\n{len(failures)} 条断言失败 —— 检测器/读取器不成立，不要拿它的输出下结论。")
     else:
-        print("  全部通过：F1 不响，F2/F3 都响；且 F2/F3 上内容检查仍然成功")
-        print("  -> 证明「内容能解析」不能当作「没被拦」，而可见文字能发现浮层。")
+        print("  全部通过：")
+        print("    第一段 F1 不响、F2/F3 都响，且 F2/F3 上内容检查仍然成功")
+        print("      -> 「内容能解析」不能当作「没被拦」，可见文字能发现浮层。")
+        print("    第二段 A 无 referer；B/C 都带 referer，但只有 C 是 same-origin")
+        print("      -> 「用 referer 头伪造」和「真的点进去」不是一回事。")
 
     out = REPO / "runtime/referer-probe-selftest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    json.dump(rows, open(out, "w"), ensure_ascii=False, indent=1)
+    json.dump({"fixtures": rows, "wire_headers": header_rows},
+              open(out, "w"), ensure_ascii=False, indent=1)
     print(f"\n明细 -> {out.relative_to(REPO)}")
     return 1 if failures else 0
 
