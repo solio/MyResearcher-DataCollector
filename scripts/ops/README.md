@@ -426,10 +426,38 @@ artifacts alone:
 * the driver's `STAT` line prints `out_of_scope=` (rendering `None` on reports
   written before 2026-09-19, so old logs still parse).
 
-`received = in_range + out_of_scope + (accepted-but-outside-window or duplicate)`.
+The exact identity, with each term now pinned to a line of code:
 
-It closes exactly, with **zero residual**, on the first full run after the counter
-was surfaced. 2026-09-19 15:51Z, all 16 stocks, `pages` 1–2:
+```
+received       = len(page.rows) + len(page.out_of_scope_rows)     # collector.py:918
+out_of_scope   = len(page.out_of_scope_rows)                      # collector.py:919
+in_range       = rows with from_time <= published_at <= to_time
+                 AND source_item_id not already seen this run      # collector.py:933-938
+=> received = in_range + out_of_scope + out_of_window + in_run_duplicate
+```
+
+**A non-zero residual is NORMAL — but only for `backfill_range_complete` stocks.**
+The stop condition for that reason is `max(page_times) < from_time`
+(`collector.py:984`), i.e. the walk deliberately reads **one whole page that lies
+entirely before the window start**; those 80-odd rows are counted in `received`
+and never persisted. A stock that stops on `existing_coverage_reached` stops at
+the watermark, which is inside the window, so its residual is 0.
+
+Measured 2026-09-23, and this is the proof: exactly the two
+`backfill_range_complete` stocks had residuals, and re-fetching their three pages
+closes every counter to the row.
+
+| stock | 3 pages | `type0` | `非0` | `type0` before `from_time` | dup ids | `type0` in window | report `in_range` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 300487 | 240 | 169 | 71 | **94** | 0 | **75** | 75 ✅ |
+| 603997 | 240 | 214 | 26 | **81** | 0 | **133** | 133 ✅ |
+
+`240 = 75 + 71 + 94` and `240 = 133 + 26 + 81`. `非0` equals the reported
+`out_of_scope` in both, and there were **zero duplicate ids** — so the residual is
+wholly "out of window", not pagination overlap. The other 14 stocks had residual 0.
+
+Baseline run that first made this visible (2026-09-19 15:51Z, all 16 stocks
+stopped on `existing_coverage_reached`, hence 16/16 zero residual):
 
 | stock | received | in_range | out_of_scope | failed |
 | --- | --- | --- | --- | --- |
@@ -444,6 +472,27 @@ was surfaced. 2026-09-19 15:51Z, all 16 stocks, `pages` 1–2:
 
 `out_of_scope` runs from **5 to 31 rows per stock per page** (6%–38%), which is the
 same order as `in_range` — worth knowing before treating "received" as "collected".
+
+**What a catch-up run looks like** (first run after a gap — 2026-09-19 15:51Z →
+2026-09-23 00:54Z, ~3.4 days). Use this as the shape to expect after any pause:
+
+| | |
+| --- | --- |
+| wall time | **5m51s** (vs 41s when only page 1 is needed) |
+| `pages` per stock | 2–9, driven by how much of the gap that stock filled |
+| `stop_reason` | 14 × `existing_coverage_reached`, 2 × `backfill_range_complete` |
+| `posts_total` | 85937 → 88592 (**+2655**) |
+| new rows per day | 09-20 **84** (Sun), 09-21 **1173** (Mon), 09-22 **1363** (Tue), 09-23 **35** (Wed, partial) |
+| Day-count delta | `84+1173+1363+35 = 2655` ✅ |
+| per-stock insert sum | **2655** ✅ (three independent reconciliations agree) |
+| rows inserted outside the window | **0** |
+| duplicate ids within the run | **0** |
+| `covered_to` | 16/16 advanced to ≥ 2026-09-23 |
+| `.err` | zero `access_block` / `manual_verification` / `Traceback` / `schema_mismatch` |
+
+Note 09-19 stayed at 110 and 09-20 (Sunday) added only 84 — a weekend trough, the
+same shape as 09-12/09-13 (95/114). Large single-day numbers like 09-22 = 1363 are
+therefore not evidence of a burst; they are a normal trading day.
 
 **Worked example that closes the arithmetic exactly** (measured live over a
 browser session on 2026-09-19, 601012 page 1 — and this is the shape of every
