@@ -651,6 +651,98 @@ Two benign patterns that look alarming if you go looking:
   spam. Keyword scans for `登录/验证/广告/扫码` produce false positives because
   `安全` appears in ordinary prose ("指数相对安全的", "安全下车").
 
+### The block we could not see: an overlay captcha is invisible to both oracles (2026-09-23)
+
+Everything above is about the **strict** challenge shell: a page with no
+`article_list` at all, which therefore hard-fails. There is a **second** shape, and
+until 2026-09-23 the instrumentation could not see it.
+
+`runtime/diagnostics/eastmoney-20260813T132249.png` — captured by
+`ManagedChromiumTransport.diagnostic_snapshot()`, and never actually looked at
+until this date — shows 「拖动下方滑块完成拼图」 rendered as a **modal layer on top
+of a fully loaded, normal-looking Eastmoney page**: page chrome, list and quote
+panel all rendered behind it. The document's `<title>` and its embedded payload
+are untouched by the overlay.
+
+That defeats both oracles at once:
+
+| oracle | what it checks | verdict on an overlay page |
+| --- | --- | --- |
+| `is_access_block_page` | `<title>` in {身份核实, 访问验证, 安全验证, 人机验证} **and** an asset marker (`em_capt.js`, `validate.js`, `emcaptcha`, `fd_guba_validate`) | `False` — the title is a normal post title, and the slider's visible words (拖动下方**滑块**完成**拼图**) are in neither set |
+| `parse_list_page` / `parse_detail_page` | the server-sent embedded JSON | **succeeds** — the payload is still there |
+
+So **"we parsed content" is not evidence that "we were not challenged"**. A run
+reporting `access_block 0` can be a run the operator watched being challenged.
+Because `enrich_all_stocks.sh` fails closed on `stopped` / `access_block`, this is
+first and foremost an **observability** defect: the signal that the source is
+actively challenging us goes missing exactly when it matters most. It is **not**
+established that the *data* is affected — on an overlay page the parsed payload is
+still the genuine server payload.
+
+**Measured, with controls** — `scripts/ops/referer_probe_selftest.py` builds local
+`file://` fixtures (zero network traffic) and asserts each one. Run it before
+trusting any "no captcha" claim:
+
+| fixture | `blocked` | `content_ok` |
+| --- | --- | --- |
+| real page, no overlay | False | True |
+| overlay whose class contains `captcha`, plus slider text | **True** | **True** |
+| overlay with an **innocent class name** — only the visible text gives it away | **True** | **True** |
+
+The third row is the case the old detector missed by construction; it is caught
+only by scanning rendered `document.body.innerText` (the technique
+`sources/xueqiu/dom_scripts.py` already uses) with `滑块` / `拼图` in the token
+list. `scripts/ops/referer_probe.py` v4 uses that probe, screenshots **every**
+arm, prints `blocked` first, and is **fail-closed by default** (`--stop-on-block`):
+the first block ends the run instead of grinding on and accumulating them.
+
+**Scope of this evidence, stated honestly:** the only saved screenshot is of a
+**list** page (`list,601888,f_51.html`); whether *detail* pages receive the same
+overlay is not established by it. And Chrome's `History` from the 2026-09-23 probe
+runs records only real post titles with no 验证/身份 entry — **consistent with** an
+overlay (an overlay does not change the title), but **not** evidence of a clean
+run.
+
+### `referer_probe.py`: does the detail surface care about `Referer`?
+
+Enrich fetches `news,<bar>,<id>.html` (detail) directly; backfill walks
+`list,<bar>,f*.html`. Enrich records `access_block` 185 + `manual_verification_resumed`
+135 against 7315 successes (2.3% / 1.7% over 7883 attempts), so the surface *does*
+behave differently. **Neither path sends a `Referer` today** — `grep -i referer src/`
+has zero matches, `EastmoneyBrowserTransport.get` calls
+`page.goto(url, wait_until=…, timeout=…)` with no `referer`, and the AppleScript
+path sets the tab URL (equivalent to typing it). Note also that the two paths are
+**not** different transports: `enrich_all_stocks.sh:161` passes
+`--acquisition-mode managed-chromium`, the same one backfill uses.
+
+The probe runs three arms, order rotated per URL:
+
+| arm | what it does |
+| --- | --- |
+| `A` | `page.goto(detail)` — the status quo |
+| `B` | `page.goto(detail, referer=list_url)` — the one-line fix, if it works |
+| `C` | `page.goto(list_url)` then `page.evaluate("location.href = detail")` — a real same-origin navigation, so the browser sets `Referer` itself |
+
+It reports the `Referer` **and** `Sec-Fetch-Site` read off the wire via
+`page.on("request")`. Those differ, and the difference matters: a forged
+`referer=` arrives with `Sec-Fetch-Site: none` (no initiator), where a real in-page
+navigation carries `same-origin`. A WAF checking the pair can tell them apart even
+though both show a `Referer`.
+
+**`A` and `B` are settled; `C` is not.** `A` sends no `Referer` (0/6). `B` really
+does put one on the wire (6/6) — so the one-line change is mechanically viable.
+Arm `C` has not yet produced a valid measurement: v1 failed on a probe bug
+(`wait_for_load_state` resolves against the *outgoing* document, then `page.content()`
+races the navigation), and v2 navigated successfully — `History` confirms the
+detail was visited — and then the browser was closed mid-arm. **Do not read v1/v2's
+`blocked=0` as "no captcha was shown"**: both ran under the blind detector
+described above.
+
+Run it with `--urls 1 --arms A --cooldown-min 0` for a single-request sanity check.
+It refuses to start within `--cooldown-min` of the previous run (default 15 min)
+so that repeated cold-start fingerprints cannot pile up, which is the failure mode
+that made the first three runs progressively worse.
+
 ### Cross-session anchor: is the served list complete? (`served_vs_stored_diff.py`)
 
 Everything above proves the *pages we read* are genuine. It does **not** prove they
@@ -895,6 +987,13 @@ DRY_RUN=1 zsh scripts/ops/enrich_all_stocks.sh
 
 # collection: close the gap since the last run (DAYS=14 by default)
 zsh scripts/ops/backfill_all_stocks.sh
+
+# block-detector self-test: 3 local file:// fixtures, zero network traffic.
+# Run this BEFORE trusting any "no captcha" claim from any tool.
+/opt/homebrew/anaconda3/bin/python scripts/ops/referer_probe_selftest.py
+
+# referer probe: 1 request, 1 arm -- a sanity check that costs almost nothing
+/opt/homebrew/anaconda3/bin/python scripts/ops/referer_probe.py --urls 1 --arms A --cooldown-min 0 --headful
 ```
 
 `enrich_all_stocks.sh` / `mop_up.sh` / `enrich_tail_worker.sh` /
@@ -902,3 +1001,10 @@ zsh scripts/ops/backfill_all_stocks.sh
 `backfill_all_stocks.sh` is the collection driver. All are thin wrappers over the
 CLI — parsing, schema and persistence contracts live in
 `src/myresearcher_collector/`.
+
+`referer_probe.py` and `referer_probe_selftest.py` are **diagnostic** tools: they
+fetch, screenshot and report, and never write to the database. The probe refuses to
+run within `--cooldown-min` of its previous run unless `--force` is given, because
+back-to-back runs from brand-new profiles present the source with repeated cold
+fingerprints and measurably worsen the blocking (see the three 2026-09-23 runs
+above).
