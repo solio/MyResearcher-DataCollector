@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+# The suite is run with `--basetemp=.pytest-tmp` (the default pytest tmp dir trips
+# a broker PermissionError on this machine), so the directory lands in the repo.
+.pytest-tmp/
 .coverage
 htmlcov/
 build/

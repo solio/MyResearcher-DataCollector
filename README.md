@@ -38,12 +38,19 @@ From this directory:
 
 ```bash
 python -m compileall -q src tests
-python -m pytest --collect-only -q
-python -m pytest -q
+python -m pytest --collect-only -q --basetemp=.pytest-tmp
+python -m pytest -q --basetemp=.pytest-tmp
 
 # From a source checkout, exercise the source boundary without a package install:
 PYTHONPATH=src python -m myresearcher_collector.cli --help
 ```
+
+`--basetemp=.pytest-tmp` is required, not cosmetic. Under a sandboxed shell the
+runner cannot create its default temp root (`/private/var/folders/.../pytest-of-<user>`),
+and every test that asks for `tmp_path` then errors at **setup** — a run that
+looks like `222 passed, 205 errors` while saying nothing about the code. Keeping
+the temp root inside the workspace makes the result the code's. The directory is
+gitignored.
 
 ## Canonical Storage
 
