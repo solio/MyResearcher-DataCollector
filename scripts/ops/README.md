@@ -703,6 +703,63 @@ runs records only real post titles with no 验证/身份 entry — **consistent 
 overlay (an overlay does not change the title), but **not** evidence of a clean
 run.
 
+### The symmetric error: the fixed detector called every page blocked (2026-09-23)
+
+Blind to a real block, then reporting a block that was not there. The first
+revision of `challenge_dom.py` treated a challenge **asset** in the DOM as a
+block in its own right, and `em_capt.js` is not a challenge marker on this site —
+it is page furniture:
+
+```html
+<script type="text/javascript"
+        src="//cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"></script>
+```
+
+It is in the `<head>` of the template, so that the client can raise the overlay on
+demand. Measured over the captured corpus (`data/raw/eastmoney_guba/*.body`):
+
+| measurement | count |
+| --- | --- |
+| bodies containing `em_capt` | 117 / 117 |
+| … of which confirmed-normal detail pages (full `post_article`) | 5 / 5 |
+| bodies containing `验证码` / `滑块` / `拼图` | 0 / 117 |
+
+So "asset present → blocked" flagged **100% of pages**. `parser.is_access_block_page`
+has never had this bug because it requires a challenge `<title>` **and** a marker;
+the DOM detector had dropped the conjunction. The rule is now the same one:
+
+> `dom_asset:<token>` is reported **only as corroboration**, once a challenge
+> title or a rendered overlay has already fired. It never decides on its own.
+
+**How it was caught, and how nearly it was not.** A `--limit 2` enrich smoke run
+stopped on its **first** candidate with
+`challenge_reasons: ["list_page:dom_asset:em_capt.js","dom_asset:em_capt.js"]`,
+`challenge_tier: structural`, while the response bytes were a perfectly good
+article. Two things had to line up to expose it:
+
+1. the real corpus had to be measured instead of reasoned about — the asset is
+   invisible in any one page, and obvious across all of them;
+2. the negative control had to be **faithful**. The self-test's clean fixture was
+   hand-written and simply did not include the one tag every real page includes,
+   so F1 — the fixture whose entire job is to prove the detector stays quiet —
+   was the one thing that could not see the bug. It now carries the real
+   `<script src=…em_capt.js>` and must still come out `blocked=False`, asserted
+   via `expect_asset_tokens`.
+
+An earlier run of the probe compounded this. Its 09:48Z record stored
+`block_reasons` but neither the tokens it saw nor the detector that saw them, and
+`challenge_dom.py` was edited **nine minutes after** the run. Reading that `[]`
+later as evidence about normal pages meant reading it against a detector revision
+that no longer existed. Every probe row now records `structural_tokens`,
+`text_tokens` and `detector_sha256`, and the probe prints the revision at startup.
+
+The generalisable rule:
+
+> A detector has to be checked in **both** directions. Blind looks like "clean";
+> over-eager looks like "dirty". Neither number is a measurement until the
+> negative and the positive control both behave, and the negative control has to
+> carry everything a real input carries — not just the parts you remembered.
+
 ### `referer_probe.py`: does the detail surface care about `Referer`?
 
 Enrich fetches `news,<bar>,<id>.html` (detail) directly; backfill walks
@@ -773,6 +830,134 @@ that made the first three runs progressively worse. If the browser dies mid-arm 
 **stops the whole run** — `--retry-on-dead` is OFF by default on purpose, because
 relaunching when the operator has just closed the window means fighting them and
 adding traffic.
+
+### Arm `C` wired into the collector: `--detail-referer-from-list`
+
+The probe measured; the collector now implements. `EastmoneyBrowserTransport` takes
+`detail_referer_from_list` (default **OFF**, documented as costing one extra
+navigation per candidate), and when it is on and the URL is a bar detail page
+(`/news,<bar>,<id>.html` — list pages and `caifuhao` URLs are left alone) it:
+
+1. navigates to `/list,<bar>,f.html`, then
+2. runs `page.evaluate("location.href = …")` and waits for the detail URL.
+
+The response is captured from the `response` event because a JS navigation has no
+return value, the listener is removed in a `finally` (otherwise one closure leaks
+per fetch — covered by a test), and if the list page itself is challenged that is
+recorded in `diagnostics["list_challenge_reasons"]` and surfaces in the enrich log
+as `list_page:<reason>`.
+
+Enable it with `DETAIL_REFERER=1` on the driver, or `--detail-referer-from-list`
+on the CLI. The driver echoes `detail_referer=1` on `RUN_START`, and every per-stock
+report carries `"detail_referer_from_list": true|false` so a run can never be
+attributed to the wrong scheme. The flag is deliberately **not** echoed on the
+`managed-chromium` stderr line: the README/skill verify a run partly by the exact
+byte count of each `.err` file (456), so widening that line would invalidate a
+working check.
+
+**Smoke result (`--limit 2`, 2026-09-23).** With the D-017 detector fix in place:
+`requested=2, success=2, failed=0, content_filled=2, stopped=false,
+access_block_count=0, failures=[]`, both bodies real (53 and 336 characters). The
+same command before that fix reported `success=0, access_block_count=2,
+stopped=true` — see "The symmetric error" above. **This settles that the scheme
+executes end to end and carries the Referer; it does not answer whether a Referer
+reduces blocking**, because the source was not blocking during the smoke. The
+like-for-like comparison needs a run made while blocks are actually happening.
+
+### The detail reached this way can redirect: D-018
+
+The first revision of `_get_after_list_visit` matched the captured response with
+`response.url == url`. Every detail URL that **redirects** therefore captured
+nothing: a deleted post answers `302 -> https://guba.eastmoney.com/error?type=2`,
+so no response carried our URL, the capture stayed empty, and the candidate
+surfaced as a transport error instead of the `detail_not_found` the direct
+`page.goto` path produces. The consequence is worse than the symptom: no
+`detail_not_found` means **no skip-ledger entry**, so such a post is retried on
+every run forever. Seen once in 258 requests (601012 `1774943244`) in the
+2026-09-23 backlog pass; that pass had already started, and per-stock subprocesses
+make a mid-run code change non-homogeneous, so it was fixed **after** the run and
+is not exercised by any production run yet.
+
+The capture now mirrors `page.goto`: keep main-document responses
+(`request.resource_type == "document"`, so a 302's intermediate or a
+sub-resource cannot be picked), clear them after the list page, and accept the
+document the browser actually ended on (`_pick_document`). `wait_for_url` accepts
+any non-list committed URL, because a redirected detail never commits our URL.
+The transport-error message also names its cause now — "no response captured" and
+"the navigation timed out" were indistinguishable, and that ambiguity is what let
+this take an investigation to find. Covered by four unit tests
+(`FakeRefererPage(detail_final_url=...)`), **not** by a live deleted post: the
+source was blocking when it was written, so a live check would have proved nothing.
+
+### `--list-click-paging`: the same shape for backfill's page walk
+
+The same argument as arm `C`, applied to the list surface. Backfill walks
+`range(start_page, page_limit + 1)` and used to fetch *every* page with
+`page.goto`, so each of those is a typed navigation — no `Referer`,
+`sec-fetch-site: none`. A reader lands on page 1 and clicks 下一页 instead. With
+`--list-click-paging` (driver: `LIST_CLICK_PAGING=1`):
+
+1. page 1 (or any page the browser is not adjacent to) is still opened by URL;
+2. a later page is turned by reading the page's **own** pager anchor
+   (`<ul class="paging"><a class="nextp">`, server-rendered, so it is in the DOM at
+   `domcontentloaded`), checking its href decodes to the page number we asked for,
+   and clicking it.
+
+The walk itself is untouched: same URL requested, same bytes parsed, same
+counters — `page`, `records_received`, the signature guard
+(`pagination_not_progressing`) and every stop reason behave exactly as before. The
+click is verified before it is issued, so a pager pointing somewhere else cannot
+move the walk off its 1:1 sequence.
+
+**Falling back is counted, and that is the instrument.** If no anchor points at
+the page asked for, the page is still reachable by URL and refusing to fetch it
+would let an opt-in scheme *break* a walk that worked before it existed — so the
+fallback exists, and is counted separately. A silent fallback would make a run
+look like it paged by clicking when it never did:
+
+| report field | meaning |
+| --- | --- |
+| `list_click_paging` | whether the scheme was requested |
+| `list_navigation.click` | anchor clicked **and** the page it opened was served |
+| `list_navigation.goto` | page requested by URL (`f_<n>.html`) |
+| `list_navigation.click_no_anchor` | nothing on the page pointed at the page asked for |
+| `list_navigation.click_not_taken` | the click was issued but the browser did not navigate |
+| `list_navigation.samples` | one sampled request shape per scheme, read off the wire |
+
+`goto` is counted for list pages **whether or not the scheme is on**, so a run
+with it off (`click: 0`, `goto: N`) is the negative control that makes a run with
+it on (`click: N`) a measurement instead of an assumption. The driver prints all
+four on the `STAT` line of every stock. A click that navigated but yielded no
+capturable document **raises instead of re-navigating** — re-fetching after a
+committed navigation is the D-018 trap, and it would duplicate a request against
+the source. `--list-click-paging` is accepted only with
+`--acquisition-mode managed-chromium`; the other modes can only set a tab URL, and
+a flag that is silently ignored is worse than an error.
+
+**Smoke result (`--max-pages 3` on 601012, 2026-09-23 15:28Z).**
+`status=PARTIAL_COLLECTION, stop_reason=max_pages_reached, pages_scanned=3,
+records_received=240, records_failed=0, failures=[]`, and
+`list_navigation={"click": 2, "goto": 1, "click_no_anchor": 0, "click_not_taken": 0}`.
+Three pages of 80 rows each were parsed and written (146 new `posts` rows), so the
+click turned real pages rather than re-serving page 1. The two samples, read from
+`request.all_headers()` of the real navigations:
+
+| navigation | `Referer` | `Sec-Fetch-Site` | `Sec-Fetch-User` |
+| --- | --- | --- | --- |
+| page 1 by URL | absent | `none` | `?1` |
+| page 2 by pager click | `…/list,601012,f.html` | **`same-origin`** | `?1` |
+
+`Sec-Fetch-User: ?1` on the script-issued click is the one thing this run
+**falsified**: a script `HTMLElement.click()` was expected to arrive without it,
+and it does not. It is recorded as measured. (A trusted click would need real
+input dispatch; that is a separate decision and is not what this does.)
+
+**What this does NOT establish.** Whether the header shape reduces blocking —
+zero blocks occurred, so the experiment had nothing to measure, exactly as with
+arm `C`. And the anchor contract is verified by a three-page live walk on one bar,
+not by a corpus: a pager that renders differently would degrade to `goto`, be
+counted as `click_no_anchor`, and show up in the `STAT` line rather than fail
+silently.
 
 ### Cross-session anchor: is the served list complete? (`served_vs_stored_diff.py`)
 
@@ -990,6 +1175,177 @@ being arbitrated at runtime.
 Note this still runs two processes against one SQLite file with no WAL and no
 `busy_timeout`. Keep an eye on the `.err` files for `database is locked`.
 
+## Unattended chain + out-of-band captcha watchdog
+
+`unattended_chain.sh` runs backfill and then enrich in **one** process tree with
+`captcha_watchdog.py` watching from outside. It exists for runs where nobody is at
+the keyboard to solve a challenge.
+
+```bash
+# both current mechanisms on, watchdog at 5s poll
+zsh scripts/ops/unattended_chain.sh
+
+# what would both legs do? (resolves both plans, launches no browser, no watchdog)
+DRY_RUN=1 zsh scripts/ops/unattended_chain.sh
+```
+
+Controls: `LIST_CLICK_PAGING` (**default 1 here**, unlike the driver), `DETAIL_REFERER`
+(**default 1**), `DAYS`, `MIN_DELAY`, `MAX_DELAY`, `POLL_SECONDS`, `STOCKS`. Exit code
+is **2** when the watchdog stopped the run, so "stopped by watchdog" is distinguishable
+from "chain failed on its own".
+
+### Why a separate process and not a thread
+
+It has to survive the thing it kills. A thread inside the driver dies with the
+driver, so it can never be the component that stops it. The watchdog never touches
+the browser; it reads artefacts the run writes anyway.
+
+### Why the drivers' own fail-closed is not enough
+
+They already stop on `stopped=True` / non-`SUCCESS`. But D-016 established that a
+challenge can exist **only in the rendered DOM** — a slider overlay drawn over a
+page whose embedded payload still parses — so the transport can report a normal
+success while the source is actively challenging us. `stopped=True` is the
+transport's *opinion of itself*; the watchdog does not consult it.
+
+### Signals it watches
+
+| # | Signal | Why it is evidence |
+|---|---|---|
+| a | `eastmoney-detail-enrichment.jsonl` rows after the baseline with `result=access_block`, non-empty `challenge_reasons`, or a `challenge_tier` | 137 production rows carry `result=access_block` — the signal demonstrably fires. Rows with `source_item_id == "1"` are **ignored** (unit-test fixture id; see D-020/D-022) |
+| b | `runtime/enrich-runs/<stock>.json` written during the run with `access_block_count > 0` or `stopped == True` | the driver's own verdict, per stock |
+| c | `runtime/logs/backfill-<stock>-<tag>.json` written during the run with `status != SUCCESS` | the backfill report carries **no** challenge field, so status is its only channel |
+| d | a new `runtime/diagnostics/*.png` | screenshots are **not** routine — the whole directory held 5 files, all from 2026-08-13, across hundreds of navigations |
+| e | `runtime/WATCHDOG_STOP` exists | also the manual abort switch: `touch` it to stop a run without hunting for a PID |
+
+Every uncertainty resolves to **stop**: an unreadable artefact, a malformed JSON
+row, or a report that will not parse is a trigger, not an exemption. Stopping a
+healthy run costs a re-run; continuing a challenged one costs the IP.
+
+### Calibrate before you trust it
+
+```bash
+python3 scripts/ops/captcha_watchdog_selftest.py
+```
+
+Ten controls against a **dummy chain** (never the real drivers, so calibrating
+costs zero requests): one negative per quiet path, and one positive per signal
+class, each asserting the dummy chain — **including its child** — is observably
+gone. The child assertion is the one that matters: killing only the parent
+orphans a browser that keeps talking to the source, which is what this watchdog
+exists to prevent.
+
+Two real defects were caught by these controls on first run, which is the argument
+for having them:
+
+1. the backfill-report check was written but **never called** from the polling loop,
+   so a non-`SUCCESS` backfill report did not stop the run at all;
+2. the parent-aliveness assertion probed a **zombie** (a `Popen` the harness never
+   reaped) and called it "alive", so a correct kill looked like a failure. The
+   harness now reaps through the handle — a zombie is not a running process.
+
+### First unattended run (2026-09-24, nobody at the keyboard)
+
+It hit a **real block** and stopped — which is the outcome the whole design was
+for. What happened, in order:
+
+1. backfill stock 1 of 16 (601012): page 1 (`f.html`) loaded and parsed 80 rows;
+   **page 2 (`f_2.html`) was access-blocked**. The transport waited for a visible
+   Chrome verification and polled the DOM every 5s, twice (2 × 180s = the 6m15s
+   run time), because nobody was there to clear it.
+2. the walk failed as `pagination_failure` → `status=PARTIAL_COLLECTION`,
+   `range_complete=False`. `pages=1` but `nav_click=1 / nav_goto=2`: the click did
+   turn a page, and the retry went by URL — both landed on the same blocked page.
+3. the backfill driver halted fail-closed (`HALT_ON_COLLECTION_FAILED`) instead of
+   grinding through the other 15 stocks. **Correct.**
+4. the watchdog saw the non-`SUCCESS` report and killed the chain ~4s in.
+5. **only 1 enrich request was made before the kill**, and it *succeeded*
+   (`result=success`, 2.4s) — the block was on the list surface, not the detail
+   surface, so arm C's detail fetch was unaffected. No stray browser was left.
+
+Row accounting: `posts` **+79** (exactly the `in_range=79` of the one page),
+`content` **+1**. `601012.covered_to` was **not** advanced, which is right —
+coverage only moves on a completed range.
+
+### Two bugs this run exposed in the wrapper (both fixed)
+
+Neither was reachable from the controls, because the controls test the watchdog
+and these were in `unattended_chain.sh`:
+
+1. **The halt guard never fired.** It grepped `HALT_ON_ACCESS_BLOCK`, which is the
+   **enrich** driver's marker and does not exist in the backfill driver at all, so
+   a halted backfill did **not** stop the enrich leg — the very thing the guard was
+   added for. It now greps `HALT_ON_|ALL_DONE_HALTED` over the whole (per-run) log.
+   The lesson is not "use the right string" but **enumerate every halt path from the
+   driver, do not grep a remembered subset**.
+2. **Terminating the watchdog raced its own result write.** The watchdog kills the
+   tree *first* and writes `runtime/watchdog-result.txt` *after*, so the wrapper's
+   immediate `kill -TERM` cut it off mid-write. The wrapper then reported
+   `CHAIN_FINISHED rc=143` when the watchdog had in fact fired (its own log recorded
+   the trigger, so the event was not lost — but the exit code lied). The wrapper now
+   gives the watchdog a bounded 20s window to finish before stopping it.
+
+Defence in depth is what limited the damage: the backfill driver's own fail-closed
+and the watchdog each independently stopped the run, so bug 1 cost one enrich
+request rather than a full 16-stock grind.
+
+### Second unattended run (2026-09-24, the other half of the scenario)
+
+The first run blocked inside the *backfill* walk. This one ran backfill clean and
+blocked in *enrich* — the leg where the report-based signal is blind, so it is the
+run that justified having a jsonl class at all.
+
+1. **backfill finished completely**: 16/16 `SUCCESS`, `ALL_DONE`, no halt. Every
+   report carries `list_click_paging: true` with `click=1–3 / goto=1`, and the
+   identity residual is 0 for all fifteen `existing_coverage_reached` stocks (the
+   one `backfill_range_complete` stock, 300487, has the expected 92). `posts`
+   **+511**, which the DB agrees on exactly and `DAYCOUNT` agrees on exactly; a
+   further 1850 rows were refreshed in place.
+2. **enrich**: 6 detail requests succeeded, the **7th** was `access_block` with
+   `challenge_tier=structural` and `list_page:`-prefixed reasons — the challenge was
+   on the **list page** (`DETAIL_REFERER=1` routes each detail through it), not on
+   the detail page.
+3. The driver entered its 180s wait-for-a-human loop; the watchdog fired on the
+   **jsonl** class 1.4s later and had the tree dead ~8s after the block, so the
+   180s window cost nothing and no further request was made.
+4. **`runtime/enrich-runs/601012.json` is 0 bytes** — killed mid-run, so no report
+   was ever written. Had the watchdog only watched reports, it would have stayed
+   silent for up to 180s.
+
+Row accounting for the partial enrich leg closes where it can: jsonl `+7`
+(6 `success` + 1 `access_block`) vs `posts` `content IS NOT NULL` **+6**. The third
+leg (report `content_filled`) is structurally unavailable, which is the finding,
+not a mismatch.
+
+Both wrapper fixes from the first run were confirmed live here: the halt guard did
+**not** false-trip on a clean backfill (enrich ran), and the grace window let the
+wrapper print `CHAIN_STOPPED_BY_WATCHDOG rc=143 wd_rc=2` instead of a bare
+`rc=143`.
+
+**Do not read `records_new` in a backfill report as a write count** — it is
+hardcoded `0` on this source (`integration.py:409`; only xueqiu counts inserts), so
+a 511-row insert reports `records_new: 0`. Use `posts.created_at` or `DAYCOUNT`.
+
+**Do not re-run this chain while a block is suspected.** The watchdog stops a
+challenged run; it does not tell you when the source has cooled down. The block has
+now moved surface between runs (backfill walk, then enrich list page), so
+`LIST_CLICK_PAGING` and `DETAIL_REFERER` are **both still untested** for whether
+they aggravate challenges — and they are no longer the leading suspects. The
+strongest candidate is that **this chain runs the two legs back to back**, which is
+exactly the pattern the repo already warns against ("do not open enrich immediately
+after a backfill — you will be rate-limited"). The backfill leg made 36 page loads
+in 2.5 minutes and finished clean; enrich started **65 seconds** later and was
+challenged on its 7th request. That ordering explains why the backfill leg — the one
+carrying the new paging scheme — was untouched, which a "new page-walk shape"
+hypothesis does not. **A cooldown between the legs is the measurement that is owed**,
+and until it exists `unattended_chain.sh` should be understood as "stops safely",
+not "runs indefinitely".
+
+### PID-reuse guard
+
+The watchdog exits **3** without killing anything if its `--root-pid` is already
+dead at start, so a recycled PID can never make it kill an unrelated process.
+
 ## Running
 
 ```bash
@@ -1010,6 +1366,18 @@ zsh scripts/ops/enrich_tail_worker.sh      # terminal 2, AFTER the driver
 # tail worker will refuse to start rather than race you.
 STOCKS="002648" zsh scripts/ops/enrich_all_stocks.sh
 
+# enrichment with the detail Referer scheme: open the bar LIST page first, then
+# navigate to the detail with JS, so the request carries a Referer AND looks like
+# a real in-page navigation (Sec-Fetch-Site: same-origin -- a forged referer=
+# cannot fake that). Costs one extra navigation per candidate. OFF by default.
+DETAIL_REFERER=1 zsh scripts/ops/enrich_all_stocks.sh
+
+# ... or directly on the CLI, for a bounded smoke run
+PYTHONPATH=src /opt/homebrew/anaconda3/bin/python -m myresearcher_collector.cli.main \
+  enrich-details --source eastmoney_guba --stock 601012 --data-dir data \
+  --acquisition-mode managed-chromium --confirm-live \
+  --challenge-wait 20 --challenge-retries 0 --detail-referer-from-list --limit 2
+
 # enrichment: what would the driver do? (publishes plan.txt, fetches nothing)
 DRY_RUN=1 zsh scripts/ops/enrich_all_stocks.sh
 
@@ -1018,6 +1386,18 @@ DRY_RUN=1 zsh scripts/ops/enrich_all_stocks.sh
 
 # collection: close the gap since the last run (DAYS=14 by default)
 zsh scripts/ops/backfill_all_stocks.sh
+
+# collection, turning pages after the first by clicking the page's own pager
+# anchor instead of navigating to f_<n>.html, so each page request is a
+# same-origin in-page navigation carrying a Referer. OFF by default; the per-stock
+# STAT line reports which navigation each page used (click / goto) either way.
+LIST_CLICK_PAGING=1 zsh scripts/ops/backfill_all_stocks.sh
+
+# ... or directly on the CLI, for a bounded smoke run (page 1 by URL, 2..3 clicked)
+PYTHONPATH=src /opt/homebrew/anaconda3/bin/python -m myresearcher_collector.cli.main \
+  backfill --source eastmoney_guba --stock 601012 --days 14 --data-dir data \
+  --list-only --start-page 1 --max-pages 3 --acquisition-mode managed-chromium \
+  --list-click-paging --challenge-wait 0 --confirm-live
 
 # block-detector self-test: 3 local file:// fixtures, zero network traffic.
 # Run this BEFORE trusting any "no captcha" claim from any tool.
