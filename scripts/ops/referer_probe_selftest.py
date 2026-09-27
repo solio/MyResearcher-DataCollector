@@ -30,6 +30,24 @@ PHASE 1 -- the block classifier (`file://` fixtures)
 F3 is the case v3 missed by construction; if F3 does not fire, v4 does not fix
 anything and this script fails.
 
+A SECOND, SYMMETRIC FAILURE (found 2026-09-23, one revision later)
+-----------------------------------------------------------------
+Fixing the blind spot created the opposite one. The first v4 detector treated a
+challenge *asset* in the DOM as a block, and `em_capt.js` is in the `<head>` of
+every page template (117/117 captured responses, 5/5 of them confirmed-normal
+detail pages), so it called **every page** blocked. F1 could not catch that,
+because F1 was a hand-written page that happened to omit the one tag every real
+page has: a negative control only controls for what it actually carries.
+
+Hence `expect_asset_tokens` below: every fixture must be *seen* to carry
+`em_capt.js`, and F1 must still be judged clean. The lesson generalises -- an
+instrument has to be checked in both directions, or you have simply moved the
+lie:
+
+    v3 detector : blind to a real block  -> reported "not blocked"
+    v4 detector : sees a block everywhere -> reported "blocked"
+    both        : the number was not a measurement
+
 PHASE 2 -- the wire reader (loopback `http.server`)
 
 Asserts what the three arms actually put on the wire, and in particular pins a
@@ -68,6 +86,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
+
+from myresearcher_collector.sources.eastmoney_guba.browser_transport import (  # noqa: E402
+    EastmoneyBrowserTransport,
+)
 
 
 def _load_probe():
@@ -115,17 +137,33 @@ OVERLAY_QUIET = """
 
 TEMPLATE = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>{title}</title></head>
+{asset}<title>{title}</title></head>
 <body>{body}{overlay}</body></html>
 """
 
+# The REAL page template carries this on every single response -- measured over
+# `data/raw/eastmoney_guba/*.body`: 117/117, including 5/5 confirmed-normal
+# detail pages. It is included in the clean fixture ON PURPOSE.
+#
+# Without it, F1 was a *synthetic* clean page, and a synthetic clean page is not
+# a clean page: the first revision of the detector fired `dom_asset:em_capt.js`
+# on this tag ALONE, so it called every real page blocked, and F1 -- the one
+# fixture whose job is to prove the detector stays quiet -- was the one thing
+# that could not see it. The negative control has to carry everything a real
+# clean page carries, or it is only testing the parts I remembered.
+CHALLENGE_ASSET_TAG = (
+    '<script type="text/javascript" '
+    'src="//cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"></script>'
+)
+
 FIXTURES = [
     {
-        "name": "F1 真页面（负对照）",
+        "name": "F1 真页面（负对照，带真实模板的 em_capt.js）",
         "title": "昨晚美股光伏板块又放大量暴涨3%!逢低买",
         "overlay": "",
         "expect_blocked": False,
         "expect_text_tokens": [],
+        "expect_asset_tokens": ["em_capt.js"],
     },
     {
         "name": "F2 浮层（类名含 captcha + 滑块文字）",
@@ -133,6 +171,7 @@ FIXTURES = [
         "overlay": OVERLAY_LOUD,
         "expect_blocked": True,
         "expect_text_tokens": ["滑块", "拼图"],
+        "expect_asset_tokens": ["em_capt.js"],
     },
     {
         "name": "F3 浮层（类名无关，只有可见文字）",
@@ -140,6 +179,7 @@ FIXTURES = [
         "overlay": OVERLAY_QUIET,
         "expect_blocked": True,
         "expect_text_tokens": ["滑块", "拼图"],
+        "expect_asset_tokens": ["em_capt.js"],
     },
 ]
 
@@ -182,59 +222,72 @@ def wire_header_phase(browser) -> tuple[list[dict], list[str]]:
 
     context = browser.new_context()
     page = context.new_page()
-    captured: dict[str, list[dict]] = {}
-    current = {"arm": "A"}
+    captured: list[dict] = []
+    tag = {"arm": "A"}
 
     def on_request(request):
         if request.url != detail:
             return
-        entry = {"arm": current["arm"]}
+        # The row is NOT labelled from `tag` if that can be avoided: Playwright
+        # delivers events when it next pumps, which is not guaranteed to be
+        # inside the `goto` that caused them, so a handler can run after `tag`
+        # has already moved on and file arm A's request under B. That is exactly
+        # how arm A went missing. Order is reliable; the tag is only evidence.
+        entry = {"tagged_arm_at_delivery": tag["arm"]}
         try:
             allh = request.all_headers()
             entry.update({k: allh.get(k) for k in
                           ("referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-user")})
+            # The reader trap: `request.headers` cannot see `sec-fetch-*`.
+            entry["headers_sees_sfc"] = "sec-fetch-site" in request.headers
         except Exception as exc:  # noqa: BLE001
-            entry["all_headers_error"] = str(exc)[:60]
-        entry["headers_sees_sfc"] = "sec-fetch-site" in request.headers
-        captured.setdefault(current["arm"], []).append(entry)
+            entry["capture_error"] = f"{type(exc).__name__}: {exc}"[:120]
+        captured.append(entry)
 
     page.on("request", on_request)
+    page.goto("about:blank")
 
-    current["arm"] = "A"
+    tag["arm"] = "A"
     page.goto(detail, wait_until="domcontentloaded", timeout=15000)
-    current["arm"] = "B"
+    tag["arm"] = "B"
     page.goto(detail, wait_until="domcontentloaded", timeout=15000, referer=lst)
-    current["arm"] = "C"
+    tag["arm"] = "C"
     page.goto(lst, wait_until="domcontentloaded", timeout=15000)
     page.evaluate("u => { location.href = u; }", detail)
     page.wait_for_url(lambda url: str(url) == detail, wait_until="domcontentloaded", timeout=15000)
     context.close()
     server.shutdown()
 
+    # Verdict by POSITION, never by the tag: A, B, C in that order, one request
+    # to `detail` each. Both the count and the sequence are asserted, so a
+    # dropped or mislabelled row fails loudly instead of silently shrinking the
+    # control to two rows.
+    expected = [
+        ("A", {"referer": None, "sec-fetch-site": "none"}),
+        ("B", {"referer": lst, "sec-fetch-site": "none"}),
+        ("C", {"referer": lst, "sec-fetch-site": "same-origin"}),
+    ]
     failures: list[str] = []
+    if len(captured) != len(expected):
+        failures.append(
+            f"抓到 {len(captured)} 个对 {detail} 的请求，期望 {len(expected)} 个"
+            f"（顺序 A/B/C）—— 控制组少了行比测试失败更危险"
+        )
     rows: list[dict] = []
-    expect = {
-        "A": {"referer": None, "sfcs": "none"},
-        "B": {"referer": lst, "sfcs": "none"},
-        "C": {"referer": lst, "sfcs": "same-origin"},
-    }
-    for arm in ("A", "B", "C"):
-        entries = captured.get(arm) or []
-        if not entries:
-            failures.append(f"arm {arm}: 一个请求头都没抓到")
+    for index, (arm, want) in enumerate(expected):
+        if index >= len(captured):
             continue
-        entry = entries[-1]
+        entry = captured[index]
         rows.append({"arm": arm, **entry})
         print(f"\n--- arm {arm} ---")
         print(f"  referer={entry.get('referer')!r}  sec-fetch-site={entry.get('sec-fetch-site')!r}"
               f"  mode={entry.get('sec-fetch-mode')!r}  user={entry.get('sec-fetch-user')!r}")
-        expected = expect[arm]
-        if entry.get("referer") != expected["referer"]:
-            failures.append(
-                f"arm {arm}: referer={entry.get('referer')!r}, 期望 {expected['referer']!r}")
-        if entry.get("sec-fetch-site") != expected["sfcs"]:
-            failures.append(
-                f"arm {arm}: sec-fetch-site={entry.get('sec-fetch-site')!r}, 期望 {expected['sfcs']!r}")
+        if entry.get("capture_error"):
+            failures.append(f"arm {arm}: 抓取时报错 {entry['capture_error']}")
+        for key, value in want.items():
+            if entry.get(key) != value:
+                failures.append(
+                    f"arm {arm}: {key}={entry.get(key)!r}, 期望 {value!r}")
         if entry.get("headers_sees_sfc"):
             failures.append(
                 f"arm {arm}: request.headers 竟然能看见 sec-fetch-site —— "
@@ -268,7 +321,8 @@ def main() -> int:
             html_path = tmp / f"f{index}.html"
             html_path.write_text(
                 TEMPLATE.format(title=fixture["title"], body=REAL_BODY,
-                                overlay=fixture["overlay"]),
+                                overlay=fixture["overlay"],
+                                asset=CHALLENGE_ASSET_TAG),
                 encoding="utf-8",
             )
             page.goto(html_path.as_uri(), wait_until="domcontentloaded", timeout=15000)
@@ -279,13 +333,22 @@ def main() -> int:
 
             blocked, reasons = PROBE.classify(html, dom)
             content_ok, why = PROBE.judge_content(html)
+            # The class the COLLECTOR actually uses must reach the same verdict.
+            # Asserting only on `PROBE.classify` would validate a copy; importing
+            # the detector into the package and testing the real class is what
+            # makes "the collector can see the overlay" a checked claim.
+            transport_reasons = EastmoneyBrowserTransport(page).challenge_reasons()
+            transport_blocked = bool(transport_reasons)
 
             row = {
                 "fixture": fixture["name"],
                 "expected_blocked": fixture["expect_blocked"],
                 "blocked": blocked,
                 "block_reasons": reasons,
+                "transport_blocked": transport_blocked,
+                "transport_challenge_reasons": transport_reasons,
                 "text_tokens": dom.get("text_tokens"),
+                "structural_tokens": dom.get("structural_tokens"),
                 "visible_overlays": dom.get("visible_overlays"),
                 "content_ok": content_ok,
                 "why_not": why,
@@ -299,14 +362,30 @@ def main() -> int:
             print(f"  blocked={blocked}  期望={fixture['expect_blocked']}")
             print(f"  block_reasons={reasons}")
             print(f"  text_tokens={dom.get('text_tokens')}  visible_overlays={dom.get('visible_overlays')}")
+            print(f"  structural_tokens={dom.get('structural_tokens')}")
             print(f"  content_ok={content_ok}  why_not={why}")
+            print(f"  transport.challenge_reasons()={transport_reasons}")
             print(f"  截图 {row['screenshot_bytes']} bytes")
 
             if blocked != fixture["expect_blocked"]:
                 failures.append(f"{fixture['name']}: blocked={blocked}, 期望 {fixture['expect_blocked']}")
+            if transport_blocked != fixture["expect_blocked"]:
+                failures.append(
+                    f"{fixture['name']}: collector 用的 EastmoneyBrowserTransport "
+                    f"判定 blocked={transport_blocked}, 期望 {fixture['expect_blocked']} "
+                    f"(reasons={transport_reasons})"
+                )
             for token in fixture["expect_text_tokens"]:
                 if token not in (dom.get("text_tokens") or []):
                     failures.append(f"{fixture['name']}: 可见文字标记里缺 {token}")
+            # The asset must be ON the page in every fixture -- that is the whole
+            # point of the negative control. If it stops appearing here the test
+            # has stopped covering the false positive it was written for.
+            for token in fixture.get("expect_asset_tokens") or []:
+                if token not in (dom.get("structural_tokens") or []):
+                    failures.append(
+                        f"{fixture['name']}: 页面里没有 {token}，负对照不再覆盖「资产令牌满地都是」这个事实"
+                    )
             if row["screenshot_bytes"] < 1000:
                 failures.append(f"{fixture['name']}: 截图疑似为空 ({row['screenshot_bytes']} bytes)")
             # Every fixture carries a well-formed post_article, so the content
@@ -330,7 +409,9 @@ def main() -> int:
 
     print("\n=== 断言 ===")
     print("  第一段前提：三档 fixture 都带合法 post_article，所以 content_ok 必须全为 True；")
-    print("  而 F2/F3 必须 blocked=True。两者同时成立即证明内容检查不能替代封锁检查。")
+    print("             三档 fixture 都带真实模板的 em_capt.js，所以 F1 必须仍然 blocked=False；")
+    print("  而 F2/F3 必须 blocked=True。两者同时成立即证明内容检查不能替代封锁检查，")
+    print("  也证明「资产令牌在手 = 被拦」是错的（它会拦掉全部正常页）。")
     print("  第二段前提：三臂发出的 referer / sec-fetch-site 必须分别符合上表。")
     if failures:
         for f in failures:
@@ -340,6 +421,8 @@ def main() -> int:
         print("  全部通过：")
         print("    第一段 F1 不响、F2/F3 都响，且 F2/F3 上内容检查仍然成功")
         print("      -> 「内容能解析」不能当作「没被拦」，可见文字能发现浮层。")
+        print("    且三档都携带 em_capt.js 而 F1 仍不响")
+        print("      -> 资产令牌是罗列项，不是判据；只有标题/可见浮层能起判。")
         print("    第二段 A 无 referer；B/C 都带 referer，但只有 C 是 same-origin")
         print("      -> 「用 referer 头伪造」和「真的点进去」不是一回事。")
 

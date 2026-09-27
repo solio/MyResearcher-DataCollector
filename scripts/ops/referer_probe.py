@@ -61,6 +61,23 @@ WHAT IS MEASURED OFF THE WIRE
                         both show a Referer.
   * HTTP status      -- 200 vs a redirect into the challenge
   * `content_ok`     -- decided by the REAL parser (`parse_detail_page`)
+  * `detector_sha256`-- which revision of the detector judged this row
+
+THE ASSET TRAP, AND WHY EVERY ROW NOW CARRIES A DETECTOR HASH
+-------------------------------------------------------------
+The first v4 detector reported blocked whenever a challenge *token* appeared in
+the DOM, and `em_capt.js` is in the `<head>` of every page template -- measured
+117/117 captured bodies, including 5/5 confirmed-normal detail pages. It
+therefore called every page blocked. `parser.is_access_block_page` never had
+this bug because it requires a challenge `<title>` **and** a marker; the DOM
+detector now mirrors that conjunction, and the asset is corroboration only.
+
+This probe was also complicit in a second, quieter way: its 09:48Z record stored
+`block_reasons` but neither the tokens it saw nor the detector that saw them,
+and `challenge_dom.py` was edited nine minutes after the run. Reading that record
+later as evidence about normal pages would have been reading it against a
+detector that no longer existed. Hence `structural_tokens` / `text_tokens` in the
+record and `detector_sha256` on every row.
 
 v1-v2 RESULTS, WITH THEIR OWN CAVEAT NOW ATTACHED
 -------------------------------------------------
@@ -88,6 +105,7 @@ Read-only: fetches, never writes to the database.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import re
@@ -100,6 +118,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "src"))
 
+from myresearcher_collector.sources.eastmoney_guba.challenge_dom import (  # noqa: E402
+    DOM_CHALLENGE_JS as DOM_PROBE_JS,
+    challenge_reasons as dom_challenge_reasons,
+)
 from myresearcher_collector.sources.eastmoney_guba.parser import (  # noqa: E402
     GubaParseError,
     is_access_block_page,
@@ -117,47 +139,10 @@ LABEL = {
 SHOTS = REPO / "runtime/referer-probe-shots"
 LAST_RUN = REPO / "runtime/referer-probe.json"
 
-# Visible-text tokens. `滑块`/`拼图` are the 2026-08-13 overlay's own words and
-# are absent from parser._ACCESS_MARKERS, which is why that set missed it.
-TEXT_TOKENS = (
-    "验证码", "身份核实", "人机验证", "安全验证", "访问验证",
-    "滑块", "拼图", "请拖动", "请完成", "验证错误",
-)
-ATTR_TOKENS = (
-    "emcaptcha", "captcha", "fd_guba_validate", "validate.js", "em_capt.js",
-    "geetest", "nc_1_n1z", "slider",
-)
-
-DOM_PROBE_JS = """
-() => {
-  const text = (document.body ? document.body.innerText : '') || '';
-  const html = document.documentElement ? document.documentElement.outerHTML : '';
-  const hay = (location.href + '\\n' + document.title + '\\n' + text).toLowerCase();
-  const attrHay = (location.href + '\\n' + html).toLowerCase();
-  const textTokens = %s.filter(t => hay.includes(t.toLowerCase()));
-  const attrTokens = %s.filter(t => attrHay.includes(t.toLowerCase()));
-  const selectors = ['#emcaptcha', '[id*=captcha]', '[class*=captcha]',
-                     '[class*=verify]', 'iframe[src*=captcha]', '.geetest_panel',
-                     '.nc-container', '[class*=slider]'];
-  const visible = [];
-  for (const sel of selectors) {
-    for (const el of document.querySelectorAll(sel)) {
-      const r = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      if (r.width > 0 && r.height > 0 && style.visibility !== 'hidden' &&
-          style.display !== 'none' && style.opacity !== '0') {
-        visible.push(sel);
-        break;
-      }
-    }
-  }
-  return {url: location.href, title: document.title, ready: document.readyState,
-          text_tokens: textTokens, attr_tokens: attrTokens,
-          visible_overlays: visible, visible_text_len: text.length,
-          visible_text_head: text.replace(/\\s+/g, ' ').trim().slice(0, 160)};
-}
-""" % (json.dumps(list(TEXT_TOKENS), ensure_ascii=False),
-       json.dumps(list(ATTR_TOKENS), ensure_ascii=False))
+# The detector itself lives in the package, NOT here: this probe and the
+# collector must run the same code, or the self-test would only be validating a
+# copy. `滑块`/`拼图` are the 2026-08-13 overlay's own words and are absent from
+# parser._ACCESS_MARKERS, which is why that set missed it.
 
 
 def bar_of(detail_url: str) -> str | None:
@@ -196,6 +181,25 @@ def cooldown_remaining(minutes: float) -> float:
     return max(0.0, minutes * 60 - age)
 
 
+def detector_revision() -> dict:
+    """Identify the detector that produced a record, inside the record.
+
+    The 09:48Z run reported `block_reasons=[]` on six clean pages, which was
+    later read as "normal pages carry no challenge asset". That reading was
+    invalid: `challenge_dom.py` was edited nine minutes AFTER the run, so the
+    record described a detector revision that no longer existed and nobody could
+    tell. Any measurement of an instrument has to carry the instrument's
+    identity, or an unrelated edit silently rewrites history.
+    """
+    path = REPO / "src/myresearcher_collector/sources/eastmoney_guba/challenge_dom.py"
+    return {
+        "detector_sha256": hashlib.sha256(path.read_bytes()).hexdigest()[:12],
+        "detector_mtime": time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.localtime(path.stat().st_mtime)
+        ),
+    }
+
+
 def judge_content(html: str) -> tuple[bool, str | None]:
     if is_access_block_page(html or ""):
         return False, "access_block(asset signature)"
@@ -207,17 +211,17 @@ def judge_content(html: str) -> tuple[bool, str | None]:
 
 
 def classify(html: str, dom: dict) -> tuple[bool, list[str]]:
-    """Blocked if ANY independent signal fires. Reports which ones did."""
+    """Blocked if ANY independent signal fires. Reports which ones did.
+
+    Combines the production oracle (`is_access_block_page`, an asset signature
+    over the response bytes) with the live-DOM detector shared with the
+    collector. Neither alone is sufficient: the first cannot see a client-side
+    overlay, and the second cannot see a shell served without a live page.
+    """
     reasons: list[str] = []
     if is_access_block_page(html or ""):
         reasons.append("is_access_block_page")
-    if dom.get("text_tokens"):
-        reasons.append("visible_text:" + ",".join(dom["text_tokens"]))
-    if dom.get("visible_overlays"):
-        reasons.append("visible_dom:" + ",".join(dom["visible_overlays"]))
-    title = str(dom.get("title") or "")
-    if any(token in title for token in ("身份核实", "验证", "人机验证")):
-        reasons.append("title:" + title[:24])
+    reasons.extend(dom_challenge_reasons(dom))
     return bool(reasons), reasons
 
 
@@ -410,11 +414,13 @@ def main() -> int:
 
     profile = args.profile or tempfile.mkdtemp(prefix="referer-probe-")
     stop_on_block = not args.no_stop_on_block
+    revision = detector_revision()
     print(
         f"profile={profile}\nurls={len(targets)} arms={','.join(arms)} "
         f"headful={args.headful} delay={args.min_delay}-{args.max_delay}s "
         f"stop_on_block={stop_on_block}"
     )
+    print(f"detector={revision['detector_sha256']} ({revision['detector_mtime']})")
 
     from playwright.sync_api import sync_playwright
 
@@ -452,10 +458,13 @@ def main() -> int:
                     "bytes": len(html or ""),
                     "page_title": dom.get("title"),
                     "visible_overlays": dom.get("visible_overlays"),
+                    "structural_tokens": dom.get("structural_tokens"),
+                    "text_tokens": dom.get("text_tokens"),
                     "visible_text_head": dom.get("visible_text_head"),
                     "screenshot": str(shot.relative_to(REPO)),
                     "screenshot_ok": shot.exists(),
                     "elapsed_s": elapsed,
+                    **detector_revision(),
                     **diag,
                 })
 
