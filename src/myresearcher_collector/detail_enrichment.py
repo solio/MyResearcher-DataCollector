@@ -364,7 +364,14 @@ def execute_detail_enrichment(
     max_delay: float = 10.0,
     challenge_wait_seconds: float = 180.0,
     challenge_retries: int = 3,
-    log_path: str | Path | None = None,
+    # Required, deliberately, and keyword-only. The run log is an append-only
+    # production ledger (`runtime/logs/eastmoney-detail-enrichment.jsonl`); a
+    # silent default pointed at that file meant every caller that omitted it --
+    # including the unit tests -- appended into the real ledger. Measured
+    # 2026-09-23: one full `pytest` run grew the production log by 13 rows.
+    # Making the argument mandatory turns "I forgot" into a TypeError at the call
+    # site instead of quiet contamination of a file used to audit the source.
+    log_path: str | Path,
     limit: int | None = None,
     include_short_titles: bool = False,
     acquisition_mode: str = "existing-chrome",
@@ -420,11 +427,7 @@ def execute_detail_enrichment(
     requested = len(candidates)
     run_id = uuid.uuid4().hex
     scope_key = f"stock:{stock_code}"
-    log_file = (
-        Path(log_path)
-        if log_path is not None
-        else Path("runtime/logs/eastmoney-detail-enrichment.jsonl")
-    )
+    log_file = Path(log_path)
     log_file.parent.mkdir(parents=True, exist_ok=True)
     seq = 0
     access_blocks = 0

@@ -3,6 +3,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from myresearcher_collector.detail_enrichment import execute_detail_enrichment
 from myresearcher_collector.models import GubaSourceItem
 from myresearcher_collector.simple_store import SimplePostStore
@@ -17,6 +19,19 @@ NOW = datetime(2026, 8, 11, tzinfo=timezone.utc)
 PUBLISHED = datetime(2026, 8, 1, 2, tzinfo=timezone.utc)
 TRUNCATED_TITLE = "截" * 40
 DETAIL_URL = "https://guba.eastmoney.com/news,601012,1754555652.html"
+
+
+def _enrich(tmp_path, **kwargs):
+    """Run the enrichment entry point with a test-private run log.
+
+    `log_path` is required by the entry point because the run log is an
+    append-only production ledger. Every test must therefore hand over its own
+    file: omitting it used to fall back to
+    `runtime/logs/eastmoney-detail-enrichment.jsonl` and appended synthetic rows
+    into the real ledger (measured 2026-09-23: +13 rows per full `pytest` run).
+    """
+    kwargs.setdefault("log_path", tmp_path / "enrichment.jsonl")
+    return execute_detail_enrichment(**kwargs)
 
 
 def _detail(item_id="1"):
@@ -111,7 +126,7 @@ def test_enrichment_updates_same_row_and_skips_non_candidates(tmp_path):
     store=SimplePostStore(tmp_path/"collector.db")
     store.upsert_post(source="eastmoney_guba",source_item_id="1",stock_code="601012",title="x"*40,content=None,author_id="u",author_name="n",published_at="2026-08-01T02:00:00.000000Z",url="https://guba.eastmoney.com/news,601012,1.html",read_count=0,reply_count=0,like_count=0,forward_count=0)
     store.close()
-    report=execute_detail_enrichment(db_path=tmp_path/"collector.db",stock_code="601012",transport=T(),sleep_fn=lambda _:None)
+    report=_enrich(tmp_path, db_path=tmp_path/"collector.db",stock_code="601012",transport=T(),sleep_fn=lambda _:None)
     assert report["success"]==1 and report["candidates_remaining"]==0
     reopened=SimplePostStore(tmp_path/"collector.db")
     assert reopened.count("eastmoney_guba","601012")==1
@@ -124,7 +139,7 @@ def test_enrichment_waits_for_manual_challenge_then_retries(tmp_path):
     _ = _post = store.upsert_post(source="eastmoney_guba",source_item_id="1",stock_code="601012",title="x"*40,content=None,author_id="u",author_name="n",published_at="2026-08-01T02:00:00.000000Z",url="https://guba.eastmoney.com/news,601012,1.html",read_count=0,reply_count=0,like_count=0,forward_count=0)
     store.close()
     waits=[]
-    report=execute_detail_enrichment(db_path=tmp_path/"collector.db",stock_code="601012",transport=BlockThenPass(),sleep_fn=waits.append,challenge_wait_seconds=7,challenge_retries=1)
+    report=_enrich(tmp_path, db_path=tmp_path/"collector.db",stock_code="601012",transport=BlockThenPass(),sleep_fn=waits.append,challenge_wait_seconds=7,challenge_retries=1)
     assert report["success"] == 1
     assert waits and waits[0] <= 5
 
@@ -133,7 +148,7 @@ def test_canonical_40_title_appends_detail_version_with_raw_lineage(tmp_path):
     first_observation_id = _seed_canonical_list_observation(tmp_path)
     transport = FixtureTransport("detail_enrichment_40_success.html")
 
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=transport, sleep_fn=lambda _: None,
         clock=lambda: NOW,
@@ -191,7 +206,7 @@ def test_canonical_40_title_failure_keeps_list_observation_and_records_reason(tm
     _seed_canonical_list_observation(tmp_path)
     transport = FixtureTransport("detail_enrichment_failure.html")
 
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=transport, sleep_fn=lambda _: None,
         clock=lambda: NOW,
@@ -232,7 +247,7 @@ def test_canonical_short_title_does_not_request_detail_by_default(tmp_path):
     _seed_canonical_list_observation(tmp_path, title="短标题")
     transport = FixtureTransport("detail_enrichment_40_success.html")
 
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=transport, sleep_fn=lambda _: None,
         clock=lambda: NOW,
@@ -258,7 +273,7 @@ def test_canonical_short_title_can_be_explicitly_enriched(tmp_path):
     _seed_canonical_list_observation(tmp_path, title="短标题")
     transport = FixtureTransport("detail_enrichment_40_success.html")
 
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=transport, sleep_fn=lambda _: None,
         clock=lambda: NOW, include_short_titles=True,
@@ -286,7 +301,7 @@ def test_canonical_404_is_marked_skipped_without_touching_frozen_schema(tmp_path
     _seed_canonical_list_observation(tmp_path)
     transport = FixtureTransport("detail_enrichment_404.html")
 
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=transport, sleep_fn=lambda _: None,
         clock=lambda: NOW,
@@ -326,7 +341,7 @@ def test_canonical_404_is_marked_skipped_without_touching_frozen_schema(tmp_path
 def test_canonical_404_is_not_refetched_on_second_run(tmp_path):
     _seed_canonical_list_observation(tmp_path)
     first = FixtureTransport("detail_enrichment_404.html")
-    execute_detail_enrichment(
+    _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=first, sleep_fn=lambda _: None,
         clock=lambda: NOW,
@@ -334,7 +349,7 @@ def test_canonical_404_is_not_refetched_on_second_run(tmp_path):
     assert len(first.calls) == 1
 
     second = FixtureTransport("detail_enrichment_404.html")
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", raw_data_dir=tmp_path,
         stock_code="601012", transport=second, sleep_fn=lambda _: None,
         clock=lambda: NOW,
@@ -357,7 +372,7 @@ def test_legacy_404_is_marked_skipped_and_not_refetched(tmp_path):
     store.close()
 
     first = FixtureTransport("detail_enrichment_404.html")
-    report = execute_detail_enrichment(
+    report = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", stock_code="601012",
         transport=first, sleep_fn=lambda _: None, clock=lambda: NOW,
     )
@@ -366,7 +381,7 @@ def test_legacy_404_is_marked_skipped_and_not_refetched(tmp_path):
     assert len(first.calls) == 1
 
     second = FixtureTransport("detail_enrichment_404.html")
-    report2 = execute_detail_enrichment(
+    report2 = _enrich(tmp_path,
         db_path=tmp_path / "collector.db", stock_code="601012",
         transport=second, sleep_fn=lambda _: None, clock=lambda: NOW,
     )
@@ -379,3 +394,89 @@ def test_legacy_404_is_marked_skipped_and_not_refetched(tmp_path):
         assert reopened.rows("eastmoney_guba", "601012")[0]["content"] is None
     finally:
         reopened.close()
+
+
+class _OverlayBlocked:
+    """A valid detail body whose only challenge evidence is in the live DOM.
+
+    This is the 2026-08-13 shape: the response bytes parse cleanly and
+    `is_access_block_page` returns False, while the rendered page carries a
+    slider overlay. Before the live-DOM signal existed this was recorded as a
+    plain success, so the run never failed closed.
+    """
+
+    def __init__(self, *, report_dom: bool = True):
+        self.calls = 0
+        self.report_dom = report_dom
+
+    def get(self, url, *, timeout):
+        self.calls += 1
+        return AcquiredDocument(
+            _detail(), url, url, BROWSER_DOM_SNAPSHOT,
+            datetime.now(timezone.utc), None, None, {},
+        )
+
+    def challenge_reasons(self):
+        if not self.report_dom:
+            return []
+        return ["visible_text:滑块", "visible_text:拼图"]
+
+
+def _seed_legacy_row(tmp_path):
+    store = SimplePostStore(tmp_path / "collector.db")
+    store.upsert_post(
+        source="eastmoney_guba", source_item_id="1", stock_code="601012",
+        title="x" * 40, content=None, author_id="u", author_name="n",
+        published_at="2026-08-01T02:00:00.000000Z",
+        url="https://guba.eastmoney.com/news,601012,1.html",
+        read_count=0, reply_count=0, like_count=0, forward_count=0,
+    )
+    store.close()
+
+
+def test_live_dom_overlay_is_treated_as_an_access_block(tmp_path):
+    _seed_legacy_row(tmp_path)
+    transport = _OverlayBlocked()
+    report = _enrich(tmp_path,
+        db_path=tmp_path / "collector.db", stock_code="601012",
+        transport=transport, challenge_wait_seconds=0, challenge_retries=0,
+    )
+    assert transport.calls == 1
+    assert report["success"] == 0
+    assert report["stopped"] is True
+    assert report["access_block_count"] >= 1
+    assert report["content_filled"] == 0
+
+
+def test_the_same_body_without_the_dom_signal_is_a_success(tmp_path):
+    """The control: identical bytes, no live-DOM probe.
+
+    Without the probe the run cannot tell an overlay apart from a clean page, so
+    it reports success -- which is the behaviour the new signal replaces.
+    """
+    _seed_legacy_row(tmp_path)
+    transport = _OverlayBlocked(report_dom=False)
+    report = _enrich(tmp_path,
+        db_path=tmp_path / "collector.db", stock_code="601012",
+        transport=transport, challenge_wait_seconds=0, challenge_retries=0,
+    )
+    assert report["success"] == 1
+    assert report["stopped"] is False
+    assert report["content_filled"] == 1
+
+
+def test_run_log_path_is_required_so_a_caller_cannot_hit_the_production_ledger(tmp_path):
+    """The run log is a production ledger; a default would be a silent trap.
+
+    Negative control for the fix: before `log_path` became mandatory this call
+    succeeded and appended into
+    `runtime/logs/eastmoney-detail-enrichment.jsonl`. Asserting `TypeError` here
+    fails the moment someone reintroduces a default, which is the only way this
+    can regress without any test output changing.
+    """
+    _seed_legacy_row(tmp_path)
+    with pytest.raises(TypeError) as excinfo:
+        execute_detail_enrichment(
+            db_path=tmp_path / "collector.db", stock_code="601012", transport=T()
+        )
+    assert "log_path" in str(excinfo.value)
