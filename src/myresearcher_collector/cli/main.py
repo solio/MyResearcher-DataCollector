@@ -56,6 +56,9 @@ from myresearcher_collector.sources.eastmoney_guba.browser_host import (
     serve_browser_host,
 )
 from myresearcher_collector.sources.eastmoney_guba.collector import Transport
+from myresearcher_collector.sources.eastmoney_guba.list_paging import (
+    navigation_report,
+)
 from myresearcher_collector.sources.xueqiu import (
     CollectorConfig as XueqiuCollectorConfig,
     DEFAULT_XUEQIU_CDP_PORT,
@@ -158,6 +161,10 @@ def _browser_socket_transport(args: argparse.Namespace) -> Transport:
         return create_eastmoney_transport(
             mode, profile_dir=getattr(args, "profile_dir", None),
             browser_socket=getattr(args, "browser_socket", None),
+            detail_referer_from_list=bool(
+                getattr(args, "detail_referer_from_list", False)
+            ),
+            list_click_paging=bool(getattr(args, "list_click_paging", False)),
         )
     method = getattr(args, "acquisition_method", None) or "browser-socket"
     if method == "existing-chrome-dom":
@@ -309,6 +316,17 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument("--max-interval", type=float, default=10.0)
     backfill.add_argument("--challenge-wait", type=float, default=180.0,
                          help="seconds to leave Chrome open for manual verification after an access block")
+    backfill.add_argument(
+        "--list-click-paging",
+        action="store_true",
+        help=(
+            "open list page 1 by URL and turn every later page by clicking the "
+            "page's own pager anchor, so each page request is a same-origin "
+            "in-page navigation carrying a Referer. OFF by default; "
+            "managed-chromium only. Falls back to a URL navigation (counted in "
+            "the report) when no pager anchor points at the page asked for"
+        ),
+    )
     _add_browser_socket_argument(backfill)
     _add_eastmoney_acquisition_argument(backfill)
     backfill.add_argument(
@@ -341,6 +359,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enrich.add_argument("--profile-dir", type=Path, default=None)
     enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean", "managed-chromium"), default="existing-chrome")
+    enrich.add_argument(
+        "--detail-referer-from-list",
+        action="store_true",
+        help=(
+            "reach each detail by first opening its bar list page and then "
+            "navigating in-page with JS, so the detail request carries a Referer "
+            "and Sec-Fetch-Site: same-origin. OFF by default: it doubles the "
+            "navigations per detail"
+        ),
+    )
     enrich_mode = enrich.add_mutually_exclusive_group(required=True)
     enrich_mode.add_argument("--plan-only", action="store_true")
     enrich_mode.add_argument("--confirm-live", action="store_true")
@@ -731,6 +759,10 @@ def execute_backfill_cli(
             transport, challenge_wait_seconds=args.challenge_wait,
             prompt=lambda message: print(message, file=sys.stderr, flush=True),
         )
+    # Read the paging scheme BEFORE the transport is closed: the delegate that
+    # holds the counters (and the sampled request headers) is dropped by close().
+    list_click_paging = bool(getattr(transport, "list_click_paging", False))
+    list_navigation: dict[str, object] = navigation_report(None)
     try:
         execution = execute_and_persist_simple_backfill_collection(
             db_path=data_dir / "collector.db",
@@ -746,6 +778,10 @@ def execute_backfill_cli(
             max_pages=args.max_pages,
             enable_time_seek=True,
             run_started_at=run_started_at,
+        )
+        list_navigation = navigation_report(
+            getattr(transport, "list_navigation_counts", None),
+            getattr(transport, "list_navigation_samples", None),
         )
     finally:
         close = getattr(transport, "close", None)
@@ -763,6 +799,13 @@ def execute_backfill_cli(
         "requested_range_truncated_at_run_start": effective.to_time < requested.to_time,
         "acquisition_method": getattr(args, "acquisition_mode", None) or getattr(args, "acquisition_method", "browser-socket"),
         "collection_mode": "list-only",
+        # Which navigation each list page actually used, and the request headers
+        # that came out of it. Present whether or not the scheme was requested, so
+        # `list_click_paging: false` with `click: 0` is itself a readable negative
+        # control: the instrument can see the difference, therefore `click > 0`
+        # in a flagged run is a measurement rather than an assumption.
+        "list_click_paging": list_click_paging,
+        "list_navigation": list_navigation,
         "resume_from_page": execution.start_page,
         "status": result.status.value, "stop_reason": result.stop_reason,
         "pages_scanned": stats.pages_scanned,
@@ -937,7 +980,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mode = args.acquisition_mode
             profile = args.profile_dir
-            transport = create_eastmoney_transport(mode, profile_dir=profile)
+            transport = create_eastmoney_transport(
+                mode,
+                profile_dir=profile,
+                detail_referer_from_list=args.detail_referer_from_list,
+            )
             resolved_profile = getattr(transport, "profile_dir", None)
             report = execute_detail_enrichment(
                 db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,

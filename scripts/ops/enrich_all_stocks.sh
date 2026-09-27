@@ -76,6 +76,14 @@ SPLIT=${SPLIT:-0}
 # scripts/ops/README.md.
 MIN_DELAY=${MIN_DELAY:-3.0}
 MAX_DELAY=${MAX_DELAY:-10.0}
+# DETAIL_REFERER=1 reaches each detail by first opening that bar's list page and
+# then navigating in-page with JS, so the detail request carries a Referer and
+# Sec-Fetch-Site: same-origin (a plain `goto(referer=...)` would carry the header
+# but no initiator, i.e. Sec-Fetch-Site: none -- measured, see README
+# "referer_probe.py"). It DOUBLES the navigations per detail, so it is a switch
+# rather than a default, and it is echoed on the RUN_START line so a report can
+# always be traced back to the mode that produced it.
+DETAIL_REFERER=${DETAIL_REFERER:-0}
 PLAN_FILE="$RUNLOG_DIR/plan.txt"
 
 # NOTE: must be a function, not `PLAN="$PY $SCRIPT_DIR/enrich_plan.py"`.
@@ -145,7 +153,9 @@ if [ -f "$JSONL" ]; then
 fi
 
 RUN_START_ISO=$(date -u +%FT%TZ)
-echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY"
+echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY detail_referer=$DETAIL_REFERER"
+DETAIL_REFERER_FLAG=()
+[ "$DETAIL_REFERER" = "1" ] && DETAIL_REFERER_FLAG=(--detail-referer-from-list)
 for s in "${stocks[@]}"; do
   pend=$(pending_count "$s")
   if [ "${pend:-0}" -eq 0 ]; then
@@ -161,6 +171,7 @@ for s in "${stocks[@]}"; do
     --acquisition-mode managed-chromium --confirm-live \
     --min-delay "$MIN_DELAY" --max-delay "$MAX_DELAY" \
     --challenge-wait 180 --challenge-retries 1 \
+    "${DETAIL_REFERER_FLAG[@]}" \
     > "$RUNLOG_DIR/$s.json" 2> "$RUNLOG_DIR/$s.err"
   rc=$?
 

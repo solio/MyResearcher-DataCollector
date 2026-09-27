@@ -42,6 +42,16 @@ REPO=${SCRIPT_DIR:h:h}
 PY=${PY:-/opt/homebrew/anaconda3/bin/python}
 DAYS=${DAYS:-14}
 CHALLENGE_WAIT=${CHALLENGE_WAIT:-180}
+# Turn pages after the first by clicking the page's own pager anchor instead of
+# navigating to `f_<n>.html`, so each page request is a same-origin in-page
+# navigation carrying a Referer. OFF by default -- it changes the shape of every
+# request after the first, so a run must opt in explicitly. See
+# scripts/ops/README.md, "--list-click-paging".
+#
+# The per-stock report always carries `list_click_paging` and the `list_navigation`
+# counters, so a run can never be attributed to the wrong scheme: with the flag
+# off, `click` must stay 0. That is the negative control for the instrument.
+LIST_CLICK_PAGING=${LIST_CLICK_PAGING:-0}
 LOG_DIR="$REPO/runtime/logs"
 mkdir -p "$LOG_DIR"
 cd "$REPO" || exit 9
@@ -119,7 +129,9 @@ for d, n in rows:
 PY
 }
 
-echo "RUN_START $(date -u +%FT%TZ) days=$DAYS tag=$RUN_TAG"
+echo "RUN_START $(date -u +%FT%TZ) days=$DAYS tag=$RUN_TAG list_click_paging=$LIST_CLICK_PAGING"
+LIST_CLICK_PAGING_FLAG=()
+[ "$LIST_CLICK_PAGING" = "1" ] && LIST_CLICK_PAGING_FLAG=(--list-click-paging)
 coverage_drift_check
 coverage_report
 day_count_report BEFORE
@@ -141,6 +153,7 @@ for s in "${stocks[@]}"; do
     --source eastmoney_guba --stock "$s" --days "$DAYS" --data-dir data \
     --list-only --start-page 1 --acquisition-mode managed-chromium --confirm-live \
     --challenge-wait "$CHALLENGE_WAIT" \
+    "${LIST_CLICK_PAGING_FLAG[@]}" \
     > "$out" 2> "$err"
   rc=$?
 
@@ -152,11 +165,20 @@ try:
 except Exception as exc:  # unreadable report is itself a stop condition
     print(f"STOP unreadable_report:{exc}")
     raise SystemExit(0)
+nav = d.get("list_navigation") or {}
 print(
     "STAT"
     f" status={d.get('status')}"
     f" stop_reason={d.get('stop_reason')}"
     f" range_complete={d.get('range_complete')}"
+    # Which navigation each list page used. Reported on every run, flagged or
+    # not: with `list_click_paging=false` these read `click=0`, which is the
+    # negative control proving the counter can tell the two schemes apart.
+    f" click_paging={d.get('list_click_paging')}"
+    f" nav_click={nav.get('click')}"
+    f" nav_goto={nav.get('goto')}"
+    f" nav_no_anchor={nav.get('click_no_anchor')}"
+    f" nav_not_taken={nav.get('click_not_taken')}"
     f" pages={d.get('pages_scanned')}"
     f" received={d.get('records_received')}"
     f" in_range={d.get('records_in_range')}"

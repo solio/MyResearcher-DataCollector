@@ -35,18 +35,41 @@ def create_eastmoney_transport(
     *,
     profile_dir: str | Path | None = None,
     browser_socket: str | Path | None = None,
+    detail_referer_from_list: bool = False,
+    list_click_paging: bool = False,
 ):
     """Create the shared Eastmoney browser acquisition transport.
 
     managed-chromium without an explicit profile_dir selects a new per-run
     profile; an explicit profile_dir keeps persistent reuse.
+
+    ``detail_referer_from_list`` reaches the detail surface by first opening the
+    bar's list page and then navigating in-page with JS, so the detail request
+    carries a `Referer` and a consistent `Sec-Fetch-Site: same-origin`. It is OFF
+    by default: it doubles the navigations per detail, so it must be requested
+    explicitly rather than silently changing every run.
+
+    ``list_click_paging`` turns a bar's list pages by clicking the pager instead
+    of navigating to `f_<n>.html`, for the same reason. Also OFF by default, and
+    only ``managed-chromium`` can do it: the other modes hand the request to
+    AppleScript/Chrome-CDP paths that only know how to set a tab URL, so
+    accepting the flag there would silently do nothing.
     """
+    if list_click_paging and acquisition_mode != "managed-chromium":
+        raise ValueError(
+            "--list-click-paging requires --acquisition-mode managed-chromium; "
+            f"{acquisition_mode!r} can only navigate to a URL"
+        )
     if acquisition_mode == "existing-chrome":
         return EastmoneyExistingChromeDomTransport()
     if acquisition_mode == "chrome-clean":
         return ChromeCleanDomTransport(profile_dir=profile_dir or DEFAULT_CHROME_PROFILE)
     if acquisition_mode == "managed-chromium":
-        return ManagedChromiumTransport(profile_dir=profile_dir)
+        return ManagedChromiumTransport(
+            profile_dir=profile_dir,
+            detail_referer_from_list=detail_referer_from_list,
+            list_click_paging=list_click_paging,
+        )
     if acquisition_mode == "browser-socket":
         if browser_socket is None:
             raise ValueError("browser-socket acquisition requires a socket path")
@@ -112,6 +135,8 @@ class ManagedChromiumTransport:
         profile_dir: str | Path | None = None,
         record_dialogs: bool = True,
         auto_dismiss_dialogs: bool = True,
+        detail_referer_from_list: bool = False,
+        list_click_paging: bool = False,
     ) -> None:
         if profile_dir is None:
             self.profile_dir = _fresh_managed_profile_path().expanduser().resolve()
@@ -127,7 +152,13 @@ class ManagedChromiumTransport:
         self.dialogs: list[dict[str, str]] = []
         self.record_dialogs = bool(record_dialogs)
         self.auto_dismiss_dialogs = bool(auto_dismiss_dialogs)
+        self.detail_referer_from_list = bool(detail_referer_from_list)
+        self.list_click_paging = bool(list_click_paging)
         self.diagnostics_dir = Path("runtime/diagnostics")
+        # Deliberately NOT added to this line: operators verify backfill runs by
+        # the exact byte count of the per-stock .err files, so widening the only
+        # line they contain would invalidate that check. The flag is echoed by
+        # the driver instead (RUN_START), the same way the pacing is.
         print(
             f"acquisition_mode={self.acquisition_mode} "
             f"profile_mode={self.profile_mode} "
@@ -153,7 +184,14 @@ class ManagedChromiumTransport:
         self.context = self._playwright.chromium.launch_persistent_context(**kwargs)
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self._bind_dialog_handler(self.page)
-        self.delegate = EastmoneyBrowserTransport(self.page)
+        self.delegate = self._new_delegate()
+
+    def _new_delegate(self) -> EastmoneyBrowserTransport:
+        return EastmoneyBrowserTransport(
+            self.page,
+            detail_referer_from_list=self.detail_referer_from_list,
+            list_click_paging=self.list_click_paging,
+        )
 
     def _bind_dialog_handler(self, page) -> None:
         page.on("dialog", self._on_dialog)
@@ -173,7 +211,32 @@ class ManagedChromiumTransport:
         if self.page is None or self.page.is_closed():
             self.page = self.context.new_page()
             self._bind_dialog_handler(self.page)
-            self.delegate = EastmoneyBrowserTransport(self.page)
+            self.delegate = self._new_delegate()
+
+    def challenge_reasons(self) -> list[str]:
+        """Live-DOM challenge signals from the delegate; [] when unavailable."""
+        probe = getattr(self.delegate, "challenge_reasons", None)
+        if not callable(probe):
+            return []
+        try:
+            self._ensure_page()
+            return list(probe())
+        except Exception:  # noqa: BLE001
+            return []
+
+    @property
+    def list_navigation_counts(self) -> dict[str, int]:
+        """Paging-scheme counters from the live delegate; {} once closed.
+
+        Read by the backfill report so a run states which navigation each list
+        page used instead of leaving it to be assumed (`list_paging.py`).
+        """
+        return dict(getattr(self.delegate, "list_navigation_counts", None) or {})
+
+    @property
+    def list_navigation_samples(self) -> dict[str, dict[str, str]]:
+        """One sampled request shape per scheme: the `Referer`/`Sec-Fetch-*` proof."""
+        return dict(getattr(self.delegate, "list_navigation_samples", None) or {})
 
     def get(self, url: str, *, timeout: float):
         self._ensure_started()

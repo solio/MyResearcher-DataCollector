@@ -355,3 +355,116 @@ def test_backfill_cli_selects_existing_chrome_dom_acquisition(tmp_path: Path) ->
         "--acquisition-method", "existing-chrome-dom", "--confirm-live",
     ])
     assert isinstance(_browser_socket_transport(args), EastmoneyExistingChromeDomTransport)
+
+
+def test_backfill_cli_rejects_click_paging_on_a_mode_that_cannot_click(tmp_path: Path) -> None:
+    """A requested scheme must never be silently ignored.
+
+    `existing-chrome` / `chrome-clean` reach the page through an AppleScript or
+    CDP path that can only set a tab URL, so honouring this flag there is
+    impossible -- and a run that reports the flag but never clicked would be
+    exactly the unfalsifiable claim the counters exist to prevent.
+    """
+    code = main([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--days", "1", "--data-dir", str(tmp_path / "data"),
+        "--acquisition-mode", "chrome-clean", "--list-click-paging", "--confirm-live",
+    ])
+    assert code == 2
+
+
+def test_backfill_report_carries_the_paging_scheme_read_before_close(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The report must state the scheme *and* what it did.
+
+    The counters live on the transport delegate, which `close()` drops -- so this
+    uses a transport that fails the test if it is asked for counters after being
+    closed, and asserts the counters survive into the report.
+    """
+    args = build_parser().parse_args([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--from", "2026-08-01", "--to", "2026-08-02",
+        "--data-dir", str(tmp_path / "data"), "--confirm-live",
+    ])
+
+    class PagingTransport:
+        list_click_paging = True
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.list_navigation_counts = {"click": 3, "goto": 1}
+            self.list_navigation_samples = {"click": {"sec-fetch-site": "same-origin"}}
+
+        def close(self) -> None:
+            self.closed = True
+
+    transport = PagingTransport()
+
+    def fake_execute(**kwargs):
+        assert kwargs["transport"] is transport
+        result = SimpleNamespace(status=SimpleNamespace(value="SUCCESS"), stop_reason="done")
+        stats = SimpleNamespace(
+            result=result, pages_scanned=4, records_received=4, records_in_range=4,
+            records_failed=0, earliest_observed_at=None, latest_observed_at=None,
+            range_complete=True,
+        )
+        return SimpleNamespace(
+            execution=stats, run_id="paging-run", records_new=4,
+            records_existing=0, records_versioned=0, checkpoint_before=None,
+            checkpoint_after=None, start_page=1,
+        )
+
+    monkeypatch.setattr(
+        cli_main, "execute_and_persist_simple_backfill_collection", fake_execute
+    )
+    report = execute_backfill_cli(args, transport=transport)
+
+    assert transport.closed is True
+    assert report["list_click_paging"] is True
+    assert report["list_navigation"]["click"] == 3
+    assert report["list_navigation"]["goto"] == 1
+    # counters the transport never set must read 0, not be absent: an absent key
+    # cannot be told apart from "not measured"
+    assert report["list_navigation"]["click_no_anchor"] == 0
+    assert report["list_navigation"]["click_not_taken"] == 0
+    assert report["list_navigation"]["samples"] == {"click": {"sec-fetch-site": "same-origin"}}
+
+
+def test_backfill_report_has_the_paging_fields_even_without_a_paging_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Absent scheme = readable zeros, never a missing key.
+
+    A missing key reads as "not measured"; an explicit `click: 0` is the negative
+    control that makes a flagged run's `click > 0` mean something.
+    """
+    args = build_parser().parse_args([
+        "backfill", "--source", "eastmoney_guba", "--stock", "600001",
+        "--from", "2026-08-01", "--to", "2026-08-02",
+        "--data-dir", str(tmp_path / "data"), "--confirm-live",
+    ])
+
+    def fake_execute(**kwargs):
+        result = SimpleNamespace(status=SimpleNamespace(value="SUCCESS"), stop_reason="done")
+        stats = SimpleNamespace(
+            result=result, pages_scanned=1, records_received=1, records_in_range=1,
+            records_failed=0, earliest_observed_at=None, latest_observed_at=None,
+            range_complete=True,
+        )
+        return SimpleNamespace(
+            execution=stats, run_id="no-paging-run", records_new=1,
+            records_existing=0, records_versioned=0, checkpoint_before=None,
+            checkpoint_after=None, start_page=1,
+        )
+
+    monkeypatch.setattr(
+        cli_main, "execute_and_persist_simple_backfill_collection", fake_execute
+    )
+    report = execute_backfill_cli(args, transport=object())
+
+    assert report["list_click_paging"] is False
+    assert report["list_navigation"] == {
+        "click": 0, "goto": 0, "click_no_anchor": 0, "click_not_taken": 0,
+        "samples": {},
+    }

@@ -63,6 +63,58 @@ def _body(response: Any) -> bytes:
     return value.encode("utf-8") if isinstance(value, str) else bytes(value)
 
 
+def _live_challenge_reasons(transport: Any, response: Any = None) -> list[str]:
+    """Challenge signals that only the rendered page can supply.
+
+    `is_access_block_page` reads the response bytes, so it structurally cannot
+    see the challenge observed on 2026-08-13: a slider overlay injected after
+    load on top of an otherwise normal page, with `<title>` and the embedded
+    `post_article` payload intact. `parse_detail_page` therefore also succeeds,
+    and without this probe an overlay block is recorded as a plain success while
+    the source is actively challenging us -- which is precisely the input
+    `enrich_all_stocks.sh` relies on to fail closed.
+
+    Fail-open by construction: a transport that cannot probe returns `[]`, and an
+    empty list means "no signal", never "proven clean".
+    """
+    reasons: list[str] = []
+    diagnostics = getattr(response, "diagnostics", None)
+    if isinstance(diagnostics, dict):
+        # Recorded by the transport when the bar list page itself was challenged
+        # before the detail was reached.
+        for reason in diagnostics.get("list_challenge_reasons") or []:
+            reasons.append(f"list_page:{reason}")
+    probe = getattr(transport, "challenge_reasons", None)
+    if callable(probe):
+        try:
+            reasons.extend(str(reason) for reason in (probe() or []))
+        except Exception:  # noqa: BLE001
+            pass
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        if reason not in seen:
+            seen.add(reason)
+            ordered.append(reason)
+    return ordered
+
+
+def _challenge_tier(reasons: list[str]) -> str | None:
+    """Separate hard evidence from the visible-text tier, which can be prose.
+
+    `structural` = a captcha container in the DOM, a challenge asset, a challenge
+    title, or a challenge on the list page. `text_only` = the rendered words were
+    the only signal, which is what catches the 2026-08-13 overlay but could in
+    principle appear in ordinary prose. Both block; the tier is kept so a run can
+    report suspected rather than confirmed.
+    """
+    if not reasons:
+        return None
+    if any(not reason.startswith("visible_text:") for reason in reasons):
+        return "structural"
+    return "text_only"
+
+
 def _utc_now(clock: Callable[[], object] | None) -> datetime:
     value = clock() if clock is not None else datetime.now(timezone.utc)
     if not isinstance(value, datetime):
@@ -507,6 +559,7 @@ def execute_detail_enrichment(
             request_started = time.monotonic()
             latest_evidence_id: str | None = None
             latest_response: Any = None
+            last_challenge: list[str] = []
             try:
                 html = ""
                 for attempt in range(max(1, challenge_retries + 1)):
@@ -552,7 +605,9 @@ def execute_detail_enrichment(
                         raise _DetailFetchFailure(
                             f"http_{status}", f"detail request returned HTTP {status}"
                         )
-                    if not is_access_block_page(html):
+                    last_challenge = _live_challenge_reasons(transport, latest_response)
+                    asset_blocked = is_access_block_page(html)
+                    if not asset_blocked and not last_challenge:
                         break
                     access_blocks += 1
                     write_log(
@@ -560,6 +615,13 @@ def execute_detail_enrichment(
                         "access_block",
                         request_started,
                         sleep_before_sec=round(sleep_before, 3),
+                        # Both oracles are recorded separately on purpose: after a
+                        # block it must be possible to tell "the response bytes
+                        # matched the known shell" from "only the rendered page
+                        # gave it away", because only the second is new evidence.
+                        asset_signature_blocked=asset_blocked,
+                        challenge_reasons=last_challenge or None,
+                        challenge_tier=_challenge_tier(last_challenge),
                     )
                     now = time.monotonic()
                     if current_window is not None:
@@ -603,12 +665,16 @@ def execute_detail_enrichment(
                             request_started,
                             event="manual_verification_resumed",
                         )
-                    if html and not is_access_block_page(html):
+                    if manual is not None:
+                        last_challenge = _live_challenge_reasons(transport, latest_response)
+                    if html and not is_access_block_page(html) and not last_challenge:
                         break
 
-                if is_access_block_page(html):
+                if is_access_block_page(html) or last_challenge:
                     raise _DetailFetchFailure(
-                        "access_block", "Eastmoney detail remained behind verification"
+                        "access_block",
+                        "Eastmoney detail remained behind verification"
+                        + (f" [{' ; '.join(last_challenge)}]" if last_challenge else ""),
                     )
                 if is_not_found_page(html):
                     raise _DetailFetchFailure(
@@ -779,6 +845,12 @@ def execute_detail_enrichment(
             "challenge_windows": windows,
             "jsonl_path": str(log_file),
             "acquisition_mode": acquisition_mode,
+            # Read off the transport rather than echoed from a CLI flag: this is
+            # evidence of how the run was actually configured, which is what a
+            # reader needs in order to interpret the counters above.
+            "detail_referer_from_list": bool(
+                getattr(transport, "detail_referer_from_list", False)
+            ),
             "include_short_titles": include_short_titles,
             "failures": failures,
             "samples": samples,
