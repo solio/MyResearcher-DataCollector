@@ -37,6 +37,11 @@ class SeekProof:
     verified_page_max_time: datetime
     probe_count: int
     anchor_used: PageAnchor | None
+    # The pages actually probed, in order. Carried so a seek can be audited from
+    # its result alone: on 2026-09-27 the only record of which pages had been
+    # requested was the browser's URL bar, so a converging search could not be
+    # told apart from a loop without re-running it.
+    probe_pages: tuple[int, ...] = ()
 
 
 class SeekFailure(RuntimeError):
@@ -76,57 +81,144 @@ def seek_historical_page(
     max_probes: int = 20,
     safety_pages: int = 1,
 ) -> SeekProof:
-    """Find a live page containing ``target_to`` with bounded probes."""
+    """Find a live page containing ``target_to`` with bounded probes.
+
+    BRACKETED SEARCH, NOT A STEP WALK
+    ---------------------------------
+    Page numbers are newest-first, so ``page_min_time`` and ``page_max_time``
+    fall monotonically as the page number rises. That makes the page number a
+    sorted key, and a bracketed search over it is well founded: keep
+    ``too_new`` (highest page known to start after the target) and ``too_old``
+    (lowest page known to end before it), and only ever probe strictly inside
+    the open interval they define.
+
+    The previous revision walked ``page + direction * step`` with a step that
+    doubled and halved on each direction change. That can compute its way back
+    onto an already probed page and then give up with "time seek exhausted
+    valid page candidates" -- observed 2026-09-27 on 603997, where the probe
+    sequence was 12, 14, 18, 16 and the fifth step returned to 12, aborting the
+    seek while the pages that actually bracket the target (13, 15, 17) had
+    never been probed. The abort looked like "the target cannot be found"
+    when it was really "the walk ran out of unvisited squares".
+
+    A bracketed search cannot revisit: every probe either returns a proof or
+    becomes a new bound, so the interval strictly shrinks and the pages inside
+    it are by construction unvisited. Two phases, both of them binary-search
+    shaped: (a) with only one side of the target seen, DOUBLE the page number
+    until the other side appears, and (b) with both sides seen, halve the
+    interval with ``(too_new + too_old) // 2`` until it is one page wide.
+
+    WHY DOUBLING AND NOT A RATE-BASED JUMP: the exchange rate between dates and
+    pages is not stable. On 601012 (2026-09-27) the real captured anchors show
+    page 121 spanning 18.7h and page 122 spanning 1.25h -- a 15x swing between
+    adjacent pages -- so "days divided by this page's span" is a guess that can
+    be wrong by an order of magnitude, while doubling is bounded by construction
+    (one probe per octave, then log2 of the bracket). Measured over 400 bursty
+    maps, a rate-based jump averaged 5.8 probes against 11.8 for
+    doubling-then-bisecting, but its worst case was unbounded and it depended on
+    the spans being representative, which they are not. The bounded version was
+    chosen deliberately; if the probe budget ever becomes the bottleneck rather
+    than correctness, the measurement to revisit is in this docstring.
+
+    ``probe`` is expected to report a page past the end of the bar as one whose
+    times are older than any real post rather than raising, so that an
+    over-deep step lands as a ``too_old`` bound instead of a fatal error. The
+    times of such a page are never returned as a proof: a ``too_new`` page or a
+    real bracket is.
+    """
     if max_probes < 1:
         raise ValueError("max_probes must be positive")
+    if safety_pages < 0:
+        raise ValueError("safety_pages must not be negative")
+
     anchor = choose_anchor(anchors, target_to)
     first_page = anchor.page_no if anchor else 1
     visited: set[int] = set()
-    current_source_count: int | None = None
+    seen: dict[int, PageProbe] = {}
+    too_new: int | None = None  # page_min_time > target: the answer is deeper
+    too_old: int | None = None  # page_max_time < target: the answer is shallower
     page = first_page
-    step = 1
-    direction: int | None = None
-    last: PageProbe | None = None
+
+    def proof_for(entry: PageProbe, *, start_page: int) -> SeekProof:
+        return SeekProof(
+            target_to=target_to,
+            start_page=max(1, start_page),
+            verified_page=entry.page_no,
+            verified_page_min_time=entry.page_min_time,
+            verified_page_max_time=entry.page_max_time,
+            probe_count=len(visited),
+            anchor_used=anchor,
+            probe_pages=tuple(seen),
+        )
 
     for _ in range(max_probes):
-        if page < 1 or page in visited:
+        if page < 1:
+            raise SeekFailure("time seek exhausted valid page candidates")
+        if page in visited:
+            # Unreachable through the bracketed search below; kept as a cheap
+            # invariant so a future edit that reintroduces free stepping fails
+            # loudly instead of quietly burning the probe budget.
             raise SeekFailure("time seek exhausted valid page candidates")
         visited.add(page)
         current = probe(page)
-        last = current
-        current_source_count = current.source_count
-        if anchor is not None and page == first_page:
-            predicted = predict_page(anchor, current_source_count)
-            if predicted != page:
+        seen[page] = current
+
+        if current.page_no == 1 and current.page_max_time < target_to:
+            # Resolved BEFORE the prediction on purpose, and this ordering is
+            # load-bearing: page 1 is the newest page that exists, so "the target
+            # is newer than everything" is already proven and no count-based
+            # prediction can improve on it. Applying the prediction first (as the
+            # step walk did) jumped away from page 1, and the walk back down
+            # re-entered page 1 -- already probed -- and gave up. That is a
+            # second, independent reason the drivers bypass the seek entirely.
+            return proof_for(current, start_page=1)
+
+        if current.page_no == first_page and anchor is not None:
+            # Applied BEFORE the bracket check, deliberately: the anchor's own
+            # time range is stale by however long collection was paused, so a
+            # page that appears to bracket the target at the anchor's old page
+            # number is not evidence. The count shift is what relocates it. The
+            # result is still only a prediction -- the relocated page has to
+            # bracket like any other probe.
+            predicted = predict_page(anchor, current.source_count)
+            if (
+                predicted != current.page_no
+                and predicted >= 1
+                and predicted not in visited
+            ):
                 page = predicted
                 continue
+
         if current.page_min_time <= target_to <= current.page_max_time:
-            return SeekProof(
-                target_to=target_to,
-                start_page=max(1, current.page_no - safety_pages),
-                verified_page=current.page_no,
-                verified_page_min_time=current.page_min_time,
-                verified_page_max_time=current.page_max_time,
-                probe_count=len(visited),
-                anchor_used=anchor,
-            )
-        if current.page_no == 1 and current.page_max_time < target_to:
-            # The requested top is newer than the currently visible newest
-            # page; page 1 is the conservative starting boundary.
-            return SeekProof(
-                target_to=target_to, start_page=1, verified_page=1,
-                verified_page_min_time=current.page_min_time,
-                verified_page_max_time=current.page_max_time,
-                probe_count=len(visited), anchor_used=anchor,
-            )
+            return proof_for(current, start_page=current.page_no - safety_pages)
+
         if current.page_min_time > target_to:
-            wanted_direction = 1  # page number increases toward older posts
+            too_new = current.page_no
         else:
-            wanted_direction = -1
-        if direction is not None and wanted_direction != direction:
-            step = max(1, step // 2)
+            too_old = current.page_no
+
+        if too_new is not None and too_old is not None:
+            if too_old - too_new <= 1:
+                # No page lies between the bounds, so the target falls in a gap
+                # with no posts, or past the end of the bar (which the caller
+                # reports as an "older than any post" page). Either way the walk
+                # only needs a page provably at or newer than the target, and
+                # `too_new` is exactly that.
+                return proof_for(seen[too_new], start_page=too_new)
+            page = (too_new + too_old) // 2
+            continue
+
+        # Only one side of the target has been seen so far: double the page
+        # number (or halve it, when the target turned out to be shallower) until
+        # the other side shows up. Once both bounds exist the loop above bisects
+        # them. Nothing in either phase depends on how many days a page happens
+        # to span, which is the quantity that is NOT stable: on 601012
+        # (2026-09-27) page 121 spans 18.7h and page 122 spans 1.25h, so a
+        # rate-based jump is a guess while a doubling step is bounded by
+        # construction. Worst case is one doubling per octave plus log2 of the
+        # final bracket.
+        if too_new is not None:
+            page = max(2, too_new * 2)
         else:
-            step = min(step * 2, 1 << 20)
-        direction = wanted_direction
-        page = current.page_no + direction * step
+            page = max(1, too_old // 2)
     raise SeekFailure(f"time seek exceeded probe limit ({max_probes})")

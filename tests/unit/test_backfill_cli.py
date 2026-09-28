@@ -249,7 +249,9 @@ def test_backfill_host_can_inject_browser_owned_transport(
 
     def fake_execute(**kwargs):
         captured.update(kwargs)
-        result = SimpleNamespace(status=SimpleNamespace(value="SUCCESS"), stop_reason="done")
+        result = SimpleNamespace(
+            status=SimpleNamespace(value="SUCCESS"), stop_reason="done", failures=[],
+        )
         stats = SimpleNamespace(
             result=result,
             pages_scanned=1,
@@ -322,7 +324,9 @@ def test_backfill_report_distinguishes_requested_and_effective_ranges(
 
     def fake_execute(**kwargs):
         result = SimpleNamespace(
-            status=SimpleNamespace(value="SUCCESS"), stop_reason="backfill_range_complete"
+            status=SimpleNamespace(value="SUCCESS"),
+            stop_reason="backfill_range_complete",
+            failures=[],
         )
         stats = SimpleNamespace(
             result=result, pages_scanned=1, records_received=1, records_in_range=1,
@@ -403,7 +407,9 @@ def test_backfill_report_carries_the_paging_scheme_read_before_close(
 
     def fake_execute(**kwargs):
         assert kwargs["transport"] is transport
-        result = SimpleNamespace(status=SimpleNamespace(value="SUCCESS"), stop_reason="done")
+        result = SimpleNamespace(
+            status=SimpleNamespace(value="SUCCESS"), stop_reason="done", failures=[],
+        )
         stats = SimpleNamespace(
             result=result, pages_scanned=4, records_received=4, records_in_range=4,
             records_failed=0, earliest_observed_at=None, latest_observed_at=None,
@@ -446,7 +452,9 @@ def test_backfill_report_has_the_paging_fields_even_without_a_paging_transport(
     ])
 
     def fake_execute(**kwargs):
-        result = SimpleNamespace(status=SimpleNamespace(value="SUCCESS"), stop_reason="done")
+        result = SimpleNamespace(
+            status=SimpleNamespace(value="SUCCESS"), stop_reason="done", failures=[],
+        )
         stats = SimpleNamespace(
             result=result, pages_scanned=1, records_received=1, records_in_range=1,
             records_failed=0, earliest_observed_at=None, latest_observed_at=None,

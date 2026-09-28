@@ -61,10 +61,29 @@ class SimplePostStore:
 
     @contextmanager
     def transaction(self):
-        """Commit or roll back a group of post/backfill state mutations atomically."""
+        """Commit or roll back a group of post/backfill state mutations atomically.
+
+        ``BEGIN IMMEDIATE``, not a bare ``BEGIN`` -- and the difference is not
+        cosmetic. A bare BEGIN is DEFERRED: it takes no lock until a statement
+        needs one, and whatever that first statement is decides which lock the
+        transaction holds. The first statement inside a page persist is
+        ``upsert_post``'s existence SELECT, so the transaction takes SHARED, and
+        the INSERT that follows needs RESERVED -- a lock *upgrade*. Two such
+        transactions cannot both upgrade: each holds SHARED, each needs the
+        other's release, and neither can let go without discarding the snapshot
+        it is built on. Observed 2026-09-27: two backfill drivers, disjoint
+        stocks, zero row contention, and one of them died with
+        `database is locked` after burning the full 5s busy timeout. Raising the
+        timeout cannot help -- a cycle does not resolve by waiting.
+
+        IMMEDIATE takes the write lock at BEGIN, before any read, so there is no
+        upgrade and no cycle: a second writer simply queues, which is what the
+        busy timeout is actually for. Transactions here are sub-millisecond, so
+        the queue is invisible.
+        """
         outermost = self._transaction_depth == 0
         if outermost:
-            self.conn.execute("BEGIN")
+            self.conn.execute("BEGIN IMMEDIATE")
         self._transaction_depth += 1
         try:
             yield self.conn

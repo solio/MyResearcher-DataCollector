@@ -17,13 +17,14 @@ from .backfill import (
     coverage_stop_predicate,
     resolve_effective_backfill_range,
 )
-from .page_anchor import PageAnchor, SeekProof, seek_historical_page
+from .page_anchor import PageAnchor, PageProbe, SeekProof, seek_historical_page
 from .models import CollectionResult, CollectionStatus, RuntimeCounters
 from .sources.eastmoney_guba.collector import (
     BackfillCollectionResult,
     BOOTSTRAP_MIN_PAGES,
     CollectorConfig,
     EastmoneyGubaCollector,
+    FetchFailure,
     Transport,
 )
 from .sources.eastmoney_guba.acquisition import BROWSER_DOM_SNAPSHOT, HTTP_RESPONSE
@@ -316,11 +317,31 @@ def execute_and_persist_simple_backfill_collection(
         traversal_start_page = plan.start_page
         seek_proof: SeekProof | None = None
         if enable_time_seek and plan.time_seek_eligible:
+            # A probe past the last page of the bar is not an error for a seek --
+            # it is a bound. Reported as a page older than any real post, it
+            # becomes a `too_old` bound that narrows the search, instead of a
+            # FetchFailure the seek cannot interpret. Every OTHER fetch failure
+            # still propagates: swallowing them here would turn a challenge into
+            # a quiet "page not found", which is the failure this repo keeps
+            # having to undo.
+            ancient = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+            def _probe(page_no: int) -> PageProbe:
+                try:
+                    return collector.probe_list_page(stock_code, page_no)
+                except FetchFailure as exc:
+                    if exc.kind != "empty_page":
+                        raise
+                    return PageProbe(
+                        page_no=page_no, page_min_time=ancient,
+                        page_max_time=ancient, source_count=None, page_size=0,
+                    )
+
             try:
                 seek_proof = seek_historical_page(
                     target_to=effective.to_time,
                     anchors=store.page_anchors(source, stock_code),
-                    probe=lambda page: collector.probe_list_page(stock_code, page),
+                    probe=_probe,
                 )
                 traversal_start_page = seek_proof.start_page
             except Exception as exc:

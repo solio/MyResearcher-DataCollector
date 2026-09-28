@@ -18,7 +18,7 @@
 # progress signals are `records_in_range`, `pages_scanned` and -- above all --
 # the `posts` row delta and the `backfill_coverage` rows.
 #
-# WHY --start-page 1 (and not the default time-seek):
+# WHY --start-page 1 on the DEFAULT (DAYS) path, and not the default time-seek:
 #   `plan_backfill` sets time_seek_eligible only when neither an explicit start
 #   page nor a resume row exists. Time-seek picks its first page from
 #   `backfill_page_anchors`, which are stale by however long collection was
@@ -29,6 +29,23 @@
 #   For a range whose top is "now" the newest page IS page 1, so an explicit
 #   --start-page 1 skips the fragile seek AND still sets coverage_eligible=True
 #   (start_page == 1), which is what makes a completed run count as proof.
+#
+# WHY THE FROM PATH DELIBERATELY LEAVES THE SEEK ON (the opposite choice):
+#   For a top of "now" the newest page is page 1, so starting there costs one
+#   page. For a backwards extension the analogous "obvious" entry point is not
+#   page 1 but the page holding the stock's coverage floor -- and starting from
+#   page 1 instead re-walks every already-covered page in between (measured for
+#   a 2026-07-09 -> 2026-05-04 extension: 1127 of 2097 pages, 54%). Omitting
+#   --start-page is what enables the seek to find that boundary page, and the
+#   seek's own numbers say it should be accurate here rather than fragile: the
+#   anchors it starts from ARE dated to the boundary region, and
+#   `predict_page` corrects the page drift with
+#   (current_source_count - anchor.source_count) / anchor.page_size. A SeekProof
+#   keeps coverage_eligible true, so the coverage row this run writes is honest.
+#   If the seek fails it fails loudly (`time seek exhausted valid page
+#   candidates` -> COLLECTION_FAILED, pages_scanned=0), which halts the job after
+#   <=20 probes rather than silently re-walking; that stock can then be re-run
+#   with START_FORCE_PAGE_1=1 to fall back to the old shape.
 #
 # Sources live here (tracked); all outputs stay under the gitignored runtime/:
 #   runtime/logs/backfill-<stock>-<yyyymmdd>.json|.err  per-stock run reports
@@ -41,6 +58,26 @@ SCRIPT_DIR=${0:A:h}
 REPO=${SCRIPT_DIR:h:h}
 PY=${PY:-/opt/homebrew/anaconda3/bin/python}
 DAYS=${DAYS:-14}
+# FROM=YYYY-MM-DD replaces DAYS with an explicit inclusive window start
+# (Asia/Shanghai midnight), for extending coverage BACKWARDS.
+#
+# Why DAYS cannot express this: DAYS is relative to today, so the same command
+# lands on a different date tomorrow, and there is no way to name a fixed
+# historical start. `--from` is absolute.
+#
+# Why a `from` earlier than a stock's covered_from is enough to make the walk go
+# past the watermark: coverage_stop_predicate computes
+# coverage_boundary(covered, from_time), which returns None as soon as the first
+# covered range starts after from_time (backfill.py:161-162) -- i.e. when
+# `from_time` sits in a gap. A None boundary disables the early stop entirely
+# (backfill.py:183-184), so the traversal runs down to the new window start
+# instead of stopping at already-collected territory.
+FROM=${FROM:-}
+# `--from` and `--to` must be supplied together (backfill.py:69-71 rejects one
+# without the other), while the DAYS path implicitly ends at the end of today in
+# Asia/Shanghai. So a FROM run needs an explicit --to; default it to today's
+# local date, which is the same end the DAYS path would have chosen.
+TO=${TO:-$(date +%F)}
 CHALLENGE_WAIT=${CHALLENGE_WAIT:-180}
 # Turn pages after the first by clicking the page's own pager anchor instead of
 # navigating to `f_<n>.html`, so each page request is a same-origin in-page
@@ -71,13 +108,22 @@ RUN_TAG=$(date -u +%Y%m%d)
 # Picking the wrong source would silently drop a stock from collection, which is
 # worse than a literal list that currently matches reality. Until the registry
 # question is settled, coverage_drift_check() below fails loudly instead.
-stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997)
+all_stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997)
+stocks=("${all_stocks[@]}")
+# STOCKS="300487 603806" runs an ad-hoc queue -- a second, disjoint one, or a
+# retry after a halt -- in whatever order it is given. The roster above stays
+# intact and coverage_drift_check still compares THAT against the database, so a
+# subset run cannot look like a stock being silently dropped from collection.
+if [ -n "${STOCKS:-}" ]; then
+  stocks=(${=STOCKS})
+fi
+echo "QUEUE ${#stocks} ${stocks[*]}"
 
 # Diagnostic only: report any stock that backfill_coverage knows about but this
 # list does not. That divergence means real collection work is being skipped, so
 # it must be visible at the top of every run rather than discovered later.
 coverage_drift_check() {
-  "$PY" - "${stocks[@]}" <<'PY'
+  "$PY" - "${all_stocks[@]}" <<'PY'
 import sqlite3, sys
 known = set(sys.argv[1:])
 con = sqlite3.connect("file:data/collector.db?mode=ro", uri=True)
@@ -124,14 +170,52 @@ rows = con.execute(
     " GROUP BY d ORDER BY d"
 ).fetchall()
 print(f"DAYCOUNT {tag} posts_total={total}")
+# The per-day block above is a fixed 30-day window, so it is blind to a run that
+# extends coverage backwards -- exactly the run this line exists to make
+# verifiable. `earliest` is the whole-table MIN(published_at) (Beijing date), so
+# "did the earliest post move back to the target date?" is answerable from the
+# driver's own output instead of a hand-written query.
+earliest = con.execute("SELECT MIN(published_at) FROM posts").fetchone()[0]
+print(f"DAYCOUNT {tag} earliest={earliest}")
 for d, n in rows:
     print(f"DAYCOUNT {tag} {d} {n}")
 PY
 }
 
-echo "RUN_START $(date -u +%FT%TZ) days=$DAYS tag=$RUN_TAG list_click_paging=$LIST_CLICK_PAGING"
+echo "RUN_START $(date -u +%FT%TZ) days=$DAYS from=${FROM:-none} to=${TO} tag=$RUN_TAG list_click_paging=$LIST_CLICK_PAGING"
 LIST_CLICK_PAGING_FLAG=()
 [ "$LIST_CLICK_PAGING" = "1" ] && LIST_CLICK_PAGING_FLAG=(--list-click-paging)
+
+# window_to_for <stock> -> "SKIP", "NO_COVERAGE", or the --to timestamp to use.
+#
+# The --to for a backwards run is that stock's current coverage floor, so the
+# window is exactly the gap and add_coverage merges it with the existing range.
+# Two cases have to be handled here rather than left to the CLI:
+#   * coverage already reaches FROM -> SKIP. Without this the window would be
+#     `--from X --to X` (floor == target), which is a zero-width range; skipping
+#     is both clearer and what makes the driver safe to re-run after a partial
+#     success.
+#   * no coverage row -> NO_COVERAGE, i.e. there is no floor to stop at.
+window_to_for() {
+  "$PY" - "$1" "$FROM" <<'PY'
+import sqlite3, sys
+from datetime import datetime, timedelta, timezone
+stock, from_date = sys.argv[1], sys.argv[2]
+start = (datetime.strptime(from_date, "%Y-%m-%d")
+         .replace(tzinfo=timezone(timedelta(hours=8)))
+         .astimezone(timezone.utc))
+con = sqlite3.connect("file:data/collector.db?mode=ro", uri=True)
+row = con.execute(
+    "SELECT covered_from FROM backfill_coverage"
+    " WHERE source='eastmoney_guba' AND stock_code=?", (stock,)
+).fetchone()
+if not row:
+    print("NO_COVERAGE")
+else:
+    covered_from = datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+    print("SKIP" if covered_from <= start else row[0])
+PY
+}
 coverage_drift_check
 coverage_report
 day_count_report BEFORE
@@ -146,13 +230,57 @@ fi
 for s in "${stocks[@]}"; do
   out="$LOG_DIR/backfill-$s-$RUN_TAG.json"
   err="$LOG_DIR/backfill-$s-$RUN_TAG.err"
-  echo "===== stock=$s start=$(date -u +%FT%TZ) ====="
+  # Window and traversal entry are PER STOCK on a backwards run, because the gap
+  # to fill starts at that stock's own coverage floor.
+  #
+  # EXTENDING BACKWARDS (FROM set): the window top is the existing coverage
+  # floor, not today, and --start-page is deliberately NOT forced to 1.
+  #   * `--to <covered_from>` makes the requested range exactly the gap, so the
+  #     coverage row this run writes merges with the existing one
+  #     (add_coverage merges intervals, simple_store.py:190) instead of claiming
+  #     time this run never walked.
+  #   * omitting --start-page is what enables the time seek: time_seek_eligible
+  #     requires no explicit page and no resume row (integration.py:236). The
+  #     seek locates the page holding that boundary in <=20 probes and returns a
+  #     SeekProof, which keeps coverage_eligible true (integration.py:342) even
+  #     though pages 1..start-1 are not rescanned. Forcing --start-page 1 is
+  #     exactly what makes every extension re-walk the already-covered prefix,
+  #     since a walk must otherwise start at the newest page to be able to claim
+  #     the whole range (integration.py:204-209).
+  #   * a stock with no coverage row has no floor to stop at, so it keeps the
+  #     old shape: window to today, start at page 1.
+  if [ -n "$FROM" ] && [ "${START_FORCE_PAGE_1:-0}" != "1" ]; then
+    WINDOW_TO=$(window_to_for "$s")
+    case "$WINDOW_TO" in
+      SKIP)
+        echo "stock=$s skip reason=coverage_already_reaches_from"
+        continue
+        ;;
+      NO_COVERAGE)
+        RANGE_FLAG=(--from "$FROM" --to "$TO")
+        START_FLAG=(--start-page 1)
+        ;;
+      *)
+        RANGE_FLAG=(--from "$FROM" --to "$WINDOW_TO")
+        START_FLAG=()
+        ;;
+    esac
+  elif [ -n "$FROM" ]; then
+    RANGE_FLAG=(--from "$FROM" --to "$TO")
+    START_FLAG=(--start-page 1)
+  else
+    RANGE_FLAG=(--days "$DAYS")
+    START_FLAG=(--start-page 1)
+  fi
+  echo "===== stock=$s window=${RANGE_FLAG[*]} entry=${START_FLAG[*]:-seek} start=$(date -u +%FT%TZ) ====="
   # Drop any stale report so the post-run read can only see this invocation.
   rm -f "$out"
   PYTHONPATH=src "$PY" -m myresearcher_collector.cli.main backfill \
-    --source eastmoney_guba --stock "$s" --days "$DAYS" --data-dir data \
-    --list-only --start-page 1 --acquisition-mode managed-chromium --confirm-live \
+    --source eastmoney_guba --stock "$s" --data-dir data \
+    --list-only --acquisition-mode managed-chromium --confirm-live \
     --challenge-wait "$CHALLENGE_WAIT" \
+    "${RANGE_FLAG[@]}" \
+    "${START_FLAG[@]}" \
     "${LIST_CLICK_PAGING_FLAG[@]}" \
     > "$out" 2> "$err"
   rc=$?

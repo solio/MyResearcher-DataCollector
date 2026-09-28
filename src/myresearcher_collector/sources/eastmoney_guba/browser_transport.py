@@ -13,6 +13,10 @@ import base64
 import json
 import re
 import socket
+import random
+import sys
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +63,30 @@ def _request_shape(response: Any) -> dict[str, str]:
 
 class EastmoneyBrowserTransportError(OSError):
     """A normal browser navigation did not yield an approved response."""
+
+
+class EastmoneyBrowserChallengeError(EastmoneyBrowserTransportError):
+    """The page we were about to navigate *from* is behind verification.
+
+    Raised by the referer scheme when the bar's list page comes back challenged.
+    A reader who is shown a verification overlay on a list page does not then
+    click through to a post -- jumping anyway is the exact signature the scheme
+    exists to avoid, and it throws away the challenged page, which is the page an
+    operator needs on screen to clear it. So the navigation is refused instead.
+
+    It stays a ``EastmoneyBrowserTransportError`` so every existing handler keeps
+    catching it, but the caller is expected to route it into the ACCESS-BLOCK
+    path (ledger row, visible verification wait, fail closed) rather than the
+    transport-failure path. It is detected by the presence of
+    ``list_page_challenge_reasons`` rather than by class, so a caller that must
+    stay source-agnostic can still recognise it. The reasons are already
+    list-page-prefixed, so the ledger keeps recording *where* the challenge was
+    seen.
+    """
+
+    def __init__(self, message: str, *, reasons: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.list_page_challenge_reasons = list(reasons or [])
 
 
 class EastmoneyBrowserBoundaryError(RuntimeError):
@@ -126,10 +154,19 @@ class EastmoneyBrowserTransport:
         *,
         detail_referer_from_list: bool = False,
         list_click_paging: bool = False,
+        detail_dwell_seconds: tuple[float, float] | None = None,
     ) -> None:
         self.page = page
         self.detail_referer_from_list = bool(detail_referer_from_list)
         self.list_click_paging = bool(list_click_paging)
+        # How long to sit on the bar's list page before jumping to the detail.
+        # Only meaningful with `detail_referer_from_list`: without that scheme
+        # there is no list page to sit on. The pause exists so the two hops are
+        # not back to back -- a reader who lands on a list looks at it before
+        # clicking through, and the gap between the two requests is one of the
+        # few timing signals a page can measure. It is randomised because a fixed
+        # gap is itself a signature.
+        self.detail_dwell_seconds = detail_dwell_seconds
         # Which list page the browser is currently showing, and for which bar.
         # Only set after a list page has actually been served, so the click path
         # is taken only when we really are adjacent to the page being asked for.
@@ -189,6 +226,58 @@ class EastmoneyBrowserTransport:
             final_url=final_url,
             diagnostics=diagnostics,
         )
+
+    def _trace(self, event: str, **fields: object) -> None:
+        """One line per navigation-plane event, on stderr.
+
+        WHY THIS EXISTS: the enrich path had no navigation record at all, so "the
+        verification page flashed for a moment" could not be attributed -- whether
+        this code re-navigated the browser or the page did it by itself was
+        unanswerable. The collector carries the same helper for the backfill walk;
+        this one covers what the collector never sees: detail fetches, and the
+        referer scheme's two hops (list page, then the in-page JS jump) plus the
+        dwell between them.
+
+        Same line shape on purpose -- `HH:MM:SS.mmm EVENT k=v` -- so one grep reads
+        both files. Never raises: an instrument that can break the thing it
+        measures is worse than no instrument.
+        """
+        try:
+            stamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+            detail = " ".join(f"{key}={value}" for key, value in fields.items())
+            print(f"{stamp} {event} {detail}".rstrip(), file=sys.stderr, flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _dwell_on_list_page(self) -> float:
+        """Sit on the bar list page for a randomised moment before jumping.
+
+        The referer scheme's two hops -- list page, then in-page JS jump to the
+        detail -- are otherwise back to back, and the gap between them is one of
+        the few timing signals the page can measure. The gap is RANDOMISED on
+        purpose: a fixed one is its own signature. Splitting the inter-request
+        sleep this way keeps the per-item wall clock the operator tuned while
+        moving part of the pause to where a reader would actually pause.
+
+        Never raises. A fake page in a test need not implement a wait, and a
+        dwell that cannot be taken must not fail a run.
+        """
+        window = self.detail_dwell_seconds
+        if not window:
+            return 0.0
+        low, high = window
+        seconds = random.uniform(min(low, high), max(low, high))
+        if seconds <= 0:
+            return 0.0
+        waiter = getattr(self.page, "wait_for_timeout", None)
+        try:
+            if callable(waiter):
+                waiter(int(round(seconds * 1000)))
+            else:
+                time.sleep(seconds)
+        except Exception:  # noqa: BLE001
+            pass
+        return seconds
 
     def _get_after_list_visit(
         self, url: str, list_url: str, *, timeout: float
@@ -252,14 +341,52 @@ class EastmoneyBrowserTransport:
         page.on("response", _capture)
         try:
             page.goto(list_url, wait_until="domcontentloaded", timeout=milliseconds)
-            # The list page is discarded once the detail is reached, so a
-            # challenge served *here* would otherwise vanish. Record it on the
-            # response rather than aborting: the detail itself may still be fine,
-            # and the caller decides what a challenged list page means.
+            self._trace("LIST_PAGE", url=list_url)
             list_reasons = self.challenge_reasons()
+            if list_reasons:
+                # REFUSE THE JUMP. A reader shown a verification overlay on a
+                # list page does not click through to a post: jumping anyway is
+                # the exact "scripted" signature this scheme exists to avoid, and
+                # it throws away the challenged document -- the page the operator
+                # needs on screen in order to clear it. Raising (instead of
+                # recording it as diagnostics and proceeding) hands the caller the
+                # access-block path, so the same visible-verification wait runs
+                # against the page that is actually showing the challenge.
+                self._trace(
+                    "LIST_CHALLENGE", url=list_url, reasons=";".join(list_reasons)
+                )
+                raise EastmoneyBrowserChallengeError(
+                    "bar list page is behind verification",
+                    reasons=[f"list_page:{reason}" for reason in list_reasons],
+                )
             # Only capture from here on: the list page's own document response
             # must never be mistaken for the detail's.
             captured["documents"].clear()
+            dwell = self._dwell_on_list_page()
+            # LOOK AGAIN, IMMEDIATELY BEFORE THE JUMP (added 2026-09-28).
+            # The probe above runs ~0.2s after `domcontentloaded`, and the
+            # verification overlay is injected client-side AFTER that -- the
+            # dwell exists precisely because a reader pauses on a list page, and
+            # it is 0.4-1.6s of the page getting on with its own scripts. Without
+            # this second probe, an overlay that appears during the dwell was
+            # never seen at all: the run jumped away, destroying the challenge
+            # page, and logged NOTHING -- no LIST_CHALLENGE, no block, just the
+            # operator's captcha disappearing under them (measured 2026-09-28:
+            # 111 navigations across two live streams with a single LIST_CHALLENGE,
+            # while the operator watched the slider get wiped twice).
+            pre_jump_reasons = self.challenge_reasons()
+            if pre_jump_reasons:
+                self._trace(
+                    "LIST_CHALLENGE", url=list_url, when="pre_jump",
+                    reasons=";".join(pre_jump_reasons),
+                )
+                raise EastmoneyBrowserChallengeError(
+                    "bar list page came back challenged during the dwell",
+                    reasons=[
+                        f"list_page:{reason}" for reason in pre_jump_reasons
+                    ],
+                )
+            self._trace("JUMP", url=url, dwell_sec=round(dwell, 2))
             page.evaluate("u => { location.href = u; }", url)
             page.wait_for_url(
                 _landed,
@@ -345,7 +472,9 @@ class EastmoneyBrowserTransport:
         if self.detail_referer_from_list:
             list_url = self._bar_list_url(url)
             if list_url is not None:
+                self._trace("FETCH_MODE", url=url, mode="referer")
                 return self._get_after_list_visit(url, list_url, timeout=timeout)
+        self._trace("FETCH_MODE", url=url, mode="direct")
         return self._goto_page(url, timeout=timeout)[0]
 
     def _goto_page(

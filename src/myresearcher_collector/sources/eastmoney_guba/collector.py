@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -166,6 +167,23 @@ class FetchFailure(RuntimeError):
         self.kind = kind
 
 
+def _list_page_no(url: str) -> int:
+    """The list page a URL refers to: 1 for the bare `f.html`, -1 if not a list.
+
+    Used only by the request trace, so it must never raise on an unexpected URL
+    shape -- a diagnostic that can throw while diagnosing is worse than none.
+    """
+    tail = url.rsplit(",", 1)[-1]
+    if tail.endswith(".html"):
+        tail = tail[: -len(".html")]
+    if tail.startswith("f_"):
+        try:
+            return int(tail[2:])
+        except ValueError:
+            return -1
+    return 1 if tail == "f" else -1
+
+
 class EastmoneyGubaCollector:
     """Collect standard Guba posts without cleaning or semantic filtering."""
 
@@ -229,10 +247,34 @@ class EastmoneyGubaCollector:
             raise ValueError("unsupported acquisition capture method")
         return status, text, body, headers, final_url, capture_method
 
+    def _trace(self, event: str, **fields: object) -> None:
+        """One line per request-plane event, on stderr.
+
+        WHY THIS EXISTS: on 2026-09-27 a backfill walk persisted page 133 and
+        then produced nothing for ~2.3 minutes -- no anchor row, no stderr, no
+        challenge page -- and nothing in the pipeline recorded what it was doing,
+        so the only explanation available was a guess about which sleep it had
+        been in. This is that record: every request attempt, every paced wait and
+        every backoff, with the seconds, so a silent gap decomposes into named
+        causes (a gap with no line at all means the time went inside
+        `transport.get`, i.e. the browser).
+
+        stderr rather than a new file on purpose: the drivers already send each
+        stock's stderr to `runtime/logs/backfill-<stock>-<tag>.err`, so the trace
+        lands beside the report it explains -- no new plumbing, no new file to
+        rotate or clean up, and it shows up in the same place a human already
+        looks when a stock fails.
+        """
+        stamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+        detail = " ".join(f"{key}={value}" for key, value in fields.items())
+        print(f"{stamp} {event} {detail}".rstrip(), file=sys.stderr, flush=True)
+
     def _fetch(self, url: str, counters: RuntimeCounters) -> tuple[str, bytes, dict[str, str], str]:
         attempts = self.config.max_attempts
+        page = _list_page_no(url)
         for attempt in range(1, self.config.max_attempts + 1):
             counters.requests_total += 1
+            self._trace("FETCH", page=page, attempt=attempt)
             try:
                 self._rate_limit()
                 response = self.transport.get(url, timeout=self.config.timeout_seconds)
@@ -282,6 +324,8 @@ class EastmoneyGubaCollector:
                     self._backoff(attempt, headers)
                     continue
                 counters.requests_success += 1
+                self._trace("FETCH_OK", page=page, attempt=attempt,
+                            status=status, bytes=len(body))
                 return text, body, headers, final_url or url
 
             counters.requests_failed += 1
@@ -315,8 +359,16 @@ class EastmoneyGubaCollector:
             page_size=len(parsed.rows) + len(parsed.out_of_scope_rows),
         )
 
-    def _rate_limit(self) -> None:
+    def _rate_limit(self) -> float:
+        """Sleep out the inter-request interval; returns how long it slept.
+
+        The return value exists for the request trace: "we were waiting between
+        requests" and "we were waiting to retry a failure" are different answers
+        to "why did this run produce nothing for two minutes", and only the
+        caller can label which one it was.
+        """
         now = self.monotonic_fn()
+        slept = 0.0
         if self._last_request_at is not None:
             interval = self.config.min_interval_seconds
             if self.config.randomize_pacing:
@@ -324,7 +376,10 @@ class EastmoneyGubaCollector:
             remaining = interval - (now - self._last_request_at)
             if remaining > 0:
                 self.sleep_fn(remaining)
+                slept = remaining
+                self._trace("PACE", wait_sec=round(remaining, 2))
         self._last_request_at = self.monotonic_fn()
+        return slept
 
     def _backoff(self, attempt: int, headers: Mapping[str, str] | None = None) -> None:
         exponential = min(
@@ -340,6 +395,10 @@ class EastmoneyGubaCollector:
             delay = max(delay, retry_after)
         if delay > 0:
             self.sleep_fn(delay)
+            self._trace(
+                "BACKOFF", attempt=attempt, wait_sec=round(delay, 2),
+                retry_after=None if retry_after is None else round(retry_after, 2),
+            )
 
     def _retry_after(self, headers: Mapping[str, str]) -> float | None:
         value = headers.get("retry-after")
