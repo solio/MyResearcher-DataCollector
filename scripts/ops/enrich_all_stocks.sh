@@ -76,6 +76,105 @@ SPLIT=${SPLIT:-0}
 # scripts/ops/README.md.
 MIN_DELAY=${MIN_DELAY:-3.0}
 MAX_DELAY=${MAX_DELAY:-10.0}
+# Pacing shape (2026-09-28). `longtail` replaces the tightly-bounded
+# `random.uniform(MIN_DELAY, MAX_DELAY)` loop with an Exponential tail plus a
+# scheduled "stop and read" pause every READ_EVERY posts; `uniform` reproduces
+# the historical loop exactly and is the A/B control arm.
+#
+# These MUST be defaulted here, with `:-`, and referenced as plain variables
+# below. The first version of this block defaulted them only inside the flag
+# array and used bare `$PACE_MODEL` in the RUN_START echo -- under `set -u` that
+# aborts the whole script at the echo, before a single request is made. That is
+# the failure the operator hit; see the DRY_RUN note lower down for why the
+# dry run did not catch it.
+# Which browser runtime. `chrome-cdp` attaches to a Chrome the OPERATOR launched
+# (normal sandbox, no --no-sandbox, navigator.webdriver=false) instead of letting
+# Playwright launch one:
+#   nohup "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+#     --user-data-dir="$HOME/.myresearcher-chrome" --no-first-run \
+#     --no-default-browser-check --remote-debugging-port=9222 \
+#     --remote-allow-origins=* about:blank >/tmp/chrome-cdp.log 2>&1 &
+# Endpoint override: MYRESEARCHER_CDP_ENDPOINT (default http://127.0.0.1:9222).
+# How long to hold for a human to clear a challenge, and how many windows before
+# a captured post is given up on. Deliberately still 180/1 by default: measured
+# 2026-09-28, a captured detail page stayed captured for the whole 180s window
+# (WAIT_TIMEOUT, no dialog), so a second window mostly buys dead time. What makes
+# a challenge cheap is the queue executor tolerating the halt -- see
+# enrich_queue.sh -- not a longer wait. Exposed so it can be tuned per run.
+CHALLENGE_WAIT=${CHALLENGE_WAIT:-180}
+CHALLENGE_RETRIES=${CHALLENGE_RETRIES:-1}
+ACQ_MODE=${ACQ_MODE:-managed-chromium}
+PACE_MODEL=${PACE_MODEL:-longtail}
+READ_EVERY=${READ_EVERY:-20}
+READ_MIN=${READ_MIN:-30}
+READ_MAX=${READ_MAX:-90}
+# BROWSER IDENTITY, NOT PACING (2026-09-28).
+#
+# The source hands the browser an identity cookie on first contact -- observed in
+# the profiles as `nid18` plus `gviem`/`gviem_create_time` on .eastmoney.com,
+# alongside `ADVC/ADVS/ASL` and a JSESSIONID. Those are exactly the things a risk
+# engine keys on, and **every run used to throw the whole profile away**
+# (`_fresh_managed_profile_path()`), so each run arrived as a brand-new visitor
+# with a brand-new identity. The operator's own Chrome, on the SAME IP, browses
+# guba without a challenge -- which is what makes the browser identity, not the
+# IP and not the interval, the thing to fix first.
+#
+# So the driver now points managed-chromium at one STABLE profile directory that
+# is reused across runs, and therefore accumulates cookies/history like a real
+# browser does.
+#
+#   PROFILE_DIR unset  -> <repo>/.runtime/browser-profiles/eastmoney-managed-persistent
+#   PROFILE_DIR=""     -> do not pass --profile-dir; back to a fresh profile per
+#                         run (the historical behaviour, and the control arm if
+#                         this is ever measured properly)
+#
+# NOTE FOR THE PRUNER: the persistent directory is deliberately a SIBLING of
+# `eastmoney-managed`, not a child, because `prune_browser_profiles.sh` deletes
+# from `eastmoney-managed` -- keeping the identity we spent requests earning
+# inside the set that gets swept would defeat the whole point.
+# NOTE ON THE DEFAULTING OPERATOR: this uses `${VAR-default}` (single dash), not
+# `${VAR:-default}`. With `:-` an explicitly empty value is treated as unset, so
+# `PROFILE_DIR= ...` would silently fall back to the persistent path and the
+# "go back to a fresh profile" escape hatch would be a lie -- which is exactly
+# what the first version of this block did.
+#
+# *** ONE PERSISTENT PROFILE == ONE CONCURRENT STREAM *** (regression fixed
+# 2026-09-28, hours after I introduced it). Making the profile persistent buys
+# identity continuity and costs parallelism: a Chrome user-data-dir is an
+# exclusive resource, so two runs pointed at the same directory do not get two
+# browsers -- the second launch hands its URL to the first instance and exits,
+# leaving both runs navigating the SAME tab. The symptom is silent: a new tab
+# appears and sits on about:blank.
+#
+# So each concurrent stream needs its own profile. Set WORKER_ID per stream:
+#   WORKER_ID=1 ...   -> .../eastmoney-managed-persistent-1
+#   WORKER_ID=2 ...   -> .../eastmoney-managed-persistent-2
+# Unset (the default) keeps the single-stream path unchanged.
+WORKER_ID=${WORKER_ID:-}
+PROFILE_DIR=${PROFILE_DIR-$REPO/.runtime/browser-profiles/eastmoney-managed-persistent${WORKER_ID:+-$WORKER_ID}}
+PROFILE_FLAG=()
+if [ -n "$PROFILE_DIR" ]; then
+  PROFILE_FLAG=(--profile-dir "$PROFILE_DIR")
+fi
+
+# Fail loudly when the profile is already held by a live process. Without this
+# the collision above is invisible: the run does not error, it just never
+# progresses, and the operator is left staring at about:blank.
+# Only when the profile is actually used: `chrome-cdp` ignores --profile-dir
+# entirely (it attaches to a browser somebody else launched), so checking there
+# would abort a perfectly good run.
+# DETECT ONLY -- DO NOT EXIT HERE. The exit has to come after the DRY_RUN block:
+# a dry run launches no browser and touches no profile, so gating it on profile
+# occupancy made `DRY_RUN=1` fail on a machine where a run happened to be live.
+# That is the whole point of a dry run -- it must be runnable at any time. The
+# busy state is still computed here so it can be REPORTED by the dry run too.
+PROFILE_BUSY_PID=""
+if [ "$ACQ_MODE" = "managed-chromium" ] && [ -n "$PROFILE_DIR" ] && [ -L "$PROFILE_DIR/SingletonLock" ]; then
+  holder=$(readlink "$PROFILE_DIR/SingletonLock" | sed 's/.*-//')
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    PROFILE_BUSY_PID="$holder"
+  fi
+fi
 # DETAIL_REFERER=1 reaches each detail by first opening that bar's list page and
 # then navigating in-page with JS, so the detail request carries a Referer and
 # Sec-Fetch-Site: same-origin (a plain `goto(referer=...)` would carry the header
@@ -84,6 +183,19 @@ MAX_DELAY=${MAX_DELAY:-10.0}
 # rather than a default, and it is echoed on the RUN_START line so a report can
 # always be traced back to the mode that produced it.
 DETAIL_REFERER=${DETAIL_REFERER:-0}
+# How long to sit on the bar's list page before the JS jump to the detail.
+# Splitting the pause this way moves part of the inter-request sleep to where a
+# reader would actually pause, and stops the scheme's two hops from being back to
+# back. Defaults are ON only when the scheme that opens a list page is on (there
+# is no list page otherwise), they are RANDOMISED between min and max because a
+# fixed gap is its own signature, and both are echoed on RUN_START so the mode is
+# never ambiguous.
+DETAIL_DWELL_MIN=${DETAIL_DWELL_MIN:-0.4}
+DETAIL_DWELL_MAX=${DETAIL_DWELL_MAX:-1.6}
+if [ "$DETAIL_REFERER" != "1" ]; then
+  DETAIL_DWELL_MIN=0
+  DETAIL_DWELL_MAX=0
+fi
 PLAN_FILE="$RUNLOG_DIR/plan.txt"
 
 # NOTE: must be a function, not `PLAN="$PY $SCRIPT_DIR/enrich_plan.py"`.
@@ -105,38 +217,35 @@ if [ -n "${STOCKS:-}" ]; then
     printf 'driver\t%s\t0\n' "$s" >> "$tmp"
   done
   # Atomic replace, same as enrich_plan.py: a tail worker reading mid-write must
-  # never see a partial driver list and mistake the rest for unclaimed work.
+  # never see a partial driver list and mistake the rest for unclaimed work. It is
+  # still written when an ad-hoc queue is requested, so a stale split cannot be
+  # mistaken for a live one.
   mv -f "$tmp" "$PLAN_FILE"
   echo "PLAN_OVERRIDE stocks=${STOCKS} (no split published; tail worker will refuse)"
-elif [ "$SPLIT" = "1" ]; then
-  plan write-plan "$RUNLOG_DIR" --split || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
-  echo "SPLIT_MODE: this process owns only the driver rows; the tail rows need enrich_tail_worker.sh"
+  # ...but the QUEUE is built from the environment, NOT by reading the plan back.
+  # N simultaneous ad-hoc instances share one plan path, so a read-back lets
+  # whoever wrote last decide what all of them run. Observed 2026-09-27 on a
+  # five-instance run: two of the five silently duplicated one queue's work while
+  # the stock that instance was supposed to cover was left unclaimed.
+  stocks=(${=STOCKS})
 else
-  plan write-plan "$RUNLOG_DIR" || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+  if [ "$SPLIT" = "1" ]; then
+    plan write-plan "$RUNLOG_DIR" --split || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+    echo "SPLIT_MODE: this process owns only the driver rows; the tail rows need enrich_tail_worker.sh"
+  else
+    plan write-plan "$RUNLOG_DIR" || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+  fi
+  stocks=()
+  while IFS=$'\t' read -r role code _pending; do
+    [ "$role" = "driver" ] && [ -n "$code" ] && stocks+=("$code")
+  done < "$PLAN_FILE"
 fi
-
-stocks=()
-while IFS=$'\t' read -r role code _pending; do
-  [ "$role" = "driver" ] && [ -n "$code" ] && stocks+=("$code")
-done < "$PLAN_FILE"
 if [ ${#stocks[@]} -eq 0 ]; then
   echo "NO_BACKLOG $(date -u +%FT%TZ)"
   echo "ALL_DONE $(date -u +%FT%TZ)"
   exit 0
 fi
 echo "PLAN_DRIVER_QUEUE ${stocks[*]}"
-
-# DRY_RUN=1 resolves the plan and the per-stock pending counts, then exits
-# without launching a browser. Use it to see exactly what a run would do — and,
-# with the tail worker, to confirm the two queues are disjoint — before
-# committing to a live run.
-if [ "${DRY_RUN:-0}" = "1" ]; then
-  for s in "${stocks[@]}"; do
-    echo "DRY_RUN stock=$s pending=$(pending_count "$s")"
-  done
-  echo "DRY_RUN_OK $(date -u +%FT%TZ)"
-  exit 0
-fi
 
 # Guard: no post already marked missing may be re-requested by this run.
 revisit_guard() {
@@ -153,9 +262,48 @@ if [ -f "$JSONL" ]; then
 fi
 
 RUN_START_ISO=$(date -u +%FT%TZ)
-echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY detail_referer=$DETAIL_REFERER"
+echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY detail_referer=$DETAIL_REFERER dwell=${DETAIL_DWELL_MIN}-${DETAIL_DWELL_MAX} pace_model=$PACE_MODEL read_every=$READ_EVERY profile_dir=${PROFILE_DIR:-fresh} worker=${WORKER_ID:-none} acq_mode=$ACQ_MODE profile_busy=${PROFILE_BUSY_PID:-no} challenge_wait=$CHALLENGE_WAIT challenge_retries=$CHALLENGE_RETRIES"
 DETAIL_REFERER_FLAG=()
 [ "$DETAIL_REFERER" = "1" ] && DETAIL_REFERER_FLAG=(--detail-referer-from-list)
+DETAIL_DWELL_FLAG=()
+if [ "$DETAIL_DWELL_MAX" != "0" ]; then
+  DETAIL_DWELL_FLAG=(--detail-dwell-min "$DETAIL_DWELL_MIN" --detail-dwell-max "$DETAIL_DWELL_MAX")
+fi
+# Pacing knobs (added 2026-09-28): the per-post delay shape and the scheduled
+# "stop and read" pause. Defaults are the collector's own (longtail, every 20
+# posts); override to compare or to revert to the historical uniform loop.
+PACE_FLAG=(--pace-model "$PACE_MODEL" --read-every "$READ_EVERY" \
+           --read-min "$READ_MIN" --read-max "$READ_MAX")
+
+# DRY_RUN=1 resolves the plan, the per-stock pending counts, the RUN_START
+# preamble and every flag array, then exits without launching a browser.
+#
+# IT DELIBERATELY SITS HERE, AFTER THE START-UP PATH, AND NOT NEXT TO THE PLAN
+# READING. It used to exit before the RUN_START echo and the flag arrays, which
+# made it useless as a smoke test: a bare `$PACE_MODEL` in that echo aborting
+# the whole script under `set -u` slipped straight through a green dry run and
+# only surfaced as `PACE_MODEL: parameter not set` when the operator ran it for
+# real. A dry run has to walk the same shell path as a live run, up to the point
+# where it would touch the network -- otherwise "it dry-runs clean" means
+# nothing.
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  for s in "${stocks[@]}"; do
+    echo "DRY_RUN stock=$s pending=$(pending_count "$s")"
+  done
+  echo "DRY_RUN_OK $(date -u +%FT%TZ)"
+  exit 0
+fi
+
+# A live run must NOT share a persistent profile -- see the note where it is
+# detected. This is the refusal; the dry run above has already returned.
+if [ -n "$PROFILE_BUSY_PID" ]; then
+  echo "PROFILE_BUSY profile_dir=$PROFILE_DIR held_by_pid=$PROFILE_BUSY_PID"
+  echo "PROFILE_BUSY hint: a persistent Chrome profile is exclusive. Give this"
+  echo "PROFILE_BUSY hint: stream its own profile with WORKER_ID=<n>, or stop"
+  echo "PROFILE_BUSY hint: the other run. (DRY_RUN=1 is never blocked by this.)"
+  exit 3
+fi
+
 for s in "${stocks[@]}"; do
   pend=$(pending_count "$s")
   if [ "${pend:-0}" -eq 0 ]; then
@@ -168,10 +316,13 @@ for s in "${stocks[@]}"; do
   rm -f "$RUNLOG_DIR/$s.json"
   PYTHONPATH=src "$PY" -m myresearcher_collector.cli.main enrich-details \
     --source eastmoney_guba --stock "$s" --data-dir data \
-    --acquisition-mode managed-chromium --confirm-live \
+    --acquisition-mode "$ACQ_MODE" --confirm-live \
     --min-delay "$MIN_DELAY" --max-delay "$MAX_DELAY" \
-    --challenge-wait 180 --challenge-retries 1 \
+    --challenge-wait "$CHALLENGE_WAIT" --challenge-retries "$CHALLENGE_RETRIES" \
     "${DETAIL_REFERER_FLAG[@]}" \
+    "${DETAIL_DWELL_FLAG[@]}" \
+    "${PACE_FLAG[@]}" \
+    "${PROFILE_FLAG[@]}" \
     > "$RUNLOG_DIR/$s.json" 2> "$RUNLOG_DIR/$s.err"
   rc=$?
 
