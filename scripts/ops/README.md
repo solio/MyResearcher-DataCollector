@@ -39,7 +39,7 @@ between the driver, the tail worker and any ad-hoc query.
 |---|---|
 | `list` | `<stock>\t<pending>` for every stock with pending work, pending desc |
 | `pending <stock>` | the pending count as a bare integer (`0` if none) |
-| `write-plan <outdir> [--split]` | writes `<outdir>/plan.txt` atomically, prints `PLAN_MODE` + `PLAN_DRIVER`/`PLAN_TAIL` rows |
+| `write-plan <outdir> [--split]` | writes `<outdir>/plan.txt` atomically, prints `PLAN_MODE` (totals); `--no-per-stock` drops the per-stock `PLAN_DRIVER`/`PLAN_TAIL` rows, which duplicate the per-stock lines the driver prints anyway |
 | `pick <driver\|tail> [plan]` | `<stock> <pending>` — smallest unclaimed backlog on that side |
 
 Eligibility = `source='eastmoney_guba'` **and** trimmed list-title length `>= 40`

@@ -103,6 +103,9 @@ MAX_DELAY=${MAX_DELAY:-10.0}
 # enrich_queue.sh -- not a longer wait. Exposed so it can be tuned per run.
 CHALLENGE_WAIT=${CHALLENGE_WAIT:-180}
 CHALLENGE_RETRIES=${CHALLENGE_RETRIES:-1}
+# Which end of each stock's backlog to enrich first: `asc` = oldest first (what
+# ORDER BY published_at did before this knob existed), `desc` = newest first.
+ENRICH_ORDER=${ENRICH_ORDER:-asc}
 ACQ_MODE=${ACQ_MODE:-managed-chromium}
 PACE_MODEL=${PACE_MODEL:-longtail}
 READ_EVERY=${READ_EVERY:-20}
@@ -230,10 +233,10 @@ if [ -n "${STOCKS:-}" ]; then
   stocks=(${=STOCKS})
 else
   if [ "$SPLIT" = "1" ]; then
-    plan write-plan "$RUNLOG_DIR" --split || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+    plan write-plan "$RUNLOG_DIR" --split --no-per-stock || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
     echo "SPLIT_MODE: this process owns only the driver rows; the tail rows need enrich_tail_worker.sh"
   else
-    plan write-plan "$RUNLOG_DIR" || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
+    plan write-plan "$RUNLOG_DIR" --no-per-stock || { echo "HALT_ON_PLAN_FAILED"; exit 0; }
   fi
   stocks=()
   while IFS=$'\t' read -r role code _pending; do
@@ -262,7 +265,7 @@ if [ -f "$JSONL" ]; then
 fi
 
 RUN_START_ISO=$(date -u +%FT%TZ)
-echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY detail_referer=$DETAIL_REFERER dwell=${DETAIL_DWELL_MIN}-${DETAIL_DWELL_MAX} pace_model=$PACE_MODEL read_every=$READ_EVERY profile_dir=${PROFILE_DIR:-fresh} worker=${WORKER_ID:-none} acq_mode=$ACQ_MODE profile_busy=${PROFILE_BUSY_PID:-no} challenge_wait=$CHALLENGE_WAIT challenge_retries=$CHALLENGE_RETRIES"
+echo "RUN_START $RUN_START_ISO jsonl_baseline=$JSONL_BASELINE min_delay=$MIN_DELAY max_delay=$MAX_DELAY detail_referer=$DETAIL_REFERER dwell=${DETAIL_DWELL_MIN}-${DETAIL_DWELL_MAX} pace_model=$PACE_MODEL read_every=$READ_EVERY profile_dir=${PROFILE_DIR:-fresh} worker=${WORKER_ID:-none} acq_mode=$ACQ_MODE profile_busy=${PROFILE_BUSY_PID:-no} enrich_order=$ENRICH_ORDER challenge_wait=$CHALLENGE_WAIT challenge_retries=$CHALLENGE_RETRIES"
 DETAIL_REFERER_FLAG=()
 [ "$DETAIL_REFERER" = "1" ] && DETAIL_REFERER_FLAG=(--detail-referer-from-list)
 DETAIL_DWELL_FLAG=()
@@ -287,9 +290,30 @@ PACE_FLAG=(--pace-model "$PACE_MODEL" --read-every "$READ_EVERY" \
 # where it would touch the network -- otherwise "it dry-runs clean" means
 # nothing.
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  for s in "${stocks[@]}"; do
-    echo "DRY_RUN stock=$s pending=$(pending_count "$s")"
+  # Per-stock pending, plus the predicted wall clock under THIS config. The
+  # estimate is a separate script so it is testable on its own; it prints its own
+  # assumptions and a cross-check against what the ledger says the runs actually
+  # did, so a wrong prediction is visible rather than authoritative.
+  #
+  # Arrays, not `$(...)`: zsh does not word-split an unquoted command
+  # substitution, so the flag list has to be built as one.
+  # `pending` is printed here, once per stock, and nowhere else: the estimate
+  # echoes the total in ETA_TOTAL but not the per-stock counts (it was reporting
+  # both, which made the dry run its own echo).
+  # The estimate script prints the per-stock line itself (`DRY_RUN stock=X
+  # pending=N eta=…`), so this loop only resolves the counts and hands them over:
+  # printing them here as well listed every stock twice.
+  eta_args=()
+  for eta_stock in "${stocks[@]}"; do
+    eta_pending=$(pending_count "$eta_stock"); eta_pending=${eta_pending:-0}
+    eta_args+=(--stock "$eta_stock=$eta_pending")
   done
+  "$PY" scripts/ops/eta_estimate.py "${eta_args[@]}" \
+    --pace-model "$PACE_MODEL" --min-delay "$MIN_DELAY" --max-delay "$MAX_DELAY" \
+    --read-every "$READ_EVERY" --read-min "$READ_MIN" --read-max "$READ_MAX" \
+    --detail-referer "$DETAIL_REFERER" \
+    --dwell-min "$DETAIL_DWELL_MIN" --dwell-max "$DETAIL_DWELL_MAX" \
+    --workers "${WORKERS:-1}" 2>&1
   echo "DRY_RUN_OK $(date -u +%FT%TZ)"
   exit 0
 fi
@@ -319,6 +343,7 @@ for s in "${stocks[@]}"; do
     --acquisition-mode "$ACQ_MODE" --confirm-live \
     --min-delay "$MIN_DELAY" --max-delay "$MAX_DELAY" \
     --challenge-wait "$CHALLENGE_WAIT" --challenge-retries "$CHALLENGE_RETRIES" \
+    --enrich-order "$ENRICH_ORDER" \
     "${DETAIL_REFERER_FLAG[@]}" \
     "${DETAIL_DWELL_FLAG[@]}" \
     "${PACE_FLAG[@]}" \

@@ -345,6 +345,12 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--source", choices=("eastmoney_guba",), required=True)
     enrich.add_argument("--stock", required=True)
     enrich.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
+    enrich.add_argument(
+        "--enrich-order", choices=("asc", "desc"), default="asc",
+        help="which end of the backlog to enrich first, by post time: 'asc' = "
+        "oldest first (the historical ORDER BY published_at), 'desc' = newest "
+        "first. Recorded in the report so an arm is auditable.",
+    )
     enrich.add_argument("--min-delay", type=float, default=3.0)
     enrich.add_argument("--max-delay", type=float, default=10.0)
     enrich.add_argument(
@@ -1041,6 +1047,7 @@ def main(argv: list[str] | None = None) -> int:
                 transport=transport, raw_data_dir=args.data_dir.expanduser().resolve(),
                 min_delay=args.min_delay, max_delay=args.max_delay,
                 challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
+                enrich_order=args.enrich_order,
                 pace_model=args.pace_model,
                 read_every=args.read_every, read_min=args.read_min, read_max=args.read_max,
                 log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,

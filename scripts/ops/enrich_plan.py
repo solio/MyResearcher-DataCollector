@@ -24,7 +24,7 @@ Usage
 -----
     enrich_plan.py list                        # "<stock>\t<pending>", pending desc
     enrich_plan.py pending <stock>             # pending count for one stock
-    enrich_plan.py write-plan <outdir> [--split]
+    enrich_plan.py write-plan <outdir> [--split|--single] [--no-per-stock]
     enrich_plan.py pick <driver|tail> [plan]   # "<stock> <pending>", smallest first
 
 `plan.txt` is a single file, replaced atomically. **Without `--split` every stock
@@ -237,7 +237,7 @@ def cmd_pick(role: str, plan: Path) -> int:
     return 0
 
 
-def cmd_write_plan(outdir: Path, do_split: bool) -> int:
+def cmd_write_plan(outdir: Path, do_split: bool, *, per_stock: bool = True) -> int:
     work = backlog()
     if do_split:
         driver, tail = split(work)
@@ -270,11 +270,16 @@ def cmd_write_plan(outdir: Path, do_split: bool) -> int:
         f" driver_stocks={len(driver)} driver_pending={sum(n for _, n in driver)}"
         f" tail_stocks={len(tail)} tail_pending={sum(n for _, n in tail)}"
     )
-    for label, side in (("PLAN_DRIVER", driver), ("PLAN_TAIL", tail)):
-        if not side:
-            print(f"{label} (none)")
-        for code, n in side:
-            print(f"{label} stock={code} pending={n}")
+    if per_stock:
+        # `--no-per-stock` exists because these rows duplicate a list the caller
+        # prints anyway -- the live driver per stock (`===== stock=… pending=…`)
+        # and the dry run per stock (`DRY_RUN stock=… pending=… eta=…`). PLAN_MODE
+        # above still carries the totals, so nothing is lost but the repetition.
+        for label, side in (("PLAN_DRIVER", driver), ("PLAN_TAIL", tail)):
+            if not side:
+                print(f"{label} (none)")
+            for code, n in side:
+                print(f"{label} stock={code} pending={n}")
     return 0
 
 
@@ -286,10 +291,16 @@ def main(argv: list[str]) -> int:
         return cmd_pending(args[1])
     if args[:1] == ["write-plan"] and len(args) >= 2:
         rest = args[2:]
-        if rest and rest[0] not in ("--split", "--single"):
-            print(f"unknown flag: {rest[0]}", file=sys.stderr)
+        known = ("--split", "--single", "--no-per-stock")
+        unknown = [flag for flag in rest if flag not in known]
+        if unknown:
+            print(f"unknown flag: {unknown[0]}", file=sys.stderr)
             return 2
-        return cmd_write_plan(Path(args[1]), do_split=(rest[:1] == ["--split"]))
+        return cmd_write_plan(
+            Path(args[1]),
+            do_split=("--split" in rest),
+            per_stock=("--no-per-stock" not in rest),
+        )
     if args[:1] == ["pick"] and len(args) >= 2:
         plan = Path(args[2]) if len(args) >= 3 else REPO / "runtime/enrich-runs/plan.txt"
         return cmd_pick(args[1], plan)
@@ -297,7 +308,7 @@ def main(argv: list[str]) -> int:
     print(
         "usage: enrich_plan.py list"
         " | pending <stock>"
-        " | write-plan <outdir> [--split]"
+        " | write-plan <outdir> [--split|--single] [--no-per-stock]"
         " | pick <driver|tail> [plan.txt]",
         file=sys.stderr,
     )

@@ -254,6 +254,7 @@ def _canonical_candidates(
     *,
     include_short_titles: bool,
     skipped: set[str] | frozenset[str] = frozenset(),
+    order: str = "asc",
 ) -> list[_Candidate]:
     result: list[_Candidate] = []
     for item in store.latest_observations(SOURCE, f"stock:{stock_code}").values():
@@ -274,7 +275,13 @@ def _canonical_candidates(
             )
         )
     result = [candidate for candidate in result if candidate.source_item_id not in skipped]
-    return sorted(result, key=lambda candidate: candidate.canonical_item.published_at)
+    # `reverse` rather than a different key, so `asc` is byte-identical to what ran
+    # before this parameter existed -- the existing order is the control arm.
+    return sorted(
+        result,
+        key=lambda candidate: candidate.canonical_item.published_at,
+        reverse=(order == "desc"),
+    )
 
 
 def _legacy_candidates(
@@ -283,12 +290,16 @@ def _legacy_candidates(
     *,
     include_short_titles: bool,
     skipped: set[str] | frozenset[str] = frozenset(),
+    order: str = "asc",
 ) -> list[_Candidate]:
+    # The direction is picked from a literal, never interpolated: `order` reaches
+    # here from a CLI flag, and this string goes straight into SQL.
+    direction = "DESC" if order == "desc" else "ASC"
     rows = store.conn.execute(
         """SELECT source_item_id,url,title,published_at FROM posts
            WHERE source=? AND stock_code=? AND content IS NULL
              AND url IS NOT NULL
-           ORDER BY published_at""",
+           ORDER BY published_at """ + direction,
         (SOURCE, stock_code),
     ).fetchall()
     result: list[_Candidate] = []
@@ -364,6 +375,7 @@ def execute_detail_enrichment(
     max_delay: float = 10.0,
     challenge_wait_seconds: float = 180.0,
     challenge_retries: int = 3,
+    enrich_order: str = "asc",
     pace_model: str = "longtail",
     read_every: int = 20,
     read_min: float = 30.0,
@@ -390,6 +402,8 @@ def execute_detail_enrichment(
     records the exact detail document as raw evidence.
     """
     rng = rng or random
+    if enrich_order not in ("asc", "desc"):
+        raise ValueError(f"enrich_order must be 'asc' or 'desc', got {enrich_order!r}")
     if pace_model not in ("uniform", "longtail"):
         raise ValueError(f"pace_model must be 'uniform' or 'longtail', got {pace_model!r}")
     if read_every < 0:
@@ -451,6 +465,7 @@ def execute_detail_enrichment(
             stock_code,
             include_short_titles=include_short_titles,
             skipped=known_missing,
+            order=enrich_order,
         )
         storage_mode = "canonical_observations"
     else:
@@ -460,6 +475,7 @@ def execute_detail_enrichment(
             stock_code,
             include_short_titles=include_short_titles,
             skipped=known_missing,
+            order=enrich_order,
         )
         storage_mode = "legacy_posts"
     if limit is not None:
@@ -986,6 +1002,7 @@ def execute_detail_enrichment(
             # And the pacing that produced them: the request *shape* is not just
             # which pages but when they were asked for, and a run that changed it
             # must say so for its block rate to be comparable to a baseline.
+            "enrich_order": enrich_order,
             "pace_model": pace_model,
             "read_every": read_every,
             "read_min_max": [read_min, read_max] if read_every else None,

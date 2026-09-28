@@ -167,3 +167,53 @@ def test_a_worker_id_gives_the_stream_its_own_profile(tmp_path):
     assert "eastmoney-managed-persistent-7" in result.stdout
     assert "worker=7" in result.stdout
     assert "profile_busy=no" in result.stdout
+
+
+def test_the_enrich_order_reaches_the_cli_and_is_reported():
+    result = _dry_run()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "enrich_order=asc" in result.stdout
+
+
+def test_the_enrich_order_is_overridable():
+    result = _dry_run(ENRICH_ORDER="desc")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "enrich_order=desc" in result.stdout
+
+
+def test_the_dry_run_reports_a_predicted_wall_clock():
+    result = _dry_run()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    # The estimate is printed with every assumption it made, plus a cross-check
+    # against the ledger, so a wrong prediction is visible rather than trusted.
+    assert "DRY_RUN_ETA_MODEL" in result.stdout
+    assert "DRY_RUN_ETA_TOTAL" in result.stdout
+    assert "DRY_RUN_ETA_CROSSCHECK" in result.stdout
+    assert "DRY_RUN_ETA_CAVEAT" in result.stdout
+
+
+def test_each_stock_appears_once_in_the_dry_run():
+    """REGRESSION: the estimate used to list every stock a second time.
+
+    The driver printed `DRY_RUN stock=X pending=N` and the estimate then printed
+    `DRY_RUN_ETA stock=X eta=…` -- the same code twice, and `posts_per_min` (a
+    property of the config alone) on every one of those lines. One line per stock,
+    carrying both numbers, is the whole point of the summary.
+    """
+    result = _dry_run()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    stock_lines = [l for l in result.stdout.splitlines() if l.startswith("DRY_RUN stock=")]
+    assert len(stock_lines) == 1, result.stdout          # STOCKS=000000 -> one stock
+    # ...and that single line carries both numbers it is about.
+    assert "pending=" in stock_lines[0] and "eta=" in stock_lines[0], stock_lines[0]
+    # The code must not appear twice inside the dry-run summary. Scoped to the
+    # DRY_RUN lines: it legitimately also appears in PLAN_DRIVER_QUEUE above.
+    summary = "\n".join(l for l in result.stdout.splitlines() if l.startswith("DRY_RUN"))
+    assert summary.count("000000") == 1, summary
+    # No leftover duplicate-line format.
+    assert "DRY_RUN_ETA stock=" not in result.stdout
+    assert "DRY_RUN_TOTAL_PENDING" not in result.stdout
