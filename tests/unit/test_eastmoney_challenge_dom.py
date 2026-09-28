@@ -185,3 +185,87 @@ def test_real_normal_detail_pages_are_never_reported_as_blocked() -> None:
             f"{path.name}: expected the captcha asset to be present -- if it is "
             "gone this test no longer exercises the false positive"
         )
+
+
+def test_an_occluded_overlay_is_never_a_block():
+    """A laid-out overlay the reader cannot see must not gate (2026-09-28).
+
+    The site ships its captcha iframe on ordinary pages, and its own promo modal
+    renders in front of it. With geometry-only visibility the probe reported
+    "captcha" for a page showing an APP-download advertisement
+    (`runtime/diagnostics/eastmoney-20260928T091508.png`, `...091721.png`), and a
+    manual-verification wait stalled on it. 2 of the 3 vetoes that day were this.
+    """
+    occluded = _dom(covered_overlays=["iframe[src*=captcha]"])
+    assert challenge_reasons(occluded) == []
+    assert structural_reasons(challenge_reasons(occluded)) == []
+
+
+def test_an_occluded_overlay_is_recorded_as_evidence_alongside_a_real_signal():
+    """When something really did gate, the covered selector is still kept.
+
+    Same reason as `dom_asset`: it is how the next occurrence is told apart from
+    a real overlay without needing a screenshot.
+    """
+    dom = _dom(
+        visible_overlays=["#emcaptcha"],
+        covered_overlays=["iframe[src*=captcha]"],
+    )
+    reasons = challenge_reasons(dom)
+
+    assert "visible_overlay:#emcaptcha" in reasons
+    assert "covered_overlay:iframe[src*=captcha]" in reasons
+
+
+def test_the_overlay_visibility_test_hit_tests_instead_of_measuring_area():
+    """The instrument itself: geometry alone cannot see occlusion."""
+    assert "elementFromPoint" in DOM_CHALLENGE_JS
+    assert "covered_overlays" in DOM_CHALLENGE_JS
+
+
+def test_a_lone_rendered_word_is_not_a_challenge():
+    """REGRESSION for the 2026-09-28 prose false positive.
+
+    `拼图` is an ordinary word ("…非常关键的一块拼图"), and 股吧 posts are full of
+    it. With one token gating on its own, a normal detail page was declared a
+    block, the run was held still for the whole 180s window waiting for a
+    challenge that never existed, and because the word lives in the article it
+    never cleared -- the wait timed out into `access_block`, which the driver
+    treats as fail-closed and uses to end the whole job.
+
+    Photographed at runtime/diagnostics/eastmoney-20260928T134457.png.
+    """
+    assert challenge_reasons(_dom(text_tokens=["拼图"])) == []
+
+
+def test_two_rendered_words_together_still_gate():
+    """The control for the rule above: the genuine prompt gates.
+
+    「拖动下方滑块完成拼图」 carries both words (sliders photographed at
+    runtime/diagnostics/eastmoney-20260928T091536.png), so requiring two keeps
+    the overlay form detectable while a lone prose word cannot gate.
+
+    NOTE: do not justify this with "15 of the 16 text-only ledger rows carry
+    both words" -- those rows are 2026-09-23 **test fixtures** (`source_item_id
+    = "1"`) that were written into the production ledger. The screenshot is the
+    evidence; the ledger rows are not.
+    """
+    reasons = challenge_reasons(_dom(text_tokens=["滑块", "拼图"]))
+
+    assert "visible_text:滑块" in reasons
+    assert "visible_text:拼图" in reasons
+    assert structural_reasons(reasons) == []
+
+
+def test_a_lone_rendered_word_is_still_kept_as_evidence_when_something_gates():
+    """Demoting it must not lose the evidence -- same rule as `dom_asset`."""
+    dom = _dom(visible_overlays=["#emcaptcha"], text_tokens=["拼图"])
+    reasons = challenge_reasons(dom)
+
+    assert "visible_overlay:#emcaptcha" in reasons
+    assert "visible_text:拼图" in reasons
+
+
+def test_include_text_false_hides_the_text_tier_entirely():
+    dom = _dom(text_tokens=["滑块", "拼图"])
+    assert challenge_reasons(dom, include_text=False) == []

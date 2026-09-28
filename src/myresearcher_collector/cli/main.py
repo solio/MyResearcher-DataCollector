@@ -347,6 +347,20 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_ROOT)
     enrich.add_argument("--min-delay", type=float, default=3.0)
     enrich.add_argument("--max-delay", type=float, default=10.0)
+    enrich.add_argument(
+        "--pace-model", choices=("uniform", "longtail"), default="longtail",
+        help="per-post delay shape: 'uniform' = the historical random.uniform "
+        "(min,max); 'longtail' = Exponential tail with a read-pause cadence "
+        "(the default, added 2026-09-28 -- a bursty-with-lulls shape instead of "
+        "a tight loop).",
+    )
+    enrich.add_argument(
+        "--read-every", type=int, default=20,
+        help="with --pace-model=longtail: hold for read-min..read-max seconds "
+        "after every N posts (0 disables the scheduled pause).",
+    )
+    enrich.add_argument("--read-min", type=float, default=30.0)
+    enrich.add_argument("--read-max", type=float, default=90.0)
     enrich.add_argument("--challenge-wait", type=float, default=180.0,
                         help="seconds to leave Chrome open for manual verification")
     enrich.add_argument("--challenge-retries", type=int, default=3)
@@ -358,7 +372,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly enrich titles shorter than 40 characters; default is length >= 40 only",
     )
     enrich.add_argument("--profile-dir", type=Path, default=None)
-    enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean", "managed-chromium"), default="existing-chrome")
+    enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean",
+                                                        "managed-chromium", "chrome-cdp"),
+                        default="managed-chromium")
     enrich.add_argument(
         "--detail-referer-from-list",
         action="store_true",
@@ -368,6 +384,19 @@ def build_parser() -> argparse.ArgumentParser:
             "and Sec-Fetch-Site: same-origin. OFF by default: it doubles the "
             "navigations per detail"
         ),
+    )
+    enrich.add_argument(
+        "--detail-dwell-min", type=float, default=0.0,
+        help=(
+            "with --detail-referer-from-list, sit this many seconds (minimum) on "
+            "the bar's list page before jumping to the detail; the actual pause is "
+            "randomised between min and max, because a fixed gap is its own "
+            "signature. 0 (the default) disables the pause"
+        ),
+    )
+    enrich.add_argument(
+        "--detail-dwell-max", type=float, default=0.0,
+        help="upper bound of the list-page pause; ignored when it is 0",
     )
     enrich_mode = enrich.add_mutually_exclusive_group(required=True)
     enrich_mode.add_argument("--plan-only", action="store_true")
@@ -808,6 +837,13 @@ def execute_backfill_cli(
         "list_navigation": list_navigation,
         "resume_from_page": execution.start_page,
         "status": result.status.value, "stop_reason": result.stop_reason,
+        # The stop message is the only place a failure says *why*. Without it a
+        # report can carry `stop_reason: time_seek_failure` while the four
+        # possible causes -- seek exhaustion, an empty page, a challenge, a
+        # timeout -- are indistinguishable, so the only available response is a
+        # blind retry. Costs one list on every run; saves a live re-run whenever
+        # something fails.
+        "failures": list(result.failures),
         "pages_scanned": stats.pages_scanned,
         "records_received": stats.records_received,
         "records_in_range": stats.records_in_range,
@@ -980,10 +1016,24 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             mode = args.acquisition_mode
             profile = args.profile_dir
+            # The pause is part of the referer scheme, not an independent knob: it
+            # is a pause *on the list page*, and without that scheme the run never
+            # opens one. Asking for it alone is a mistake worth naming rather than
+            # silently ignoring.
+            dwell = (
+                (args.detail_dwell_min, args.detail_dwell_max)
+                if args.detail_dwell_max > 0 else None
+            )
+            if dwell is not None and not args.detail_referer_from_list:
+                raise ValueError(
+                    "--detail-dwell-min/--detail-dwell-max require "
+                    "--detail-referer-from-list: there is no list page to pause on"
+                )
             transport = create_eastmoney_transport(
                 mode,
                 profile_dir=profile,
                 detail_referer_from_list=args.detail_referer_from_list,
+                detail_dwell_seconds=dwell,
             )
             resolved_profile = getattr(transport, "profile_dir", None)
             report = execute_detail_enrichment(
@@ -991,6 +1041,8 @@ def main(argv: list[str] | None = None) -> int:
                 transport=transport, raw_data_dir=args.data_dir.expanduser().resolve(),
                 min_delay=args.min_delay, max_delay=args.max_delay,
                 challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
+                pace_model=args.pace_model,
+                read_every=args.read_every, read_min=args.read_min, read_max=args.read_max,
                 log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
                 include_short_titles=args.include_short_titles,
                 acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None,

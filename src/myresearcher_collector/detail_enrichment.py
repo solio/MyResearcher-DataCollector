@@ -364,6 +364,11 @@ def execute_detail_enrichment(
     max_delay: float = 10.0,
     challenge_wait_seconds: float = 180.0,
     challenge_retries: int = 3,
+    pace_model: str = "longtail",
+    read_every: int = 20,
+    read_min: float = 30.0,
+    read_max: float = 90.0,
+    rng: random.Random | None = None,
     # Required, deliberately, and keyword-only. The run log is an append-only
     # production ledger (`runtime/logs/eastmoney-detail-enrichment.jsonl`); a
     # silent default pointed at that file meant every caller that omitted it --
@@ -384,6 +389,44 @@ def execute_detail_enrichment(
     canonical database instead appends an immutable observation version and
     records the exact detail document as raw evidence.
     """
+    rng = rng or random
+    if pace_model not in ("uniform", "longtail"):
+        raise ValueError(f"pace_model must be 'uniform' or 'longtail', got {pace_model!r}")
+    if read_every < 0:
+        raise ValueError(f"read_every must be >= 0, got {read_every}")
+    if read_every and not (read_min <= read_max):
+        raise ValueError(f"read_min must be <= read_max, got {read_min} > {read_max}")
+
+    # PACING IS A SIGNAL, NOT A QUOTA (2026-09-28).
+    #
+    # The old cadence was `random.uniform(3.0, 5.0)` between posts -- not
+    # metronome-uniform, but a tightly-bounded loop that lands every ~5.5s,
+    # forever, with the same two navigations per post at a fixed dwell. That is a
+    # machine cadence, and the industry literature is blunt about it: humans read
+    # in bursts with lulls; a loop that never pauses to read is itself a
+    # fingerprint even when its per-step jitter is randomised.
+    #
+    # `longtail` keeps roughly the same average but changes the *shape*: most
+    # delays are short, some are long (Exponential tail), and every `read_every`
+    # posts the run pauses for `read_min..read_max` seconds as if stopping to
+    # read. The effect on the source is strictly LESS load per minute at a more
+    # human shape -- it is the one lever that never adds requests, which is the
+    # only lever we may pull while the source is hot.
+    #
+    # `uniform` reproduces the previous behaviour exactly and is the control arm:
+    # with it, a run's block rate can be compared against a `longtail` run to
+    # measure whether the shape actually moves anything. It is OFF by default
+    # until that comparison exists.
+    if pace_model == "longtail":
+        cap = max_delay * 3.0
+        mean_tail = max(1e-9, max_delay - min_delay)
+
+        def _per_post_delay() -> float:
+            return min(cap, min_delay + rng.expovariate(1.0 / mean_tail))
+    else:
+        def _per_post_delay() -> float:
+            return jitter_fn(min_delay, max_delay)
+
     path = Path(db_path)
     tables = _table_names(path)
     canonical = "source_item_observations" in tables
@@ -557,20 +600,88 @@ def execute_detail_enrichment(
         for index, candidate in enumerate(candidates):
             sleep_before = 0.0
             if index and max_delay > 0:
-                sleep_before = jitter_fn(min_delay, max_delay)
+                sleep_before = _per_post_delay()
                 sleep_fn(sleep_before)
+            # A scheduled "stop and read" lull -- part of the longtail arm only.
+            # The uniform arm is the control and must reproduce the historical
+            # loop exactly, or a future longtail-vs-uniform comparison measures
+            # two things at once (this gating was caught by the control test,
+            # not by reasoning).
+            if (
+                pace_model == "longtail"
+                and index
+                and read_every
+                and index % read_every == 0
+            ):
+                read_pause = jitter_fn(read_min, read_max)
+                if read_pause > 0:
+                    stamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+                    print(
+                        f"{stamp} READ_PAUSE sec={round(read_pause, 1)} "
+                        f"after={read_every}_posts",
+                        file=sys.stderr, flush=True,
+                    )
+                    sleep_fn(read_pause)
             request_started = time.monotonic()
             latest_evidence_id: str | None = None
             latest_response: Any = None
             last_challenge: list[str] = []
             try:
                 html = ""
+                # Set when the bar list page was challenged and the wait cleared
+                # it: that path retries the fetch, and if the retry budget runs out
+                # first this flag is what makes the post-loop check report a
+                # block instead of a parse failure on an empty document.
+                list_page_blocked = False
                 for attempt in range(max(1, challenge_retries + 1)):
                     request_started = time.monotonic()
                     started_at = _utc_now(clock)
                     try:
                         latest_response = transport.get(candidate.url, timeout=30.0)
+                        list_page_blocked = False
                     except Exception as exc:
+                        list_reasons = getattr(exc, "list_page_challenge_reasons", None)
+                        if list_reasons is not None:
+                            # The bar's LIST page came back challenged and the
+                            # scheme refused to jump (see
+                            # `EastmoneyBrowserChallengeError` -- detected by this
+                            # attribute rather than by class so this module stays
+                            # source-agnostic). That is a BLOCK, not a transport
+                            # failure: record it like one, then wait on the page
+                            # that is actually showing the challenge -- the list
+                            # page -- and retry the fetch only if it clears. A wait
+                            # that does NOT clear fails right here, with no further
+                            # request: re-issuing immediately after a failed wait is
+                            # what turns "being challenged" into "being limited".
+                            access_blocks += 1
+                            write_log(
+                                candidate.source_item_id, "access_block", request_started,
+                                sleep_before_sec=round(sleep_before, 3),
+                                challenge_reasons=list(list_reasons) or None,
+                                challenge_tier=_challenge_tier(list(list_reasons)),
+                            )
+                            print(
+                                f"access block for {candidate.source_item_id} (bar list page); "
+                                f"complete visible Chrome verification within "
+                                f"{challenge_wait_seconds:.0f}s; polling current DOM every 5s",
+                                file=sys.stderr, flush=True,
+                            )
+                            manual = wait_for_manual_verification(
+                                transport, timeout_seconds=challenge_wait_seconds,
+                                sleep_fn=sleep_fn,
+                            )
+                            if manual is None:
+                                raise _DetailFetchFailure(
+                                    "access_block",
+                                    "bar list page remained behind verification"
+                                    + (f" [{' ; '.join(list_reasons)}]" if list_reasons else ""),
+                                ) from exc
+                            write_log(
+                                candidate.source_item_id, "manual_verification_resumed",
+                                request_started, event="manual_verification_resumed",
+                            )
+                            list_page_blocked = True
+                            continue
                         if persistence is not None:
                             attempt_id = f"{run_id}-attempt-{attempt_ordinal}"
                             persistence.record_attempt(
@@ -672,8 +783,16 @@ def execute_detail_enrichment(
                         last_challenge = _live_challenge_reasons(transport, latest_response)
                     if html and not is_access_block_page(html) and not last_challenge:
                         break
+                    # GIVE UP HERE, do not loop. Reaching this line means either
+                    # the wait timed out or it returned a page that still carries a
+                    # challenge. Both used to fall through to another iteration,
+                    # i.e. another request fired immediately after a failed wait --
+                    # which is the one thing that turns "being challenged" into
+                    # "being limited". The candidate fails, the stock's report says
+                    # `stopped`, and the driver halts the job fail-closed.
+                    break
 
-                if is_access_block_page(html) or last_challenge:
+                if is_access_block_page(html) or last_challenge or list_page_blocked:
                     raise _DetailFetchFailure(
                         "access_block",
                         "Eastmoney detail remained behind verification"
@@ -854,6 +973,22 @@ def execute_detail_enrichment(
             "detail_referer_from_list": bool(
                 getattr(transport, "detail_referer_from_list", False)
             ),
+            # Read off the transport for the same reason: a report has to be able
+            # to say how long the run paused on each list page, because that pause
+            # is part of the request shape and is invisible in every other field.
+            "detail_dwell_seconds": getattr(transport, "detail_dwell_seconds", None),
+            # Every JS dialog the run saw. These used to live only in the
+            # transport's memory list, which nothing read on this path, so an
+            # alert (the source raises `验证错误,请重试(0)` when a slider check is
+            # rejected) left no trace at all. The report is the artefact a reader
+            # has after the fact; it has to be able to say the alert happened.
+            "dialogs": list(getattr(transport, "dialogs", None) or []),
+            # And the pacing that produced them: the request *shape* is not just
+            # which pages but when they were asked for, and a run that changed it
+            # must say so for its block rate to be comparable to a baseline.
+            "pace_model": pace_model,
+            "read_every": read_every,
+            "read_min_max": [read_min, read_max] if read_every else None,
             "include_short_titles": include_short_titles,
             "failures": failures,
             "samples": samples,

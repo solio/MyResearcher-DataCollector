@@ -29,6 +29,11 @@ ordinary prose. Callers should treat any reason as a block (fail closed) while
 **keeping the tier visible** so a text-only hit can be reported as suspected
 rather than confirmed.
 
+"Could in principle appear in ordinary prose" stopped being hypothetical on
+2026-09-28: it happened, and the prose tier is now the **conjunction of at least
+two** tokens. See `challenge_reasons` -- a lone `拼图` was photographed inside a
+normal post body, and the block it caused would have ended the run.
+
 A CHALLENGE *ASSET* IS NOT A CHALLENGE (learned 2026-09-23, the hard way)
 ------------------------------------------------------------------------
 The first revision of this module fired `dom_asset:` on a challenge marker
@@ -55,6 +60,31 @@ conjunction:
 
 The asset is kept in the output because "the title said 身份核实 and the shell
 carried fd_guba_validate" is useful evidence. It just never decides on its own.
+
+A LAID-OUT OVERLAY IS NOT A VISIBLE ONE (learned 2026-09-28, the same way)
+-----------------------------------------------------------------------
+`STRUCTURAL_SELECTORS` used to be judged by `getBoundingClientRect()` alone --
+"has area, is not `display:none`, not `visibility:hidden`, not `opacity:0`". That
+test cannot see **occlusion**, and the site ships its captcha iframe on ordinary
+pages: two managed-chromium detail pages were photographed while the selector
+`iframe[src*=captcha]` reported "visible", and the reader was looking at the
+Eastmoney **APP-download promo modal** on top of it
+(`runtime/diagnostics/eastmoney-20260928T091508.png`, `...091721.png`). The one
+veto that fired on a genuine slider (`...091536.png`) produced the *same* reason
+string, so the two are indistinguishable from the reasons alone.
+
+The consequence is not cosmetic: a manual-verification wait now holds the run
+still while it believes a captcha is on screen, so a false positive burns the
+full timeout on an advertisement and can halt a job.
+
+Visibility is therefore decided by hit-testing the element's centre
+(`document.elementFromPoint`) and graded:
+
+    visible_overlays:  the reader could actually be looking at it  -> gates
+    covered_overlays:  laid out but something is in front of it    -> evidence
+
+Only the first gates. The second is recorded so the next occurrence can be told
+apart from a real overlay **without** a screenshot.
 """
 
 from __future__ import annotations
@@ -103,21 +133,41 @@ DOM_CHALLENGE_JS = """
   const structuralTokens = %s.filter(t => attrHay.includes(t.toLowerCase()));
   const textTokens = %s.filter(t => textHay.includes(t.toLowerCase()));
   const visible = [];
+  const covered = [];
   for (const sel of %s) {
     for (const el of document.querySelectorAll(sel)) {
       const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
-      if (rect.width > 0 && rect.height > 0 &&
-          style.visibility !== 'hidden' && style.display !== 'none' &&
-          style.opacity !== '0') {
-        visible.push(sel);
-        break;
+      if (!(rect.width > 0 && rect.height > 0 &&
+            style.visibility !== 'hidden' && style.display !== 'none' &&
+            style.opacity !== '0')) continue;
+      // OCCLUSION, not just geometry (added 2026-09-28).
+      // The site ships a captcha iframe on ordinary pages, so "an overlay exists
+      // and is laid out" is NOT "the reader is looking at a challenge". Measured
+      // on managed-chromium detail pages: getBoundingClientRect passed while the
+      // APP-download promo modal sat on top of the captcha iframe
+      // (runtime/diagnostics/eastmoney-20260928T091508.png, ...091721.png), and a
+      // 180s manual-verification wait then stalled on an advertisement -- 2 of 3
+      // vetoes. Hit-test the centre: the element a click would actually reach.
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      let topmost = true;
+      if (cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight) {
+        const hit = document.elementFromPoint(cx, cy);
+        // `hit === el` is the overlay itself (an iframe answer comes back as the
+        // iframe). `el.contains(hit)` is its own content; `hit.contains(el)` is a
+        // wrapper that captured the hit. Anything else is another layer in front.
+        topmost = !hit || hit === el || el.contains(hit) || hit.contains(el);
       }
+      if (topmost) { visible.push(sel); }
+      else { covered.push(sel); }
+      break;
     }
   }
   return {url: location.href, title: title, ready: document.readyState,
           structural_tokens: structuralTokens, text_tokens: textTokens,
-          visible_overlays: visible, visible_text_len: text.length,
+          visible_overlays: visible, covered_overlays: covered,
+          visible_text_len: text.length,
           visible_text_head: text.replace(/\\s+/g, ' ').trim().slice(0, 160)};
 }
 """ % (
@@ -138,9 +188,12 @@ def challenge_reasons(dom: dict, *, include_text: bool = True) -> list[str]:
                                                                     (corroborating)
         ``visible_text:``                                        -> text
 
-    Only a title or a visible overlay can *start* a block; assets are appended
-    for evidence once one of those already fired (see the module docstring --
-    a lone `em_capt.js` is on every page and must not decide anything).
+    Only a title or a visible overlay can *start* a block. Everything else --
+    assets, occluded overlays, a lone rendered word -- is appended for evidence
+    once something has already fired (see the module docstring: a lone
+    `em_capt.js` is on every page, and `拼图` is ordinary prose). A block can also
+    be started by **two or more** rendered challenge words together, which is the
+    real prompt (`拖动下方滑块完成拼图`) and not something prose produces.
     """
     if not isinstance(dom, dict):
         return []
@@ -168,8 +221,50 @@ def challenge_reasons(dom: dict, *, include_text: bool = True) -> list[str]:
             f"dom_asset:{token}" for token in (dom.get("structural_tokens") or [])
         )
 
-    if include_text:
-        reasons.extend(f"visible_text:{token}" for token in (dom.get("text_tokens") or []))
+    # THE TEXT TIER NEEDS A CONJUNCTION TOO (2026-09-28).
+    #
+    # A single rendered word is not a challenge. `拼图` is an ordinary Chinese
+    # word -- "…是整个过程里非常关键的一块拼图" -- and 股吧 posts are full of
+    # prose like that. The block path holds the run still for the entire 180s
+    # window waiting for a challenge that is not there, the word never
+    # disappears (it is in the article), so the wait times out into
+    # `access_block`, which the driver treats as fail-closed and uses to end the
+    # job. **Measured on a real run 2026-09-28 13:44-13:47: one prose word cost
+    # 180s and ended the run with 1666 candidates still outstanding**
+    # (trace `runtime/enrich-runs/601012.err`,
+    # screenshot `runtime/diagnostics/eastmoney-20260928T134457.png`).
+    #
+    # Why two tokens and not zero: the genuine prompt is 「拖动下方滑块完成拼图」
+    # and carries BOTH 滑块 and 拼图 (see the sliders photographed in
+    # `runtime/diagnostics/eastmoney-20260928T091536.png`). Requiring both keeps
+    # the 2026-08-13 overlay form detectable -- it had no structural signal, which
+    # is why this tier exists -- while a lone word can no longer gate.
+    #
+    # EVIDENCE DISCIPLINE, because this comment was wrong once already: the first
+    # version cited "15 of 16 text-only blocks carried both words", read off the
+    # ledger. Those 15 rows all have `source_item_id = "1"` and are **test-fixture
+    # rows from 2026-09-23**, written into the production ledger before the
+    # fixture was given its own log path. On real traffic the text tier has fired
+    # exactly **once**, and that once was this false positive. Any analysis over
+    # `eastmoney-detail-enrichment.jsonl` must filter `source_item_id = "1"`.
+    #
+    # So the text tier now mirrors `dom_asset`: it needs corroboration. Two
+    # distinct tokens gate; one is only appended as evidence once something else
+    # has already gated.
+    text_tokens = list(dom.get("text_tokens") or []) if include_text else []
+    if len(text_tokens) >= 2:
+        gated = True
+    if gated:
+        reasons.extend(f"visible_text:{token}" for token in text_tokens)
+
+    # Overlays that are laid out but OCCLUDED (the site's promo modals sit on top
+    # of its own captcha iframe). Never gate on these -- seeing them is exactly
+    # what stalled a wait on an advertisement -- but say they were there, so the
+    # next occurrence is diagnosable from the ledger alone instead of a screenshot.
+    if gated:
+        reasons.extend(
+            f"covered_overlay:{selector}" for selector in (dom.get("covered_overlays") or [])
+        )
     return reasons
 
 

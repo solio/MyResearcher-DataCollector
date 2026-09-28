@@ -315,12 +315,14 @@ def test_detail_referer_opens_the_bar_list_then_navigates_in_page() -> None:
     assert response.body == b"<script>var post_article={};</script>"
     assert [call[0] for call in page.gotos] == [LIST]
     assert page.gotos[0][2] == 2500
-    # exactly two evaluate calls, in this order: the challenge probe on the LIST
-    # page (while it is still displayed, which is the only chance to see it),
-    # then the in-page navigation that reaches the detail
-    assert len(page.evaluated) == 2
+    # exactly three evaluate calls, in this order: the challenge probe on the
+    # LIST page right after it loads, the SAME probe again after the dwell (the
+    # overlay is injected client-side, so the first look can be too early --
+    # 2026-09-28), then the in-page navigation that reaches the detail
+    assert len(page.evaluated) == 3
     assert page.evaluated[0] == (transport_module.DOM_CHALLENGE_JS, None)
-    assert page.evaluated[1] == ("u => { location.href = u; }", DETAIL)
+    assert page.evaluated[1] == (transport_module.DOM_CHALLENGE_JS, None)
+    assert page.evaluated[2] == ("u => { location.href = u; }", DETAIL)
     assert page.waited == [("domcontentloaded", 2500)]
 
 
@@ -437,19 +439,38 @@ def test_detail_referer_does_not_leak_its_response_listener() -> None:
     assert page._listeners["response"] == []
 
 
-def test_detail_referer_records_a_challenged_list_page_on_the_response() -> None:
+def test_detail_referer_refuses_to_jump_when_the_list_page_is_challenged() -> None:
+    """A challenged list page is a block, not something to click through.
+
+    The earlier revision recorded the challenge as a diagnostic and jumped to the
+    detail anyway. A reader shown a verification overlay on a list page does not
+    then open a post, so jumping is the exact scripted signature this scheme
+    exists to avoid -- and it throws away the challenged document, which is the
+    page an operator needs on screen in order to clear it. The fetch is refused
+    instead, carrying the list-page-prefixed reasons so the caller routes it into
+    the access-block path (ledger row, visible-verification wait, fail closed).
+    """
     page = FakeRefererPage(dom={
         "url": "", "title": "请完成验证", "text_tokens": ["滑块", "拼图"],
         "structural_tokens": [], "visible_overlays": [],
     })
     transport = EastmoneyBrowserTransport(page, detail_referer_from_list=True)
 
-    response = transport.get(DETAIL, timeout=2.0)
+    with pytest.raises(transport_module.EastmoneyBrowserChallengeError) as caught:
+        transport.get(DETAIL, timeout=2.0)
 
-    assert response.diagnostics is not None
-    assert response.diagnostics["list_challenge_reasons"] == [
-        "title_contains:请完成验证", "visible_text:滑块", "visible_text:拼图",
+    assert caught.value.list_page_challenge_reasons == [
+        "list_page:title_contains:请完成验证",
+        "list_page:visible_text:滑块",
+        "list_page:visible_text:拼图",
     ]
+    # Positive control: the list page really was opened, so the challenge was
+    # detected on a live page and not assumed.
+    assert len(page.gotos) == 1, page.gotos
+    # The control that matters: `evaluate(script, url)` IS the in-page jump. The
+    # probe calls `evaluate(script)` and records a None second element, so a
+    # non-None one is the discriminator -- and there must be none.
+    assert [call for call in page.evaluated if call[1] is not None] == [], page.evaluated
 
 
 def test_detail_referer_omits_the_key_when_the_list_page_looked_clean() -> None:
@@ -457,6 +478,55 @@ def test_detail_referer_omits_the_key_when_the_list_page_looked_clean() -> None:
     transport = EastmoneyBrowserTransport(page, detail_referer_from_list=True)
     response = transport.get(DETAIL, timeout=2.0)
     assert "list_challenge_reasons" not in (response.diagnostics or {})
+
+
+class _OverlayAppearsDuringTheDwell(FakeRefererPage):
+    """Clean at the post-load probe, challenged by the time we would jump.
+
+    The overlay is injected client-side, so the probe that runs ~0.2s after
+    `domcontentloaded` can be clean while the dwell -- 0.4-1.6s of the page
+    running its own scripts -- is exactly when the challenge appears.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.probes = 0
+
+    def evaluate(self, script, arg=None):
+        if arg is None:
+            self.probes += 1
+            if self.probes >= 2:
+                return {
+                    "url": "", "title": "正常列表标题", "text_tokens": [],
+                    "structural_tokens": [], "covered_overlays": [],
+                    "visible_overlays": ["iframe[src*=captcha]", "#emcaptcha"],
+                }
+        return super().evaluate(script, arg)
+
+
+def test_detail_referer_looks_again_after_the_dwell_before_jumping() -> None:
+    """THE 2026-09-28 WIPE: an overlay that arrives during the dwell was never seen.
+
+    There was no probe between the dwell and `location.href = url`, so this case
+    jumped away, destroyed the challenge page and logged nothing at all -- two
+    live streams did 111 navigations with a single LIST_CHALLENGE between them
+    while the operator watched a slider get wiped. The jump must be refused, and
+    the refusal must be visible in the trace as `when=pre_jump`.
+    """
+    page = _OverlayAppearsDuringTheDwell()
+    transport = EastmoneyBrowserTransport(page, detail_referer_from_list=True)
+
+    with pytest.raises(transport_module.EastmoneyBrowserChallengeError) as caught:
+        transport.get(DETAIL, timeout=2.0)
+
+    assert caught.value.list_page_challenge_reasons == [
+        "list_page:visible_overlay:iframe[src*=captcha]",
+        "list_page:visible_overlay:#emcaptcha",
+    ]
+    # Two probes happened: the post-load one and the pre-jump one.
+    assert page.probes == 2
+    # The control that matters: no in-page jump was issued at all.
+    assert [call for call in page.evaluated if call[1] is not None] == [], page.evaluated
 
 
 def test_challenge_reasons_reads_the_live_dom() -> None:
