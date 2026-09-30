@@ -124,6 +124,8 @@ class CompatibleDataStore:
             engine.db.execute("CREATE INDEX IF NOT EXISTS idx_compatible_observations_post ON observations(post_id,id DESC)")
             engine._set("compatible_storage_instance", self.instance_id)
             engine._set("compatible_storage_version", VERSION)
+            from federation import init_export_schema
+            init_export_schema(engine)
 
     @staticmethod
     def _permitted_request(request, allowed):
@@ -301,6 +303,9 @@ class CompatibleDataStore:
         prior = engine.db.execute("SELECT fingerprint FROM compatible_posts WHERE post_id=?", (post["post_id"],)).fetchone()
         existing = store.conn.execute("SELECT content FROM posts WHERE source=? AND source_item_id=?", (guba.SOURCE, post["post_id"])).fetchone()
         if prior and prior[0] == fingerprint and existing is not None:
+            from federation import journal_projection
+            journal_projection(engine, store, post["post_id"], fingerprint, observed_request,
+                               detail_request, provenance, initial_request=initial_request)
             return False
         if content is None and existing is not None and existing[0] is not None:
             raise CompatibleStorageError("兼容库已有正文但实验台账没有对应详情证据，拒绝覆盖来源标记")
@@ -321,6 +326,9 @@ class CompatibleDataStore:
                           (post["post_id"], fingerprint, observed_request["stock"], observed_request["id"],
                            detail_request["id"] if detail_request else None, provenance["content_source"],
                            int(content is not None), _json(provenance), _utc(updated)))
+        from federation import journal_projection
+        journal_projection(engine, store, post["post_id"], fingerprint, observed_request,
+                           detail_request, provenance, initial_request=initial_request)
         return True
 
     def sync(self, engine, request_id=None):

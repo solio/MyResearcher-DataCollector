@@ -7,9 +7,10 @@ services:
         BASE_IMAGE: ${BACKFILL_BASE_IMAGE:-fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8790:8790"
+      - "${BACKFILL_BIND_ADDRESS:-127.0.0.1}:8790:8790"
     environment:
       BACKFILL_COOKIE_PATH: /collector/
+      BACKFILL_FLEET_SYNC_ENABLED: ${BACKFILL_FLEET_SYNC_ENABLED:-1}
     volumes:
       - ./data:/data
     stop_grace_period: 40s

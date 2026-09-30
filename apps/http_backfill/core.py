@@ -35,7 +35,7 @@ from myresearcher_collector.sources.eastmoney_guba.content_rules import (
 from lifecycle import LifecycleMixin
 from compatible_store import CompatibleDataStore
 
-VERSION = "http-backfill.v3"
+VERSION = "http-backfill.v4"
 MAX_BODY = 16 * 1024 * 1024
 UA = "MyResearcher-HTTP-Backfill/1.0 (public-source research)"
 REDIRECTS = {301, 302, 303, 307, 308}

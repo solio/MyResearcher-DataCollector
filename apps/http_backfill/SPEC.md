@@ -1,7 +1,7 @@
 # Low-frequency HTTP backfill console — experimental contract
 
-Status: v3 SINGLE-SERVER REUSE AND PAGINATION IMPLEMENTED; LOCAL VERIFICATION;
-USER HAS DEPLOYED AN EARLIER RELEASE; v3 REMOTE UPGRADE NOT EXECUTED HERE.
+Status: v4 MULTI-INSTANCE CONTROL AND MERGE IMPLEMENTED; LOCAL VERIFICATION PASS;
+USER HAS DEPLOYED AN EARLIER RELEASE; REMOTE UPGRADE NOT EXECUTED HERE.
 Date: 2026-10-01, Asia/Shanghai. Role: Developer.
 
 ## Confirmed user goal
@@ -96,8 +96,8 @@ never infer reliability from offline tests or a short run.
 ## 2026-09-30 authorized single-server improvements
 
 The user has started one server and explicitly requests implementation of the
-identified gaps. Multi-node control/merge remains a later extension; do not
-require another server to use this release.
+identified gaps. The later v4 amendment below now includes multi-node control
+and merge; one server remains usable without registering other nodes.
 
 - A paused, quiescent current job can edit stocks, date range, interval and
   client. Removing a stock or deleting a job cancels its pending work and
@@ -175,3 +175,49 @@ all-type0-detail policy above; acquisition of posts is not filtered by length.
   idempotent reopen/projection, >=40 boundaries, retained completed short bodies,
   blocked-target migration, compatibility with original store/enrichment query,
   stable pagination during new inserts, authenticated API and mobile controls.
+
+## 2026-10-01 authorized multi-instance completion (v4)
+
+The user explicitly corrects the prior narrowed scope and requests the already
+discussed one-console multi-instance management and merged data implementation.
+This amendment supersedes prior statements deferring that capability.
+
+- The existing server may act as hub and collector simultaneously. Keep the
+  existing local service/data/token/8790/nginx deployment working. Register
+  remote collectors through the authenticated H5; store remote tokens only in
+  private server-side files, never return them or persist them in the browser.
+  Explicit configured HTTP(S) base URLs may use private server networks; reject
+  embedded credentials/query/fragments and do not follow credential-bearing
+  redirects. Do not discover or contact guessed server addresses.
+- A single mobile console lists local and registered remote instances, current
+  status, connection errors, task/coverage/halts and merge progress. Selecting
+  an instance routes its existing configuration, pause/continue, one-probe retry
+  and paged histories through authenticated hub APIs. A remote timeout is
+  distinguishable from acquisition failure. Mutating remote commands are never
+  automatically retried after an ambiguous response. Source controls preserve
+  each instance's own rate/cooldown and halt; no automatic IP failover occurs.
+- The hub synchronizes local/remote acquired records in the background and on
+  explicit sync requests. This transfers collector evidence only and never
+  causes source requests. Per-instance immutable export sequence and durable
+  cursor make transfers incremental, replayable and safe across restart.
+  Raw bodies transfer with verified SHA-256/byte count, original request facts,
+  instance/source identity and collection/publication times. Failed transfers
+  retain the prior cursor and expose errors, not zero-data success.
+- Merged data resides in app data/fleet/collector.db using SimplePostStore's
+  original schema. Separate merge ledger keeps per-instance observations,
+  source provenance, raw evidence, duplicate relationships, coverage snapshots,
+  conflicts and synchronization cursors. It never joins SQLite files by copy
+  or overwrites root production/model databases.
+- Same (source,source_item_id) acquired on multiple instances is one compatible
+  post with retained instance observations. A verified detail body may enrich a
+  list-only record; later list-only/missing observations cannot erase a body.
+  Genuine empty body remains distinct from missing body. Different identity or
+  body facts remain explicit versions/conflicts with a deterministic selected
+  projection; never silently blend text, select content by quality, or infer
+  full historical/model eligibility. Disconnecting a node retains merged data.
+- Verify real authenticated local HTTP servers end-to-end with injected source
+  fixtures, remote node lifecycle/configuration/control/history, secret redaction,
+  two-node overlapping record merge, raw integrity failures, incremental replay,
+  cursor recovery, conflicts, restart and mobile instance switching. No live
+  source traffic is needed for implementation verification. Supply exact
+  existing-server upgrade and additional-server registration instructions.

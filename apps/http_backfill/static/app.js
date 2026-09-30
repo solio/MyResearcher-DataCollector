@@ -21,6 +21,16 @@
   let pendingDeletion = null;
   let formJobId = null;
   let formConfigSignature = "";
+  let selectedNode = "local";
+  let nodeEpoch = 0;
+  let pollSerial = 0;
+  let fleetTimer = null;
+  let fleetLoading = false;
+  let fleetData = null;
+  let editingNode = null;
+  let removingNode = null;
+  let pendingSelection = null;
+  let retryNodeEpoch = null;
 
   function first(object, keys, fallback = null) {
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) return object[key];
@@ -93,6 +103,7 @@
     $("auth-panel").hidden = false;
     $("console").hidden = true;
     $("logout").hidden = true;
+    $("node-token").value = "";
     authMessage(message || "输入密钥后进入控制台。");
   }
   function showConsole() {
@@ -103,20 +114,143 @@
     authMessage("");
     startTimers();
   }
-  async function api(path, method = "GET", payload) {
+  async function api(path, method = "GET", payload, node = selectedNode) {
     const options = { method, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } };
     if (payload !== undefined) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(payload); }
-    const response = await fetch(new URL(`api/${path}`, document.baseURI), options);
+    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
+    const response = await fetch(new URL(`api/${routed}`, document.baseURI), options);
     const contentType = response.headers.get("content-type") || "";
     const data = contentType.includes("application/json") ? await response.json() : null;
     if (!response.ok) {
-      if (response.status === 401 && authenticated) showAuth("会话已过期，请重新输入访问密钥。采集服务的状态不受页面退出影响。");
-      const err = new Error(data && data.error ? textValue(data.error) : `本地接口返回 HTTP ${response.status}`);
+      if (response.status === 401 && authenticated) showAuth("中央控制台会话已过期，请重新输入访问密钥。各实例的采集状态不受页面退出影响。");
+      const ambiguous = data?.ambiguous === true;
+      const message = data && data.error ? textValue(data.error) : `本地接口返回 HTTP ${response.status}`;
+      const err = new Error(message + (ambiguous ? "。该实例可能已执行操作，结果尚未确认；请先刷新状态再决定，系统不会自动重发。" : ""));
       err.status = response.status;
+      err.ambiguous = ambiguous;
       throw err;
     }
     if (data === null) throw new Error("本地接口返回了非 JSON 响应，请检查服务或反向代理配置。");
     return data;
+  }
+  function nodeName(id = selectedNode) {
+    const node = fleetData?.nodes?.find((entry) => String(first(entry, ["id", "alias"])) === id);
+    return node?.name || (id === "local" ? "本机采集实例" : id);
+  }
+  async function refreshFleet() {
+    if (!authenticated || fleetLoading) return;
+    fleetLoading = true;
+    try {
+      const data = await api("fleet");
+      if (!authenticated) return;
+      if (!data || !Array.isArray(data.nodes)) throw new Error("多实例概览格式无效");
+      fleetData = data; renderFleet(data);
+      $("fleet-error").hidden = true;
+    } catch (error) {
+      if (authenticated) { $("fleet-error").hidden = false; display("fleet-error", `中央概览暂时无法更新：${error.message}。已取得的其他实例状态保留。`); }
+    } finally { fleetLoading = false; controls(); }
+  }
+  function renderFleet(data) {
+    const nodes = [...data.nodes];
+    if (!nodes.some((entry) => entry.local || entry.id === "local")) nodes.unshift({ id: "local", name: "本机采集实例", local: true, connection: "unknown" });
+    const selector = $("selected-node"); selector.replaceChildren();
+    const list = $("fleet-nodes"); list.replaceChildren();
+    for (const node of nodes) {
+      const id = String(first(node, ["id", "alias"], "local"));
+      const option = el("option", "", `${node.name || id}${node.local || id === "local" ? " · 本机" : " · " + id}`); option.value = id; selector.append(option);
+      const card = el("article", `node-card${id === selectedNode ? " selected" : ""}`);
+      const head = el("div", "node-head");
+      head.append(el("strong", "", node.name || id), el("span", `tag${node.connection === "offline" ? " warning" : node.connection === "online" ? " success" : ""}`, { online: "连接正常", offline: "连接异常", unknown: "尚未连接" }[node.connection] || "等待状态")); card.append(head);
+      card.append(el("p", "node-address", node.local || id === "local" ? "中央控制台所在本机" : node.base_url || "地址未返回"));
+      const state = objectValue(node.status), counts = objectValue(first(state, ["aggregate", "counters", "stats"], {}));
+      card.append(el("p", "node-status", `${states[state.state] || "状态尚未取得"}${state.reason ? " · " + textValue(state.reason) : ""}`));
+      const metrics = el("div", "node-counts");
+      for (const [label, value] of [["源尝试", counts.attempts], ["帖子", counts.unique_posts], ["正文", counts.body_complete], ["待取", counts.pending]]) metrics.append(el("span", "", `${label} ${number(value)}`));
+      card.append(metrics);
+      const config = state.job?.config || state.config;
+      if (config) card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
+      if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复兼容库。" : "保留来源阻断，需在该实例明确安排一次探测。"));
+      if (node.last_error) card.append(el("p", "node-error", `连接错误：${textValue(node.last_error)}。这不等于来源采集失败。`));
+      const sync = objectValue(node.sync), labels = { idle: "等待同步", syncing: "正在同步", error: "同步异常", ready: "已同步" };
+      card.append(el("p", "node-sync", `${labels[sync.state] || "同步状态尚未取得"} · 游标 ${number(first(sync, ["cursor", "last_cursor", "last_seq"], data.merge?.cursors?.[node.instance_id]))} · 最近状态 ${time(node.last_seen_at)}${sync.last_synced_at ? " · 最近同步 " + time(sync.last_synced_at) : ""}`));
+      if (sync.error) card.append(el("p", "node-error", `同步错误：${textValue(sync.error)}`));
+      const actions = el("div", "node-actions");
+      const select = el("button", "button secondary small", id === selectedNode ? "正在查看" : "查看与控制"); select.type = "button"; select.dataset.fleetAction = "select"; select.dataset.current = id === selectedNode ? "1" : "0";
+      select.addEventListener("click", () => requestSelection(id)); actions.append(select);
+      if (!node.local && id !== "local") {
+        const edit = el("button", "button quiet small", "编辑登记"); edit.type = "button"; edit.dataset.fleetAction = "edit"; edit.addEventListener("click", () => openNodeForm(node));
+        const remove = el("button", "button danger-quiet small", "移除登记"); remove.type = "button"; remove.dataset.fleetAction = "remove"; remove.addEventListener("click", () => confirmNodeRemoval(node)); actions.append(edit, remove);
+      }
+      card.append(actions); list.append(card);
+    }
+    if (!nodes.some((entry) => String(first(entry, ["id", "alias"])) === selectedNode)) { const option = el("option", "", `${selectedNode} · 已移除登记`); option.value = selectedNode; selector.append(option); }
+    selector.value = selectedNode;
+    display("selected-node-note", `下方任务、配置、控制与记录属于 ${nodeName()}。切换只改变查看对象，不会开始或暂停采集。`);
+    const merge = objectValue(data.merge), stats = objectValue(first(merge, ["aggregate", "counts", "summary"], merge));
+    display("merge-sync-note", data.auto_sync === false ? "自动同步已关闭，可手动立即同步已采记录。同步只传输数据和证据，不请求股吧。" : "服务端每 60 秒同步已采记录。同步只传输数据和证据，不请求股吧。");
+    display("merge-posts", number(first(stats, ["posts", "unique_posts", "post_count"])));
+    display("merge-bodies", number(first(stats, ["body_complete", "bodies", "detail_bodies", "body_count"])));
+    display("merge-conflicts", number(first(stats, ["conflicts", "conflict_count"])));
+    display("merge-status", `${{ idle: "等待同步", syncing: "正在同步已采记录", ready: "已同步", error: "合并异常" }[merge.state || merge.status] || (data.auto_sync === false ? "自动同步已关闭" : "增量同步由服务端后台运行")} · 来源观察 ${number(merge.observations)} · 实例 ${number(merge.instances)}${merge.pending_instances?.length ? " · 待完成传输 " + number(merge.pending_instances.length) + " 个实例" : ""}${merge.last_synced_at ? " · 最近同步 " + time(merge.last_synced_at) : ""}`);
+    display("merge-path", first(merge, ["db_path", "collector_db_path", "path"], "合并库路径尚未返回"));
+    const errors = [];
+    const error = first(merge, ["last_error", "error"]); if (error) errors.push(textValue(error));
+    for (const [instance, detail] of Object.entries(objectValue(merge.recovery_errors))) errors.push(`本地合并恢复异常 · ${instance} · 游标 ${number(detail?.cursor)}：${textValue(detail?.error || detail)}。已保留原游标，其他实例可继续同步。`);
+    $("merge-error").hidden = !errors.length; display("merge-error", errors.join("\n"));
+    controls();
+  }
+  function requestSelection(id) {
+    $("selected-node").value = selectedNode;
+    if (busy || id === selectedNode) return;
+    if (formDirty) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
+    void switchNode(id);
+  }
+  async function switchNode(id, force = false) {
+    if (busy || (!force && id === selectedNode)) return false;
+    selectedNode = id; nodeEpoch += 1; statusGeneration += 1; pollSerial += 1; polling = false;
+    status = null; online = false; lastPoll = null; requestItems = []; latestRequestItems = [];
+    pendingDeletion = null; retryNodeEpoch = null;
+    for (const dialog of ["retry-dialog", "delete-dialog"]) if ($(dialog).open) { $(dialog).returnValue = "cancel"; $(dialog).close?.(); }
+    clearForm();
+    for (const kind of ["requests", "events"]) {
+      const previous = activityPages[kind]; activityPages[kind] = { ...previous, latest: true, index: 0, cursors: [null], snapshot: null, page: null, loading: false, generation: previous.generation + 1 };
+      $(kind === "requests" ? "request-list" : "event-list").replaceChildren(el("div", "empty-state", "正在读取所选实例的记录…")); activityError(kind); display(kind === "requests" ? "request-count" : "event-count", "—");
+    }
+    $("history-list").replaceChildren(el("div", "empty-state", "正在读取所选实例的任务历史…")); display("history-count", "—");
+    $("coverage-list").replaceChildren(el("div", "empty-state", "正在读取所选实例的覆盖状态…")); display("coverage-count", "等待状态");
+    for (const field of ["metric-attempts", "metric-pages", "metric-posts", "metric-list-only", "metric-bodies", "metric-pending", "run-duration", "current-target", "last-success"]) display(field, "—");
+    for (const field of ["metric-failures", "metric-calibration", "metric-list-total", "metric-removed", "metric-body-breakdown", "observed-rate", "next-request", "next-request-time"]) display(field, "等待所选实例状态");
+    $("block-panel").hidden = true; $("storage-panel").hidden = true; display("recovery-reason", "等待所选实例的校准状态。"); display("recovery-phase", "等待状态"); $("recovery-facts").replaceChildren();
+    display("run-title", `正在读取 ${nodeName()} 的状态`); display("run-reason", "切换实例不会发出任何来源请求或采集控制命令。"); display("job-window", "等待配置"); display("run-start", "等待状态"); display("state-label", "等待状态");
+    notice(""); setConnection(false); display("updated-at", "—");
+    if (fleetData) renderFleet(fleetData); else $("selected-node").value = id;
+    await poll(); return true;
+  }
+  function openNodeForm(node = null) {
+    if (busy) return;
+    editingNode = node ? String(first(node, ["id", "alias"])) : null;
+    display("node-dialog-title", node ? "编辑实例登记" : "登记远端实例"); display("save-node", node ? "保存登记修改" : "登记实例");
+    $("node-id").value = editingNode || ""; $("node-id").disabled = !!node; $("node-name").value = node?.name || ""; $("node-url").value = node?.base_url || ""; $("node-token").value = ""; $("node-token").required = !node;
+    display("node-token-note", node ? "留空保留现有密钥。输入新密钥时替换服务端配置；浏览器不保存。" : "仅写入当前服务端的私密配置，浏览器不保存，接口不回传。");
+    $("node-form-error").hidden = true; $("node-dialog").showModal();
+  }
+  function confirmNodeRemoval(node) {
+    if (busy) return;
+    removingNode = String(first(node, ["id", "alias"]));
+    display("remove-node-description", `移除 ${node.name || removingNode} 的登记，停止中央控制台对它的后续同步。${removingNode === selectedNode ? "当前视图将返回本机，未保存的页面修改会丢弃。" : ""}`);
+    $("remove-node-dialog").showModal();
+  }
+  async function fleetMutation(path, payload, method, message, submittedToken = "") {
+    if (busy || !authenticated) return false;
+    busy = true; controls();
+    try {
+      await api(path, method, payload);
+      if (authenticated) { notice(message); return true; }
+    } catch (error) {
+      const safeError = submittedToken ? error.message.split(submittedToken).join("[已隐藏密钥]") : error.message;
+      if (authenticated) { notice(safeError, true); if ($("node-dialog").open) { $("node-form-error").hidden = false; display("node-form-error", safeError); } }
+    } finally { $("node-token").value = ""; busy = false; controls(); if (authenticated) await refreshFleet(); }
+    return false;
   }
   function jobConfig() {
     if (!status) return null;
@@ -150,6 +284,11 @@
     document.querySelectorAll("[data-remove-stock]").forEach((button) => { button.disabled = locked || !job; });
     $("refresh").disabled = busy || polling;
     $("logout").disabled = busy;
+    $("selected-node").disabled = busy;
+    $("add-node").disabled = busy || !authenticated;
+    $("sync-fleet").disabled = busy || !authenticated || !fleetData;
+    $("save-node").disabled = busy;
+    document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "兼容库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
     else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
@@ -167,7 +306,7 @@
   function setConnection(ok) {
     online = ok;
     $("connection-dot").className = `connection-dot ${ok ? "online" : "offline"}`;
-    display("connection-text", ok ? "控制台已连接" : "本地服务未连接");
+    display("connection-text", ok ? "实例已连接" : "所选实例未连接");
     if (lastPoll) display("updated-at", `${ok ? "更新于" : "最近更新"} ${time(lastPoll, false)}`);
     controls();
   }
@@ -494,13 +633,14 @@
       index = 0; snapshot = null; latest = true; cursors = [null];
     } else return;
     const generation = ++state.generation;
+    const selection = nodeEpoch, targetNode = selectedNode;
     state.loading = true; activityError(kind); updatePager(kind);
     try {
-      const page = await api(activityUrl(kind, cursor, snapshot));
-      if (authenticated && generation === state.generation) acceptActivity(kind, page, latest, index, cursors);
+      const page = await api(activityUrl(kind, cursor, snapshot), "GET", undefined, targetNode);
+      if (authenticated && selection === nodeEpoch && generation === state.generation) acceptActivity(kind, page, latest, index, cursors);
     } catch (error) {
-      if (authenticated && generation === state.generation) activityError(kind, `无法读取该页：${error.message}。原有记录保留，可重试翻页。`);
-    } finally { if (generation === state.generation) { state.loading = false; updatePager(kind); } }
+      if (authenticated && selection === nodeEpoch && generation === state.generation) activityError(kind, `无法读取该页：${error.message}。原有记录保留，可重试翻页。`);
+    } finally { if (selection === nodeEpoch && generation === state.generation) { state.loading = false; updatePager(kind); } }
   }
   async function autoActivity(kind) {
     const state = activityPages[kind];
@@ -558,12 +698,13 @@
   async function poll() {
     if (!authenticated || polling || busy) return;
     const generation = statusGeneration;
+    const ticket = ++pollSerial;
     polling = true; controls();
     try {
       const results = await Promise.allSettled([api("status"), autoActivity("requests"), autoActivity("events"), api("jobs")]);
       if (!authenticated || generation !== statusGeneration) return;
       const [s, requests, events, jobs] = results;
-      if (s.status === "rejected") { setConnection(false); notice(`无法读取本地状态：${s.reason.message}。显示的是最近取得的状态。`, true); return; }
+      if (s.status === "rejected") { setConnection(false); notice(`无法读取 ${nodeName()} 的状态：${s.reason.message}。其他实例仍可查看。`, true); return; }
       for (const [kind, result] of [["requests", requests], ["events", events]]) {
         if (result.status === "fulfilled" && result.value && activityPages[kind].latest && result.value.generation === activityPages[kind].generation) acceptActivity(kind, result.value.page, true, 0, [null]);
         else if (result.status === "rejected") activityError(kind, `最新记录暂时无法读取：${result.reason.message}`);
@@ -575,32 +716,36 @@
       if (requests.status === "rejected" || events.status === "rejected" || jobs.status === "rejected") notice("状态已更新，但部分运行记录或任务历史暂时无法读取。", true);
       else if ($("notice").dataset.networkError === "true") { notice(""); delete $("notice").dataset.networkError; }
     } catch (error) {
-      if (authenticated) { setConnection(false); notice(`本地服务连接失败：${error.message}`, true); }
-    } finally { if (!online) $("notice").dataset.networkError = "true"; polling = false; controls(); }
+      if (authenticated && generation === statusGeneration) { setConnection(false); notice(`所选实例连接失败：${error.message}`, true); }
+    } finally { if (ticket === pollSerial) { if (!online) $("notice").dataset.networkError = "true"; polling = false; controls(); } }
   }
   function startTimers() {
     stopTimers();
     timer = setInterval(() => { if (!document.hidden) void poll(); }, 5000);
     tickTimer = setInterval(renderTiming, 1000);
+    fleetTimer = setInterval(() => { if (!document.hidden) void refreshFleet(); }, 10000);
+    void refreshFleet();
   }
-  function stopTimers() { clearInterval(timer); clearInterval(tickTimer); timer = null; tickTimer = null; }
+  function stopTimers() { clearInterval(timer); clearInterval(tickTimer); clearInterval(fleetTimer); timer = null; tickTimer = null; fleetTimer = null; }
   function applyStatus(result) {
     if (result && result.state) { lastPoll = Date.now(); renderStatus(result); setConnection(true); }
   }
-  async function pauseAndWait(expectedJobId = null) {
-    let snapshot = await api("status");
+  async function pauseAndWait(expectedJobId = null, targetNode = selectedNode, selection = nodeEpoch) {
+    let snapshot = await api("status", "GET", undefined, targetNode);
+    if (selection !== nodeEpoch) throw new Error("查看实例已变化，原操作已停止。");
     if (expectedJobId != null && String(snapshot.job?.id) !== String(expectedJobId)) throw new Error("当前任务已变化，请刷新配置后重新操作。");
     applyStatus(snapshot);
     if (snapshot.state === "running" || snapshot.probe_pending || snapshot.request_inflight) {
       notice("正在暂停采集并等待当前请求结束；已有响应将保留，之后不会自动开始。");
-      snapshot = await api("control", "POST", { action: "pause" });
+      snapshot = await api("control", "POST", { action: "pause" }, targetNode);
       applyStatus(snapshot);
     }
     const deadline = Date.now() + 45000;
     while (snapshot.state === "running" || snapshot.probe_pending || snapshot.request_inflight) {
       if (Date.now() >= deadline) throw new Error("暂停已提交，但当前请求尚未结束。请等待状态更新后重试；没有修改配置或删除任务。");
       await new Promise((resolve) => setTimeout(resolve, 750));
-      snapshot = await api("status");
+      snapshot = await api("status", "GET", undefined, targetNode);
+      if (selection !== nodeEpoch) throw new Error("查看实例已变化，原操作已停止。");
       if (expectedJobId != null && String(snapshot.job?.id) !== String(expectedJobId)) throw new Error("等待期间当前任务已变化，请刷新后重新操作。");
       applyStatus(snapshot);
     }
@@ -608,12 +753,14 @@
   }
   async function post(path, payload, message, method = "POST", options = {}) {
     if (busy || !authenticated || !online) return false;
+    const targetNode = selectedNode, selection = nodeEpoch;
     busy = true; statusGeneration += 1; controls(); notice(""); delete $("notice").dataset.networkError;
     let success = false;
     try {
-      if (options.pauseFirst) await pauseAndWait(options.expectedJobId);
-      const result = await api(path, method, payload);
-      if (authenticated) {
+      if (options.pauseFirst) await pauseAndWait(options.expectedJobId, targetNode, selection);
+      if (selection !== nodeEpoch) throw new Error("查看实例已变化，尚未提交修改。");
+      const result = await api(path, method, payload, targetNode);
+      if (authenticated && selection === nodeEpoch) {
         if (options.clearDraft) { formDirty = false; loadedConfig = false; }
         if (options.clearForm || (options.clearDraft && result && !result.job && !result.config)) clearForm();
         applyStatus(result);
@@ -628,7 +775,7 @@
     if (busy || !authenticated || !online || !jobConfig()) return;
     busy = true; statusGeneration += 1; controls();
     try {
-      await pauseAndWait(status?.job?.id);
+      await pauseAndWait(status?.job?.id, selectedNode, nodeEpoch);
       notice(status?.active_halt ? "已停止请求，可以编辑配置。当前阻断原因仍保留，保存不会自动开始。" : "已暂停并等待当前请求结束，可以编辑配置。保存后由你决定何时开始。");
     } catch (error) { if (authenticated) notice(error.message, true); }
     finally {
@@ -641,7 +788,7 @@
     if (busy || !online || !jobConfig()) return;
     const stocks = jobConfig().stocks || [];
     const last = stock != null && stocks.length === 1;
-    pendingDeletion = { stock, last, jobId: status?.job?.id };
+    pendingDeletion = { stock, last, jobId: status?.job?.id, selection: nodeEpoch };
     display("delete-title", stock ? `移除股票 ${stock}？` : "删除当前任务？");
     display("delete-description", stock ? `取消 ${stock} 的后续采集，保留已经取得的记录。${last ? "这是当前任务的最后一只股票，移除后任务将归档。" : "其他股票的队列保留，任务保持暂停。"}` : "当前任务将归档，取消尚未执行的采集队列。");
     display("confirm-delete", stock ? "确认移除股票" : "确认删除任务");
@@ -688,7 +835,7 @@
   $("delete-job").addEventListener("click", () => confirmDeletion());
   $("delete-dialog").addEventListener("close", () => {
     const target = pendingDeletion; pendingDeletion = null;
-    if ($("delete-dialog").returnValue !== "confirm" || !target) return;
+    if ($("delete-dialog").returnValue !== "confirm" || !target || target.selection !== nodeEpoch) return;
     const path = target.stock ? `jobs/current/stocks/${encodeURIComponent(target.stock)}` : "jobs/current";
     const message = target.stock && !target.last ? `已移除 ${target.stock} 的后续采集。已有记录保留，其他股票保持暂停；现有阻断原因也保留。` : "任务已归档，后续采集已取消。已有帖子、原始响应和阻断证据保留。";
     void post(path, undefined, message, "DELETE", { pauseFirst: true, expectedJobId: target.jobId, clearDraft: true, clearForm: !target.stock || target.last });
@@ -697,9 +844,36 @@
   $("pause").addEventListener("click", () => { void post("control", { action: "pause" }, "已提交暂停指令，队列与响应证据会保留。"); });
   $("retry").addEventListener("click", () => {
     if (status?.storage_halt) { void post("control", { action: "retry" }, "已提交兼容库写入重试，仅处理本地记录。检查状态后，仍需手动开始源采集。"); return; }
-    renderTiming(); $("retry-dialog").showModal();
+    retryNodeEpoch = nodeEpoch; renderTiming(); $("retry-dialog").showModal();
   });
-  $("retry-dialog").addEventListener("close", () => { if ($("retry-dialog").returnValue === "confirm") void post("control", { action: "retry" }, "已安排一次探测。发送时间遵守间隔与冷却期，成功后仍暂停。"); });
+  $("retry-dialog").addEventListener("close", () => { if ($("retry-dialog").returnValue === "confirm" && retryNodeEpoch === nodeEpoch) void post("control", { action: "retry" }, "已安排一次探测。发送时间遵守间隔与冷却期，成功后仍暂停。"); });
+  $("selected-node").addEventListener("change", () => requestSelection($("selected-node").value));
+  $("switch-node-dialog").addEventListener("close", () => { const target = pendingSelection; pendingSelection = null; if ($("switch-node-dialog").returnValue === "confirm" && target) void switchNode(target); });
+  $("add-node").addEventListener("click", () => openNodeForm());
+  $("cancel-node").addEventListener("click", () => { $("node-token").value = ""; $("node-dialog").close(); });
+  $("node-dialog").addEventListener("close", () => { $("node-token").value = ""; editingNode = null; });
+  $("node-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); if (busy) return;
+    const id = editingNode || $("node-id").value.trim(), token = $("node-token").value;
+    const payload = { id, name: $("node-name").value.trim(), base_url: $("node-url").value.trim() };
+    const showError = (message) => { $("node-form-error").hidden = false; display("node-form-error", message); };
+    if (!id || id === "local" || !payload.name) { showError("请填写实例别名与名称；local 保留给本机。密钥请勿填入别名或地址。"); return; }
+    let url;
+    try { url = new URL(payload.base_url); } catch { showError("请填写有效的 HTTP(S) 控制台地址。"); return; }
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) { showError("地址只支持 HTTP(S)，不能包含用户名、密码、查询参数或片段；访问密钥请单独填写。"); return; }
+    if (!editingNode && !token) { showError("首次登记需要填写远端访问密钥。"); return; }
+    if (token) payload.token = token;
+    const editing = editingNode;
+    const saved = await fleetMutation(editing ? `fleet/nodes/${encodeURIComponent(editing)}` : "fleet/nodes", payload, editing ? "PATCH" : "POST", editing ? "实例登记已更新。密钥仅保存在中央服务端，没有开始或暂停采集。" : "实例已登记。连接和同步由后台进行，登记不会开始来源采集。", token);
+    if (saved) { $("node-dialog").close(); if (editing && editing === selectedNode) await switchNode(selectedNode, true); }
+  });
+  $("remove-node-dialog").addEventListener("close", async () => {
+    const id = removingNode; removingNode = null;
+    if ($("remove-node-dialog").returnValue !== "confirm" || !id) return;
+    const removed = await fleetMutation(`fleet/nodes/${encodeURIComponent(id)}`, undefined, "DELETE", "实例登记已移除，已合并的数据和证据保留；远端任务状态没有改变。");
+    if (removed && id === selectedNode) await switchNode("local");
+  });
+  $("sync-fleet").addEventListener("click", () => { void fleetMutation("fleet/sync", { node_id: "all" }, "POST", "已安排后台增量同步。同步只传输已经采集的记录与证据，不请求来源。"); });
   $("refresh").addEventListener("click", () => { void poll(); });
   for (const kind of ["requests", "events"]) for (const action of ["prev", "next", "latest"]) $(`${kind}-${action}`).addEventListener("click", () => { void loadActivity(kind, action); });
   function switchTab(requests) {

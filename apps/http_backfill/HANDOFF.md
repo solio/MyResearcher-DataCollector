@@ -1,13 +1,16 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v3.
+Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v4.
 
 The user has deployed v1 on one server and explicitly authorized fixing stock
 configuration editing/deletion and improving pause/recovery, challenge handling
 and continuous list/detail work. The user subsequently requested activity paging,
 reuse of the original collector.db structure and original detail trigger. This
-release implements those corrections and targets the deployed single server.
-Multi-node scheduling, one central console and data merge remain future work.
+release implements those corrections. The user's next correction explicitly
+requires the previously omitted multi-instance management and data merge. v4 now
+implements a hub on the existing collector, authenticated remote controls and
+incremental evidence merge. Remote addresses are registered by the user rather
+than guessed; remote installation is not executed in this local task.
 
 Implementation is confined to this app; the existing root Docker context
 allowlist is retained.
@@ -63,16 +66,56 @@ contract is changed, and no automatic model promotion is implemented.
   polls. The old default array API is retained; paged=1 opts into a page object.
   Indexed keyset reads and a bounded total cache avoid growing page DOM and
   repeated whole-ledger counts on routine polling.
+- FleetManager registers up to 16 remote v4 services with stable pinned UUIDs,
+  validated explicit URLs and write-only private tokens. Same-instance and clone
+  registrations are rejected. Token omission on edit preserves the secret;
+  public responses/errors never echo it. registry.json is 0600 in a 0700 folder.
+- The hub proxies existing task/status/control/history APIs for the selected
+  node. Remote writes get one attempt after identity verification; uncertain
+  responses are marked ambiguous and never automatically replayed. Remote 401
+  is a node error, not a reason to expire the hub session. NodeClient disables
+  environment proxies and redirects and bounds response time/size.
+- Independent background work polls node status every 10 seconds and checks
+  export growth every 60 seconds. Explicit sync and remaining export pages are
+  durably queued. Each node has one in-flight task, with four total worker slots.
+  BACKFILL_FLEET_SYNC_ENABLED=0 disables automatic merge but retains export and
+  explicit synchronization, suitable for remote collector-only machines.
+- compatible_store publishes immutable export snapshots after compatible writes
+  and establishes baselines for already projected v3 posts. Authenticated export
+  returns contiguous sequence pages with a fixed snapshot; response budgeting
+  permits large bodies without building unbounded pages. Raw transfers validate
+  node identity, request ID, actual byte size, containment and SHA-256.
+- MergeStore reparses retained source bytes and verifies structural identity,
+  publication/title/body/collection facts before accepting each whole batch.
+  data/fleet/collector.db uses original SimplePostStore; merge.sqlite3 preserves
+  all node versions, original request facts, range snapshots, conflicts and
+  per-instance cursors. Raw is content addressed; identical bytes are stored
+  once while every original node/request association remains distinct.
+- A verified body enriches a list-only observation and cannot be erased by
+  later missing data. Identity/body conflicts preserve all versions and project
+  one complete deterministic observation, never blended fields. Durable redo
+  precedes compatible projection and cursors. Bad transfer does not advance
+  cursor. Restart repairs committed batches locally; damaged retained raw has
+  an observable recovery error and can be repaired from node evidence APIs,
+  preserving the damaged file in quarantine. Other nodes remain usable.
+- H5 registers/edits/removes nodes, switches the existing task/control/history
+  views, shows connection/sync/errors and central counts/path. Switching resets
+  old cursors and isolates late responses. Mutations bind one target and lock
+  switching; dirty drafts require explicit discard. Tokens clear after save,
+  failure or cancellation. Removal retains central data and remote task state.
 
 ## Validation
 
-124 offline app tests pass with ResourceWarning treated as errors. Coverage
+165 offline app tests pass with ResourceWarning treated as errors. Coverage
 includes existing Engine/recovery/lifecycle/HTTP behavior plus >=40 boundaries,
 short-title migration, retained genuine bodies, original store/enrich semantics,
 incremental projections, replay after crash, local-only storage repair, preserved
 independent source blocks, authenticated paging and actual app.js history/DOM
-behavior. Original content_rules, SimplePostStore and detail_enrichment unit tests
-also pass: 20 tests. JavaScript syntax and Compose configuration pass.
+behavior. New coverage includes 14 export/merge tests, 15 registry/client/scheduler
+tests, 4 real authenticated three-server HTTP tests and 8 actual app.js fleet
+tests. Original content_rules, SimplePostStore and detail_enrichment unit tests
+passed in v3 (20 tests); src is unchanged in v4. JavaScript syntax and Compose
+configuration pass.
 
 A backup clone of the paused v1 real trial database migrated successfully:
 179 requests, 229 posts, 240 row observations, 3 page observations and 179 raw
@@ -81,36 +124,49 @@ store contains all 229 posts, retains all 176 genuine bodies, and original enric
 queries identify the same 9 remaining long-title candidates. All 44 old pending
 short titles become list_only. Repeated projection/reopen is idempotent and
 preserves timestamps. No source request was sent by this check.
+The same clone additionally established a 229-record immutable export baseline,
+merged all 229 posts and 176 bodies, independently verified 179 raw responses,
+and persisted/reopened cursor 229 without conflicts or recovery errors.
 The original trial directory was not migrated or edited by this verification.
 
-Actual 390x844 browser verification used an isolated fake-response Engine without
-a source worker. Request and event histories navigated independently and retained
-their pages during status refresh, with 30/20 rendered rows and document width
-equal to viewport width. The screenshot uses offline demonstration records;
-it is not the user's live server or evidence of sustained source availability.
+Actual 390x844 v4 browser verification used the hub and two real HTTP collector
+servers with injected source fixtures and no source workers. Registering node B,
+switching its task/history view and explicit merge worked; overlapping posts
+yielded 3 unique posts and 2 bodies, and the submitted token input cleared.
+Document width equals viewport width. The screenshot uses offline demonstration
+records, not the user's server or sustained source availability evidence. v3
+phone pagination verification and its regression tests remain valid.
 
 Linux amd64 rebuild retained the base/apt instructions and reused the cached
 curl/CA installation layer. The Docker context excludes data, credentials, Git
 and unrelated research runs. Disposable container checks cover health,
-authenticated v3 status, automatic compatible DB creation, edit/remove/archive,
-paged event traversal and Secure/HttpOnly /collector/ cookie path, with zero
-source attempts. The temporary smoke container was removed after validation.
+authenticated v4 status, automatic compatible/fleet DB creation,
+edit/remove/archive, paged event traversal, authenticated fleet/export and empty
+explicit synchronization, plus Secure/HttpOnly /collector/ cookie path, with
+zero source attempts. All 4 real three-server HTTP tests additionally pass inside
+the Linux amd64 Python 3.12 image. Temporary UI servers and smoke containers were
+removed after validation; the browser viewport override was reset.
 
 ## Deployment and evidence limits
 
-The user confirmed their earlier server build/deployment. v3 remote upgrade is not
+The user confirmed their earlier server build/deployment. v4 remote upgrade is not
 executed here: no remote access credentials or verified checkout path were
 provided. README.zh-CN.md supplies pause, stop, whole-data backup, git pull and
 docker compose up -d --build commands. Existing /collector/ nginx, loopback
 port 8790, bind-mounted data and token remain compatible. Startup is paused;
 the user continues after inspecting the upgraded task.
+Other servers deploy the same app, expose their verified HTTPS nginx endpoint or
+an explicitly configured private BACKFILL_BIND_ADDRESS, and register through the
+hub H5. Each keeps its own data directory/UUID. Their stock/date jobs are configured
+individually in the one hub view; no automatic global job partitioning or source
+request failover is implemented or claimed.
 
 Local v1 trial started 2026-09-30 20:00:59 Shanghai using ordinary curl for
 601012, window 2025-09-30 through 2026-09-30. It was paused during this work:
 179 attempts, 3 forward pages, 176 nonempty complete bodies, 229 discovered
 eligible posts, 53 pending and no failures in that observed period. This is
 local evidence, not the user's server status or a sustained-access guarantee.
-No new live source traffic was required for v3 verification. The original local
+No new live source traffic was required for v4 verification. The original local
 trial remains paused with its old loaded code; clone checks did not upgrade it.
 
 All results remain observed_pages_only, coverage_complete=false,
