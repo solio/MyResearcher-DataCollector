@@ -24,11 +24,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from urllib.parse import urljoin, urlparse
 
 from myresearcher_collector.sources.eastmoney_guba import parser as guba
+from lifecycle import LifecycleMixin
 
-VERSION = "http-backfill.v1"
+VERSION = "http-backfill.v2"
 MAX_BODY = 16 * 1024 * 1024
 UA = "MyResearcher-HTTP-Backfill/1.0 (public-source research)"
 REDIRECTS = {301, 302, 303, 307, 308}
@@ -124,7 +126,7 @@ class _StaticHTML(HTMLParser):
         hidden = (any(x[1] for x in self.stack) or tag in {"script", "style", "noscript"}
                   or "hidden" in a or bool(re.search(r"display\s*:\s*none|visibility\s*:\s*hidden", a.get("style") or "", re.I)))
         marker = (a.get("id") or "") + " " + (a.get("class") or "")
-        overlay = not hidden and bool(re.search(r"captcha|emcaptcha", marker, re.I)
+        overlay = not hidden and bool(re.search(r"captcha|emcaptcha|geetest|nc-container|nc_wrapper|verify(?:[_-]?box|[_-]?container)?", marker, re.I)
                                       or re.search(r"position\s*:\s*fixed", a.get("style") or "", re.I))
         if tag not in {"meta", "link", "img", "input", "br", "hr", "source", "area", "wbr"}:
             self.stack.append((tag, hidden, overlay))
@@ -149,9 +151,9 @@ def challenge_evidence(html):
     view.feed(html)
     title = " ".join("".join(view.title).split())
     assets = [x for x in ("em_capt.js", "fd_guba_validate", "validate.js", "emcaptcha") if x in html.lower()]
-    phrases = ("拖动下方滑块完成拼图", "拖动滑块", "请完成验证", "请进行人机验证", "访问过于频繁")
+    phrases = ("拖动下方滑块完成拼图", "拖动滑块", "请完成验证", "请先完成验证", "请完成安全验证", "请进行人机验证", "访问过于频繁")
     instructions = [x for x in phrases if x in " ".join(view.overlay_text)]
-    shell = title in {"身份核实", "访问验证", "安全验证", "人机验证"} and bool(assets)
+    shell = title in {"身份核实", "访问验证", "安全验证", "人机验证"}
     return {"challenge": shell or bool(instructions), "title": title, "assets": assets,
             "overlay_instructions": instructions, "dynamic_js": "unobserved",
             "reason": "身份核实页面" if shell else "静态验证遮罩" if instructions else None}
@@ -196,7 +198,7 @@ def _validate_config(config):
             "interval_seconds": interval, "client": client}
 
 
-class Engine:
+class Engine(LifecycleMixin):
     def __init__(self, data_dir, transport=None, clock=None):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -245,8 +247,21 @@ class Engine:
           http_status INTEGER,response_bytes INTEGER,sha256 TEXT,raw_ref TEXT,error TEXT,analysis TEXT,
           headers TEXT,final_url TEXT,probe INTEGER DEFAULT 0,network_attempted INTEGER);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,job INTEGER,created REAL,kind TEXT,message TEXT,evidence TEXT);
+        CREATE TABLE IF NOT EXISTS frontiers(job INTEGER,stock TEXT,payload TEXT NOT NULL,PRIMARY KEY(job,stock));
+        CREATE TABLE IF NOT EXISTS recoveries(job INTEGER,stock TEXT,payload TEXT NOT NULL,PRIMARY KEY(job,stock));
         """)
+        # Incremental migrations preserve v1 requests, raw references and queues.
+        for table, column, declaration in (("tasks", "purpose", "TEXT DEFAULT 'forward'"),
+                                            ("tasks", "recovery_id", "INTEGER"),
+                                            ("requests", "purpose", "TEXT DEFAULT 'forward'"),
+                                            ("requests", "probe_only", "INTEGER DEFAULT 0"),
+                                            ("page_observations", "purpose", "TEXT DEFAULT 'forward'")):
+            if column not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        self._init_lifecycle_schema()
         with self.db:
+            if self._get("instance_id") is None:
+                self._set("instance_id", str(uuid.uuid4()))
             if self._get("state") is None:
                 self._set("state", "paused")
                 self._set("reason", "尚未创建任务")
@@ -277,6 +292,9 @@ class Engine:
                 last_observed = self.db.execute("SELECT MAX(COALESCE(finished,started)) FROM requests WHERE job=?", (self._get("job_id"),)).fetchone()[0]
                 self._end_segment("restart_paused", last_observed)
             self._set("probe", False)
+            self._migrate_frontiers()
+            if self._get("job_id") and self._get("state") != "completed":
+                self._mark_recovery_needed("process_restart")
 
     def _get(self, key, default=None):
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -303,14 +321,33 @@ class Engine:
         row = self.db.execute("SELECT config FROM jobs WHERE id=?", (self._get("job_id"),)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def _target(self):
+    def _halt_target(self):
+        hid = self._get("halted_task_id", self._get("halt_task_id"))
+        if hid is None and self._get("active_halt"):
+            row = self.db.execute("SELECT task FROM requests WHERE outcome NOT IN ('real_data','redirect','detail_unavailable','reserved') ORDER BY id DESC LIMIT 1").fetchone()
+            hid = row[0] if row else None
+        return self.db.execute("SELECT * FROM tasks WHERE id=?", (hid,)).fetchone() if hid else None
+
+    def _target(self, probe_target=False):
+        if self._get("active_halt") and (probe_target or self._get("probe") or self._get("job_id") is None):
+            halted = self._halt_target()
+            if halted:
+                return halted
+        inflight = self.db.execute("SELECT * FROM tasks WHERE job=? AND status='inflight' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
+        if inflight:
+            return inflight
+        forced = self.db.execute("SELECT * FROM tasks WHERE job=? AND kind='list' AND purpose='recovery' AND status='pending' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
+        if forced:
+            rec = self._recovery(forced["job"], forced["stock"])
+            if rec and rec.get("force_first"):
+                return forced
         return self.db.execute("SELECT * FROM tasks WHERE job=? AND status IN ('pending','inflight') "
-                               "ORDER BY CASE WHEN status='inflight' THEN 0 WHEN kind='detail' THEN 1 ELSE 2 END,id LIMIT 1",
+                               "ORDER BY CASE WHEN status='inflight' THEN 0 WHEN kind='detail' THEN 1 WHEN purpose='recovery' THEN 2 ELSE 3 END,id LIMIT 1",
                                (self._get("job_id"),)).fetchone()
 
     @staticmethod
     def _target_json(row):
-        return {k: row[k] for k in ("kind", "stock", "page", "post_id", "url")} if row else None
+        return {k: row[k] for k in ("kind", "stock", "page", "post_id", "url", "purpose")} if row else None
 
     def create_job(self, config):
         config = _validate_config(config)
@@ -335,6 +372,7 @@ class Engine:
             for stock in config["stocks"]:
                 self.db.execute("INSERT INTO coverage(job,stock) VALUES(?,?)", (job, stock))
                 self._enqueue_list(job, stock, 1)
+            self._register_job_lifecycle(job)
             self._event("job_created", "创建隔离回补任务", config)
         return self.status()
 
@@ -342,8 +380,230 @@ class Engine:
         url = f"https://guba.eastmoney.com/list,{stock},f" + (f"_{page}" if page > 1 else "") + ".html"
         self.db.execute("INSERT INTO tasks(job,kind,stock,page,url,original_url) VALUES(?,'list',?,?,?,?)", (job, stock, page, url, url))
 
+    def _task_in_active_scope(self, task):
+        cfg = self._config()
+        if (task["job"] != self._get("job_id") or not cfg or self._job_archived(task["job"])
+                or task["stock"] not in cfg["stocks"]):
+            return False
+        prior = self._get("halt_config") if self._get("active_halt") else None
+        if prior and any(prior.get(k) != cfg.get(k) for k in ("from_date", "to_date")):
+            return False
+        if task["kind"] == "detail":
+            row = self.db.execute("SELECT item FROM posts WHERE post_id=?", (task["post_id"],)).fetchone()
+            if not row:
+                return False
+            item = _item_load(row[0])
+            return cfg["from_date"] <= item.published_at.date().isoformat() <= cfg["to_date"] and item.published_at.timestamp() <= self._get("effective_to_epoch")
+        return True
+
+    @staticmethod
+    def _frontier_rows(rows):
+        return [r for r in rows if not (type(r.get("post_top_status")) is int and r["post_top_status"] != 0)]
+
+    @classmethod
+    def _navigation_rows(cls, rows):
+        unpinned = cls._frontier_rows(rows)
+        standard = [r for r in unpinned if r.get("post_type") == 0]
+        # Captured type20 placements are not publish-ordered even on f.html.
+        # Preserve them as auxiliary IDs, never use their oldest date to seek
+        # weeks of history from an otherwise recent ordinary-post page.
+        return standard or unpinned
+
+    def _frontier(self, job, stock):
+        row = self.db.execute("SELECT payload FROM frontiers WHERE job=? AND stock=?", (job, stock)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _save_frontier(self, job, stock, value):
+        self.db.execute("INSERT INTO frontiers VALUES(?,?,?) ON CONFLICT(job,stock) DO UPDATE SET payload=excluded.payload", (job, stock, _dump(value)))
+
+    def _recovery(self, job, stock):
+        row = self.db.execute("SELECT payload FROM recoveries WHERE job=? AND stock=?", (job, stock)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _save_recovery(self, rec):
+        self.db.execute("INSERT INTO recoveries VALUES(?,?,?) ON CONFLICT(job,stock) DO UPDATE SET payload=excluded.payload", (rec["job"], rec["stock"], _dump(rec)))
+
+    def _migrate_frontiers(self):
+        """v1 list observations establish an unverified anchor, never proof."""
+        for cov in self.db.execute("SELECT * FROM coverage WHERE job=? AND pages>0", (self._get("job_id"),)).fetchall():
+            if self._frontier(cov["job"], cov["stock"]):
+                continue
+            requests = self.db.execute("SELECT id,page FROM requests WHERE job=? AND stock=? AND kind='list' AND outcome='real_data' AND purpose='forward' ORDER BY id DESC",
+                                       (cov["job"], cov["stock"])).fetchall()
+            snapshots = []
+            for request in requests:
+                rows = [json.loads(r[0]) for r in self.db.execute("SELECT source_row FROM observations WHERE request_id=? ORDER BY id", (request["id"],))]
+                if rows:
+                    snapshots.append({"page": request["page"], "rows": rows, "request_id": request["id"]})
+                if len(snapshots) >= 2:
+                    break
+            if snapshots:
+                value = snapshots[0] | {"anchor_page": snapshots[-1]["page"], "anchor_rows": snapshots[-1]["rows"],
+                                        "terminal": cov["stop_reason"], "reconciled": False, "migrated_v1": True}
+                self._save_frontier(cov["job"], cov["stock"], value)
+                self._event("anchor_migrated", "旧版观察已转换为待校准锚点，未声明连续完整", {"stock": cov["stock"], "page": value["page"]})
+
+    def _mark_recovery_needed(self, reason):
+        job = self._get("job_id")
+        cfg = self._config()
+        if not job or not cfg:
+            return
+        for stock in cfg["stocks"]:
+            frontier = self._frontier(job, stock)
+            if frontier:
+                old = self._recovery(job, stock)
+                try:
+                    self._begin_recovery(job, stock, frontier, reason, force_first=True,
+                                         original=old if old and old.get("phase") != "complete" else None)
+                except ValueError as exc:
+                    # A valid but unusable frontier (for example only pinned
+                    # rows) must not prevent the control server from starting.
+                    # Retain any existing halt/target and never guess a page.
+                    cov = self.db.execute("SELECT gaps FROM coverage WHERE job=? AND stock=?", (job, stock)).fetchone()
+                    gaps = json.loads(cov[0])
+                    gap = {"kind": "recovery_anchor_unavailable", "reason": str(exc)}
+                    if gap not in gaps:
+                        gaps.append(gap)
+                        self.db.execute("UPDATE coverage SET gaps=? WHERE job=? AND stock=?", (_dump(gaps), job, stock))
+                    if not self._get("active_halt"):
+                        request = self.db.execute("SELECT id FROM requests WHERE job=? AND stock=? AND kind='list' ORDER BY id DESC LIMIT 1", (job, stock)).fetchone()
+                        if request:
+                            self._halt("error", "recovery_anchor_unavailable", "恢复锚点不可用，已停止推进: " + str(exc), request[0])
+                        else:
+                            self._set("state", "error")
+                            self._set("active_halt", "recovery_anchor_unavailable")
+                            self._set("reason", "恢复锚点不可用，需要人工检查: " + str(exc))
+                    self._event("recovery_anchor_unavailable", "保留原阻断并安全启动；恢复锚点不可用，不能猜测下一页", {"stock": stock, "reason": str(exc)})
+
+    def _begin_recovery(self, job, stock, frontier, reason, force_first=False, original=None):
+        previous = self._recovery(job, stock)
+        generation = (previous or {}).get("generation", 0) + 1
+        if original:
+            rec = dict(original)
+        else:
+            anchor_source = frontier.get("anchor_rows", frontier["rows"])
+            anchors = self._navigation_rows(anchor_source)
+            end_rows = self._navigation_rows(frontier["rows"])
+            if not anchors or not end_rows:
+                raise ValueError("无法建立非置顶来源行锚点，不能猜测下一历史页")
+            rec = {"job": job, "stock": stock, "anchor_page": frontier.get("anchor_page", frontier["page"]),
+                   "anchor_ids": [str(r["post_id"]) for r in anchors],
+                   "auxiliary_anchor_ids": [str(r["post_id"]) for r in self._frontier_rows(anchor_source)],
+                   "target_ids": [str(r["post_id"]) for r in end_rows],
+                   "time_order_verified": any(r.get("post_type") == 0 for r in anchors) and any(r.get("post_type") == 0 for r in end_rows),
+                   "anchor_min": min(r["post_publish_time"] for r in anchors),
+                   "anchor_max": max(r["post_publish_time"] for r in anchors),
+                   "target_time": min(r["post_publish_time"] for r in end_rows),
+                   "forward_page": frontier["page"], "terminal": frontier.get("terminal"),
+                   "drift_count": 0, "new_posts": 0, "rechecks": 0, "time_fallback": False}
+        self.db.execute("UPDATE tasks SET status='superseded' WHERE job=? AND stock=? AND kind='list' AND status='pending' AND id!=COALESCE(?, -1)",
+                        (job, stock, self._get("halted_task_id")))
+        rec.update({"generation": generation, "phase": "seek", "reason": reason, "current_page": rec["anchor_page"],
+                    "force_first": force_first, "passes": 0, "last_signature": None, "pass_members": [],
+                    "pass_pages": [], "visited": {}, "anchor_seen": False, "started_at": _iso(self.clock())})
+        self._save_recovery(rec)
+        if not rec.get("time_order_verified", True):
+            self._recovery_gap(rec, "time_order_unverified", "当前锚点区间含全非标准帖页面，只核对来源 ID，不能用其发布时间证明历史次序")
+        self._enqueue_recovery(rec, rec["anchor_page"])
+        self._event("recovery_started", "重新定位 ID/发布时间锚点；核对前不推进历史页", {"stock": stock, "reason": reason, "anchor_page": rec["anchor_page"]})
+
+    def _enqueue_recovery(self, rec, page):
+        rec["current_page"] = page
+        self._save_recovery(rec)
+        url = f"https://guba.eastmoney.com/list,{rec['stock']},f" + (f"_{page}" if page > 1 else "") + ".html"
+        self.db.execute("INSERT INTO tasks(job,kind,stock,page,url,original_url,purpose,recovery_id) VALUES(?,'list',?,?,?,?,'recovery',?)",
+                        (rec["job"], rec["stock"], page, url, url, rec["generation"]))
+
+    def _recovery_gap(self, rec, kind, message):
+        cov = self.db.execute("SELECT gaps FROM coverage WHERE job=? AND stock=?", (rec["job"], rec["stock"])).fetchone()
+        gaps = json.loads(cov[0])
+        gap = {"kind": kind, "anchor_min": rec["anchor_min"], "anchor_max": rec["anchor_max"], "reason": message}
+        if gap not in gaps:
+            gaps.append(gap)
+            self.db.execute("UPDATE coverage SET gaps=? WHERE job=? AND stock=?", (_dump(gaps), rec["job"], rec["stock"]))
+        self._event(kind, message, {"stock": rec["stock"], "page": rec["current_page"]})
+
+    def _advance_recovery(self, task, rows, stats):
+        rec = self._recovery(task["job"], task["stock"])
+        if not rec or task["recovery_id"] != rec["generation"]:
+            return {"superseded": True}
+        rec["force_first"] = False
+        rec["new_posts"] += stats["new_eligible_posts"]
+        items = self._navigation_rows(rows)
+        if not items:
+            rec["phase"] = "error"
+            self._save_recovery(rec)
+            self._recovery_gap(rec, "anchor_not_located", "来源空页或没有可用非置顶时间，无法恢复锚点")
+            raise ValueError("校准无法定位锚点：来源空页/无可用发布时间；已暂停")
+        times = [r["post_publish_time"] for r in items]
+        temporal = rec.get("time_order_verified", True)
+        if temporal and not any(r.get("post_type") == 0 for r in items):
+            self._recovery_gap(rec, "time_order_unverified", "普通帖时间锚点定位过程中仅遇非标准行，无法按时间方向判断")
+            raise ValueError("校准无法定位普通帖时间锚点；当前页只有非标准行，已暂停")
+        if temporal and times != sorted(times, reverse=True):
+            raise ValueError("校准列表不符合非置顶来源行发布时间降序，无法安全定位")
+        seen_anchor = bool({str(r["post_id"]) for r in items} & set(rec["anchor_ids"]))
+        if rec["phase"] == "seek":
+            if not temporal and not seen_anchor:
+                self._recovery_gap(rec, "anchor_not_located", "非标准页面旧 ID 锚点不可见，且没有可靠时间顺序可降级定位")
+                raise ValueError("校准无法定位 ID 锚点；非标准页时间次序未知，已暂停")
+            direction = 1 if min(times) > rec["anchor_max"] else -1 if max(times) < rec["anchor_min"] else 0
+            next_page = task["page"] + direction
+            rec["visited"][str(task["page"])] = {"earliest": min(times), "latest": max(times)}
+            if not seen_anchor and direction and next_page >= 1 and str(next_page) not in rec["visited"]:
+                rec["drift_count"] += 1
+                self._enqueue_recovery(rec, next_page)
+                self._event("anchor_shift", "锚点已移位，按源发布时间向相邻页定位", {"stock": task["stock"], "from_page": task["page"], "next_page": next_page})
+                return {"phase": "seek", "next_page": next_page}
+            if not seen_anchor:
+                rec["time_fallback"] = True
+                self._recovery_gap(rec, "anchor_ids_missing_time_fallback", "旧锚点 ID 不再可见；仅按源发布时间回扫，区间存在不可证明缺口")
+            rec.update({"phase": "scan", "scan_start_page": task["page"], "start_rows": rows, "anchor_seen": seen_anchor})
+        rec["anchor_seen"] = rec["anchor_seen"] or seen_anchor
+        # Compare a fixed source-time interval rather than rows after the frozen
+        # upper cutoff. Newly published posts may shift physical page numbers.
+        members = [(str(r["post_id"]), r["post_publish_time"]) for r in items
+                   if not temporal or rec["target_time"] <= r["post_publish_time"] <= rec["anchor_max"]]
+        rec["pass_members"].extend(members)
+        rec["pass_pages"].append({"page": task["page"], "request_id": stats["request_id"], "sha256": stats["ordered_id_sha256"], "source_count": stats["source_count"]})
+        reached_target = min(times) <= rec["target_time"] if temporal else bool({str(r["post_id"]) for r in items} & set(rec.get("target_ids", rec["anchor_ids"])))
+        if not reached_target:
+            self._enqueue_recovery(rec, task["page"] + 1)
+            return {"phase": "scan", "next_page": task["page"] + 1}
+        unique = sorted(set(map(tuple, rec["pass_members"])), key=lambda x: (x[1], x[0]), reverse=True)
+        signature = hashlib.sha256(_dump(unique).encode()).hexdigest()
+        rec["passes"] += 1
+        if signature == rec["last_signature"] and (rec["anchor_seen"] or rec["time_fallback"]):
+            if rec["reason"] == "forward_no_progress" and task["page"] <= rec["forward_page"] and not rec["new_posts"]:
+                rec["phase"] = "error"
+                self._save_recovery(rec)
+                raise ValueError("分页无进展：重新定位后仍未发现更深历史，不能反复猜测下一页")
+            rec.update({"phase": "complete", "completed_at": _iso(self.clock()), "end_page": task["page"], "signature": signature,
+                        "verified_requests": {"first_pass": rec.get("previous_pass_pages", []), "second_pass": rec["pass_pages"]},
+                        "proof_level": "id_interval_time_order_unverified" if not temporal else "time_boundary_with_gap" if rec["time_fallback"] else "two_matching_anchor_interval_observations"})
+            self._save_recovery(rec)
+            frontier = self._frontier(task["job"], task["stock"])
+            frontier.update({"page": task["page"], "rows": rows, "anchor_page": rec["scan_start_page"],
+                             "anchor_rows": rec["start_rows"], "reconciled": True, "reconciliation": {"signature": signature, "passes": rec["passes"], "proof_level": rec["proof_level"]}})
+            self._save_frontier(task["job"], task["stock"], frontier)
+            if not rec["terminal"]:
+                self._enqueue_list(task["job"], task["stock"], task["page"] + 1)
+            else:
+                self.db.execute("UPDATE coverage SET list_complete=1 WHERE job=? AND stock=?", (task["job"], task["stock"]))
+            self._event("reconciliation_complete", "两轮已观察锚点时间区间一致；下一页使用重新定位后的物理页码", {"stock": task["stock"], "end_page": task["page"], "new_posts": rec["new_posts"], "proof_level": rec["proof_level"]})
+            return {"phase": "complete", "proof_level": rec["proof_level"]}
+        if rec["last_signature"] is not None:
+            rec["drift_count"] += 1
+            self._event("pagination_drift", "两轮时间区间 ID 不一致，补入新详情并重新回扫", {"stock": task["stock"], "passes": rec["passes"]})
+        rec.update({"phase": "seek", "last_signature": signature, "pass_members": [], "pass_pages": [],
+                    "previous_pass_pages": list(rec["pass_pages"]), "visited": {}, "anchor_seen": False, "rechecks": rec["rechecks"] + 1})
+        self._enqueue_recovery(rec, rec["scan_start_page"])
+        return {"phase": "seek", "verification_pending": True}
+
     def start(self):
         with self._mutex, self.db:
+            if self._inflight:
+                raise RuntimeError("当前请求尚在执行，请等待其结果保存后继续")
             if not self._config():
                 raise RuntimeError("请先创建任务")
             if self._get("active_halt"):
@@ -352,6 +612,11 @@ class Engine:
                 raise RuntimeError("任务已结束，请查看覆盖缺口或创建新任务")
             if self._get("state") == "running":
                 return self.status()
+            if self._get("resume_recovery"):
+                self._mark_recovery_needed("manual_resume")
+                self._set("resume_recovery", False)
+                if self._get("active_halt"):
+                    return self.status()
             self._set("state", "running")
             self._set("reason", "按全局间隔运行")
             self.db.execute("UPDATE jobs SET started=COALESCE(started,?) WHERE id=?", (self.clock(), self._get("job_id")))
@@ -362,6 +627,7 @@ class Engine:
     def pause(self):
         with self._mutex, self.db:
             self._set("probe", False)
+            self._set("resume_recovery", True)
             self._end_segment("manual_pause")
             if self._get("state") not in {"blocked", "error", "completed"}:
                 self._set("state", "paused")
@@ -375,7 +641,7 @@ class Engine:
                 raise RuntimeError("请求或单次探测已在执行/排队")
             if self._get("state") == "running":
                 raise RuntimeError("请先暂停任务再单次探测")
-            if not self._target():
+            if not self._target(probe_target=True):
                 raise RuntimeError("没有待请求目标")
             self._set("probe", True)
             self._set("state", "running")
@@ -390,17 +656,23 @@ class Engine:
         with self._mutex, self.db:
             if self._closed or self._inflight or self._get("state") != "running" or self.clock() < self._get("next_due", 0):
                 return {"attempted": False}
-            task = self._target()
+            task = self._target(probe_target=self._get("probe", False))
             if not task:
                 self._finish_job()
                 return {"attempted": False}
             task = dict(task)
             config, now = self._config(), self.clock()
             probe = self._get("probe", False)
+            halted = self._halt_target() if self._get("active_halt") else None
+            if halted and probe and halted["id"] == task["id"]:
+                config = self._get("halted_config") or self._get("halt_config") or json.loads(self.db.execute("SELECT config FROM jobs WHERE id=?", (task["job"],)).fetchone()[0])
+            if config is None:
+                raise RuntimeError("请求缺少原任务配置，无法安全探测")
+            probe_only = probe and (self._get("halted_probe_only", False) or not self._task_in_active_scope(task))
             self._set("probe", False)
             self._set("next_due", max(now, self._get("next_due", 0)) + config["interval_seconds"])
-            rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe) VALUES(?,?,?,?,?,?,?,?,?)",
-                                  (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe))).lastrowid
+            rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                  (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only))).lastrowid
             self.db.execute("UPDATE tasks SET status='inflight' WHERE id=?", (task["id"],))
             self._inflight = True
         # A concurrent pause is now effective for the next request; this response
@@ -413,7 +685,7 @@ class Engine:
             response = Response(None, b"", {}, task["url"], f"{type(exc).__name__}: {exc}")
         with self._mutex:
             try:
-                self._record_response(rid, task, response, config, probe)
+                self._record_response(rid, task, response, config, probe, probe_only)
             except Exception as exc:
                 with self.db:
                     self.db.execute("UPDATE requests SET outcome='internal_error',finished=?,error=? WHERE id=?",
@@ -424,7 +696,7 @@ class Engine:
                 self._inflight = False
             return {"attempted": True, "request_id": rid, "state": self._get("state")}
 
-    def _record_response(self, rid, task, response, config, probe):
+    def _record_response(self, rid, task, response, config, probe, probe_only=False):
         if not isinstance(response.body, bytes):
             raise ValueError("响应 body 必须为 bytes")
         raw = self.raw_dir / f"{rid:09d}.body"
@@ -497,7 +769,8 @@ class Engine:
                     self._end_segment("probe_redirect")
                 return
             if task["kind"] == "detail" and response.status in {200, 404} and guba.is_not_found_page(html):
-                self.db.execute("UPDATE posts SET status='removed',detail_request=? WHERE post_id=?", (rid, task["post_id"]))
+                if not probe_only:
+                    self.db.execute("UPDATE posts SET status='removed',detail_request=? WHERE post_id=?", (rid, task["post_id"]))
                 self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
                 self._outcome(rid, "detail_unavailable", None, {"source_missing_shell": True, "deleted": "not_proven"})
                 self._event("detail_unavailable", "来源明确返回帖子不存在/不可访问页；保留列表及缺正文状态", {"request_id": rid, "post_id": task["post_id"]})
@@ -509,10 +782,10 @@ class Engine:
                 return
             try:
                 if task["kind"] == "list":
-                    page_result = self._accept_list(rid, task, html, config)
+                    page_result = self._accept_list(rid, task, html, config, probe_only=probe_only)
                     evidence["list_observation"] = page_result
                 else:
-                    self._accept_detail(rid, task, html)
+                    self._accept_detail(rid, task, html, probe_only=probe_only)
             except (ValueError, TypeError, KeyError) as exc:
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
@@ -558,6 +831,11 @@ class Engine:
         row = self.db.execute("SELECT id,url,http_status,raw_ref,sha256,started,finished FROM requests WHERE id=?", (rid,)).fetchone()
         evidence = dict(row)
         evidence.update({"kind": kind, "reason": reason, "server_blacklist": "unproven"})
+        failed = self.db.execute("SELECT task,job FROM requests WHERE id=?", (rid,)).fetchone()
+        self._set("halted_task_id", failed["task"])
+        self._set("halt_task_id", failed["task"])
+        config_row = self.db.execute("SELECT config FROM jobs WHERE id=?", (failed["job"],)).fetchone()
+        self._set("halt_config", json.loads(config_row[0]) if config_row else self._config())
         self._set("block_evidence", evidence)
         self._event(kind, reason, evidence)
 
@@ -565,6 +843,11 @@ class Engine:
         self._set("last_success", self.clock())
         if probe:
             self._set("active_halt", None)
+            self._set("halted_task_id", None)
+            self._set("halt_task_id", None)
+            self._set("halted_probe_only", False)
+            self._set("halted_config", None)
+            self._set("halt_config", None)
             self._set("state", "paused")
             self._set("reason", "单次探测取得有效来源响应；已暂停，等待继续")
             self._end_segment("probe_success")
@@ -572,7 +855,7 @@ class Engine:
         elif self._get("state") == "running" and not self._target():
             self._finish_job()
 
-    def _accept_list(self, rid, task, html, config):
+    def _accept_list(self, rid, task, html, config, probe_only=False):
         expected_path = urlparse(task["original_url"]).path
         if urlparse(task["url"]).hostname != "guba.eastmoney.com" or urlparse(task["url"]).path != expected_path:
             raise ValueError("列表重定向后的股票/页码不符")
@@ -595,8 +878,6 @@ class Engine:
         if len(set(ids)) != len(ids):
             raise ValueError("同页出现重复源 ID")
         known = {r[0] for r in self.db.execute("SELECT DISTINCT post_id FROM observations WHERE job=? AND stock=?", (task["job"], task["stock"]))}
-        if ids and task["page"] > 1 and not set(ids) - known:
-            raise ValueError("分页没有新增源 ID，不能继续推进覆盖")
         by_id = {x.source_item_id: x for x in page.rows}
         start, end = config["from_date"], config["to_date"]
         effective_to = self._get("effective_to_epoch")
@@ -609,7 +890,7 @@ class Engine:
             if (not _allowed(item.url) or p.hostname != "guba.eastmoney.com"
                     or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(item.source_item_id) + r"\.html", p.path)):
                 raise ValueError("列表中的标准详情链接不符合已确认的来源路径")
-            if eligible_item(item):
+            if not probe_only and eligible_item(item):
                 prior = self.db.execute("SELECT item FROM posts WHERE post_id=?", (item.source_item_id,)).fetchone()
                 if prior:
                     old = _item_load(prior[0])
@@ -618,19 +899,28 @@ class Engine:
                             raise ValueError(f"重复源 ID 的 {field} 不一致")
                     if old.title and item.title and old.title != item.title:
                         raise ValueError("重复源 ID 的标题不一致")
+        stats = {"request_id": rid, "job": task["job"], "stock": task["stock"], "page": task["page"], "purpose": task.get("purpose", "forward"),
+                 "source_count": page.source_count, "rows": len(rows), "new_ids": len(set(ids) - known), "new_eligible_posts": 0,
+                 "overlap": len(set(ids) & known), "ordered_id_sha256": hashlib.sha256(_dump(ids).encode()).hexdigest(),
+                 "earliest": min(times, default=None), "latest": max(times, default=None)}
+        if probe_only:
+            stats["probe_only"] = True
+            return stats
         cov = self.db.execute("SELECT * FROM coverage WHERE job=? AND stock=?", (task["job"], task["stock"])).fetchone()
+        if cov is None:
+            raise ValueError("任务股票已不在活动覆盖范围")
         # Do not infer page monotonicity or historic availability from count.
         # A full below-window page needs a second full below-window confirmation.
         # Pinned rows remain retained/eligible, but cannot hold the historic
         # frontier open forever. Only source-explicit nonzero top flags exclude
         # a row from boundary proof; an absent/unknown flag remains included.
-        boundary_rows = [r for r in rows if not (type(r.get("post_top_status")) is int and r["post_top_status"] != 0)]
+        boundary_rows = [r for r in self._frontier_rows(rows) if r.get("post_type") == 0]
         below = bool(boundary_rows) and all(r["post_publish_time"][:10] < start for r in boundary_rows)
         under = cov["under_pages"] + 1 if below else 0
         boundary = under >= 2
         exhausted = not rows
         gaps = json.loads(cov["gaps"])
-        if exhausted and not boundary and not cov["boundary"]:
+        if task.get("purpose") != "recovery" and exhausted and not boundary and not cov["boundary"]:
             gaps.append({"kind": "source_exhausted_before_boundary", "requested_from": start,
                          "earliest_observed": min(times + ([cov["earliest"]] if cov["earliest"] else []), default=None)})
         for row in rows:
@@ -643,35 +933,53 @@ class Engine:
             if eligible:
                 prior = self.db.execute("SELECT status FROM posts WHERE post_id=?", (pid,)).fetchone()
                 if prior is None:
+                    stats["new_eligible_posts"] += 1
                     self.db.execute("INSERT INTO posts(post_id,item,source_row,list_request) VALUES(?,?,?,?)",
                                     (pid, _dump(asdict(item)), _dump(row), rid))
                     self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
                                     (task["job"], task["stock"], task["page"], pid, item.url, item.url))
                 elif prior["status"] == "pending":
-                    exists = self.db.execute("SELECT 1 FROM tasks WHERE job=? AND kind='detail' AND post_id=? AND status!='done'", (task["job"], pid)).fetchone()
+                    exists = self.db.execute("SELECT 1 FROM tasks WHERE job=? AND kind='detail' AND post_id=? AND status IN ('pending','inflight')", (task["job"], pid)).fetchone()
                     if not exists:
                         self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
                                         (task["job"], task["stock"], task["page"], pid, item.url, item.url))
         earliest = min(times + ([cov["earliest"]] if cov["earliest"] else []), default=None)
         latest = max(times + ([cov["latest"]] if cov["latest"] else []), default=None)
-        self.db.execute("UPDATE coverage SET pages=pages+1,rows=rows+?,earliest=?,latest=?,under_pages=?,list_complete=?,boundary=?,stop_reason=?,source_count=?,gaps=? WHERE job=? AND stock=?",
-                        (len(rows), earliest, latest, under, int(boundary or exhausted), int(boundary),
-                         "date_boundary_confirmed" if boundary else "source_exhausted" if exhausted else None,
-                         page.source_count, _dump(gaps), task["job"], task["stock"]))
-        if not boundary and not exhausted:
-            self._enqueue_list(task["job"], task["stock"], task["page"] + 1)
-        stats = {"request_id": rid, "job": task["job"], "stock": task["stock"], "page": task["page"],
-                 "source_count": page.source_count, "rows": len(rows), "new_ids": len(set(ids) - known),
-                 "overlap": len(set(ids) & known), "ordered_id_sha256": hashlib.sha256(_dump(ids).encode()).hexdigest(),
-                 "earliest": min(times, default=None), "latest": max(times, default=None)}
-        self.db.execute("INSERT INTO page_observations VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        self.db.execute("UPDATE coverage SET rows=rows+?,earliest=?,latest=?,source_count=?,gaps=? WHERE job=? AND stock=?",
+                        (len(rows), earliest, latest, page.source_count, _dump(gaps), task["job"], task["stock"]))
+        self.db.execute("INSERT INTO page_observations(request_id,job,stock,page,source_count,rows,new_ids,overlap,id_sha256,earliest,latest,purpose) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (rid, task["job"], task["stock"], task["page"], page.source_count, len(rows),
-                         stats["new_ids"], stats["overlap"], stats["ordered_id_sha256"], stats["earliest"], stats["latest"]))
+                         stats["new_ids"], stats["overlap"], stats["ordered_id_sha256"], stats["earliest"], stats["latest"], stats["purpose"]))
+        if task.get("purpose") == "recovery":
+            stats["recovery"] = self._advance_recovery(task, rows, stats)
+        else:
+            previous = self._frontier(task["job"], task["stock"])
+            if ids and task["page"] > 1 and not set(ids) - known:
+                if not previous:
+                    raise ValueError("分页没有新增源 ID，且没有可恢复锚点")
+                self._begin_recovery(task["job"], task["stock"], previous, "forward_no_progress")
+                self._recovery_gap(self._recovery(task["job"], task["stock"]), "forward_no_new_ids", "下一页没有新增 ID，停止盲目 page+1 并重新定位")
+                return stats
+            terminal = "date_boundary_confirmed" if boundary else "source_exhausted" if exhausted else None
+            self.db.execute("UPDATE coverage SET pages=pages+1,under_pages=?,boundary=?,list_complete=0,stop_reason=? WHERE job=? AND stock=?",
+                            (under, int(boundary), terminal, task["job"], task["stock"]))
+            if rows:
+                frontier = {"page": task["page"], "rows": rows, "request_id": rid, "reconciled": False,
+                            "anchor_page": previous["page"] if previous else task["page"],
+                            "anchor_rows": previous["rows"] if previous else rows, "terminal": terminal}
+                self._save_frontier(task["job"], task["stock"], frontier)
+                self._begin_recovery(task["job"], task["stock"], frontier, "details_completed_recheck")
+            elif previous:
+                previous["terminal"] = terminal
+                self._save_frontier(task["job"], task["stock"], previous)
+                self._begin_recovery(task["job"], task["stock"], previous, "source_tail_recheck")
+            else:
+                self.db.execute("UPDATE coverage SET list_complete=1 WHERE job=? AND stock=?", (task["job"], task["stock"]))
         self._event("list_acquired", f"{task['stock']} 第 {task['page']} 页已校验并入隔离队列",
                     {"request_id": rid, "rows": len(rows), "new_ids": len(set(ids) - known), "boundary_confirmed": boundary})
         return stats
 
-    def _accept_detail(self, rid, task, html):
+    def _accept_detail(self, rid, task, html, probe_only=False):
         post = self.db.execute("SELECT * FROM posts WHERE post_id=?", (task["post_id"],)).fetchone()
         if not post:
             raise ValueError("详情缺少已获取的列表来源")
@@ -687,6 +995,8 @@ class Engine:
         payload = guba._embedded_json(html, "post_article")
         if detail.published_at.strftime("%Y-%m-%d %H:%M:%S") != payload["post_publish_time"]:
             raise ValueError("详情发布时间格式不完整")
+        if probe_only:
+            return
         self.db.execute("UPDATE posts SET status='complete',detail_request=?,detail_payload=?,content=? WHERE post_id=?",
                         (rid, _dump(payload), detail.content, task["post_id"]))
         self._event("detail_acquired", "正文已完整获取" if detail.content else "来源返回合法空正文",
@@ -702,7 +1012,9 @@ class Engine:
         with self._mutex:
             job_id, config = self._get("job_id"), self._config()
             job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            counts = self.db.execute("SELECT COUNT(*) AS attempts,SUM(outcome='real_data' AND kind='list') AS list_pages,"
+            counts = self.db.execute("SELECT COUNT(*) AS attempts,SUM(outcome='real_data' AND kind='list' AND purpose='forward') AS list_pages,"
+                                     "SUM(kind='list' AND purpose='recovery') AS calibration_requests,"
+                                     "SUM(outcome='real_data' AND kind='list' AND purpose='recovery') AS calibration_pages,"
                                      "SUM(outcome NOT IN ('real_data','redirect','detail_unavailable','reserved')) AS failures FROM requests WHERE job=?", (job_id,)).fetchone()
             post_counts = self.db.execute("SELECT COUNT(*) AS unique_posts,SUM(status='complete') AS body_complete,"
                                          "SUM(status='pending') AS pending,SUM(status='removed') AS removed,"
@@ -720,6 +1032,9 @@ class Engine:
                 c["details"] = {k: n[k] or 0 for k in n.keys()}
                 c["details_complete"] = c["details"]["pending"] == 0 and c["details"]["removed"] == 0
                 c["proof_level"] = "observed_pages_only"
+                rec = self._recovery(job_id, c["stock"])
+                c["recovery"] = self._recovery_json(rec)
+                c["reconciliation_complete"] = bool(rec and rec["phase"] == "complete" and not rec["time_fallback"] and rec.get("time_order_verified", True))
                 c["pagination_overlap"] = self.db.execute("SELECT COALESCE(SUM(overlap),0) FROM page_observations WHERE job=? AND stock=?", (job_id, c["stock"])).fetchone()[0]
                 if c["details"]["removed"]:
                     c["gaps"].append({"kind": "details_unavailable", "count": c["details"]["removed"]})
@@ -730,9 +1045,11 @@ class Engine:
             segment = self.db.execute("SELECT * FROM run_segments WHERE id=?", (self._get("segment_id"),)).fetchone()
             continuous = max(0, (segment["ended"] if segment["ended"] is not None else self.clock()) - segment["started"]) if segment else 0
             effective_to = self._get("effective_to_epoch")
-            result = {"version": VERSION, "state": self._get("state"), "reason": self._get("reason"),
+            lifecycle = self.db.execute("SELECT revision,archived FROM job_lifecycle WHERE job=?", (job_id,)).fetchone()
+            result = {"version": VERSION, "instance_id": self._get("instance_id"), "state": self._get("state"), "reason": self._get("reason"),
                       "job": {"id": job_id, "config": config, "created_at": _iso(job["created"]), "started_at": _iso(started),
-                              "effective_to": _iso(effective_to), "effective_to_shanghai": datetime.fromtimestamp(effective_to, guba.SHANGHAI).isoformat()} if job else None,
+                              "effective_to": _iso(effective_to), "effective_to_shanghai": datetime.fromtimestamp(effective_to, guba.SHANGHAI).isoformat(),
+                              "revision": lifecycle["revision"] if lifecycle else 1, "archived": bool(lifecycle and lifecycle["archived"] is not None)} if job else None,
                       "config": config, "current": self._target_json(self._target()), "aggregate": aggregate,
                       "next_request_at": _iso(self._get("next_due")) if self._get("next_due") else None,
                       "next_request_epoch": self._get("next_due", 0), "server_time": _iso(self.clock()),
@@ -746,11 +1063,21 @@ class Engine:
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
             result["observed_work_complete"] = bool(coverage) and all(c["date_boundary_reached"] and c["details_complete"] and not c["gaps"] for c in coverage)
+            result["recovery"] = [c["recovery"] for c in coverage if c["recovery"]]
+            result["reconciliation_complete"] = bool(coverage) and all(c["reconciliation_complete"] for c in coverage)
             result["coverage_complete"] = False
             result["coverage_proof"] = "observed_pages_only"
             result["needs_review"] = True
-            result["coverage_limitations"] = ["列表页在详情采集期间会移动，新增 ID 和日期边界不能证明连续历史完整性；尚无对账确认", "来源可能删除或不再提供历史数据"]
+            result["coverage_limitations"] = ["已按源 ID/时间锚点回扫并比较两轮局部区间；不能证明来源全部历史完整或发现已永久消失的未观察帖子", "来源可能删除或不再提供历史数据，锚点丢失时保留显式缺口"]
             return result
+
+    @staticmethod
+    def _recovery_json(rec):
+        if not rec:
+            return None
+        keys = ("job", "stock", "phase", "reason", "anchor_page", "current_page", "passes", "drift_count", "new_posts", "proof_level",
+                "anchor_min", "anchor_max", "target_time", "time_fallback", "time_order_verified", "started_at", "completed_at", "verified_requests")
+        return {k: rec.get(k) for k in keys}
 
     def requests(self, limit=50):
         limit = self._limit(limit)
@@ -761,6 +1088,7 @@ class Engine:
                 for key in ("headers", "analysis"):
                     d[key] = json.loads(d[key]) if d[key] else None
                 d["started_at"], d["finished_at"] = _iso(d["started"]), _iso(d["finished"])
+                d["instance_id"] = self._get("instance_id")
                 result.append(d)
             return result
 
@@ -790,7 +1118,7 @@ class Engine:
                     d[key] = json.loads(d[key]) if d[key] else None
                 d["associations"] = [dict(r) for r in self.db.execute("SELECT job,stock,request_id FROM associations WHERE post_id=? AND eligible=1", (row["post_id"],)).fetchall()]
                 d["raw_refs"] = [dict(r) for r in self.db.execute("SELECT id,raw_ref,sha256,outcome FROM requests WHERE id IN (?,?)", (row["list_request"], row["detail_request"])).fetchall()]
-                d.update({"source": "eastmoney_guba", "source_item_id": row["post_id"], "schema_version": VERSION,
+                d.update({"source": "eastmoney_guba", "source_item_id": row["post_id"], "schema_version": VERSION, "instance_id": self._get("instance_id"),
                           "body_complete": row["status"] == "complete", "research_only": True,
                           "model_database_eligible": False, "dataset_complete": False,
                           "coverage_proof": "observed_pages_only", "job_id": self._get("job_id"),

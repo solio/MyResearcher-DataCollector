@@ -129,6 +129,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200, self.server.engine.events(limit))
                 if path == "api/posts":
                     return self.send(200, self.server.engine.raw_posts(limit, offset))
+                if path == "api/jobs":
+                    return self.send(200, self.server.engine.jobs())
             except ValueError as exc:
                 return self.send(400, {"error": str(exc)})
             return self.send(404, {"error": "接口不存在"})
@@ -172,10 +174,39 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.send(409, {"error": str(exc)})
 
+    def do_PATCH(self):
+        if not self.origin_valid():
+            return self.send(403, {"error": "跨站控制请求已拒绝"})
+        if not self.authenticated():
+            return self.send(401, {"error": "请先登录控制台"})
+        if urlparse(self.path).path.lstrip("/") != "api/jobs/current":
+            return self.send(404, {"error": "接口不存在"})
+        try:
+            self.server.engine.update_job(self.read_json())
+            self.send(200, self.server.engine.status())
+        except ValueError as exc:
+            self.send(400, {"error": str(exc)})
+        except RuntimeError as exc:
+            self.send(409, {"error": str(exc)})
+
     def do_DELETE(self):
         if not self.origin_valid():
             return self.send(403, {"error": "跨站请求已拒绝"})
-        if urlparse(self.path).path.lstrip("/") != "api/session":
+        path = unquote(urlparse(self.path).path).lstrip("/")
+        if path == "api/jobs/current" or path.startswith("api/jobs/current/stocks/"):
+            if not self.authenticated():
+                return self.send(401, {"error": "请先登录控制台"})
+            try:
+                if path == "api/jobs/current":
+                    self.server.engine.delete_job()
+                else:
+                    self.server.engine.remove_stock(path[len("api/jobs/current/stocks/"):])
+                return self.send(200, self.server.engine.status())
+            except ValueError as exc:
+                return self.send(400, {"error": str(exc)})
+            except RuntimeError as exc:
+                return self.send(409, {"error": str(exc)})
+        if path != "api/session":
             return self.send(404, {"error": "接口不存在"})
         jar = cookies.SimpleCookie()
         try:

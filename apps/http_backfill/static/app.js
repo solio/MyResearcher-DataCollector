@@ -15,6 +15,10 @@
   let formDirty = false;
   let lastPoll = null;
   let requestItems = [];
+  let statusGeneration = 0;
+  let pendingDeletion = null;
+  let formJobId = null;
+  let formConfigSignature = "";
 
   function first(object, keys, fallback = null) {
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) return object[key];
@@ -127,18 +131,33 @@
     const pending = probePending();
     $("start").disabled = locked || !job || pending || status?.request_inflight || !["paused", "idle"].includes(state);
     $("pause").disabled = locked || !(state === "running" || pending);
-    $("retry").disabled = locked || !job || pending || status?.request_inflight || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state);
-    $("config-fields").disabled = locked || pending || (job && state !== "completed") || !["paused", "idle", "completed"].includes(state);
-    $("save-config").disabled = $("config-fields").disabled;
+    $("retry").disabled = locked || (!job && !status?.active_halt) || pending || status?.request_inflight || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state);
+    const awaitingStop = state === "running" || pending || status?.request_inflight;
+    $("config-fields").disabled = locked || awaitingStop;
+    $("save-config").disabled = $("config-fields").disabled || (!job && !!status?.active_halt);
+    display("save-config", job ? "保存当前任务修改" : "创建任务");
+    $("config-management").hidden = !job;
+    $("pause-edit").hidden = !job || !awaitingStop;
+    $("pause-edit").disabled = locked;
+    display("pause-edit", state === "running" || pending ? "暂停后编辑" : "等待请求结束后编辑");
+    $("delete-job").hidden = !job;
+    $("delete-job").disabled = locked;
+    $("reset-config").hidden = !job || !formDirty;
+    $("reset-config").disabled = locked || awaitingStop;
+    document.querySelectorAll("[data-remove-stock]").forEach((button) => { button.disabled = locked || !job; });
     $("refresh").disabled = busy || polling;
     $("logout").disabled = busy;
     if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
     else if (["blocked", "error"].includes(state)) display("action-note", "已暂停后续请求。检查证据后，可手动安排一次探测。");
-    else if (state === "completed") display("action-note", "请核对每股的完成情况和缺口，可另建日期窗口。");
+    else if (state === "completed") display("action-note", "请核对覆盖。可编辑当前窗口，或删除任务后新建。");
     else if (job) display("action-note", "点击开始后，按持久化的全局请求间隔调度。");
     else display("action-note", "保存配置不会发起源请求。");
-    if (job && state !== "completed") display("config-message", "现有任务的范围已固定；完成后可新建窗口。");
+    if (busy) display("config-message", "正在提交操作或等待当前请求结束…");
+    else if (awaitingStop) display("config-message", "先暂停并等待正在执行的请求结束，再编辑配置。");
+    else if (!job && status?.active_halt) display("config-message", "实例阻断仍保留。先对原目标单次探测成功后，才能创建新任务。");
+    else if (job && status?.active_halt) display("config-message", "可以修改配置；保存后仍保留阻断状态，不会自动开始。");
+    else display("config-message", job ? "保存修改后保持暂停；已有数据和原始响应保留。" : "创建后保持暂停，手动启动。");
   }
   function setConnection(ok) {
     online = ok;
@@ -163,8 +182,15 @@
     $("interval").value = config.interval_seconds || 60;
     $("client").value = config.client || "curl";
     loadedConfig = true;
+    formJobId = first(status?.job, ["id"], first(status, ["job_id"]));
+    formConfigSignature = JSON.stringify(config);
     display("config-state", "已保存");
     display("config-message", "保存后保持暂停，手动启动。");
+  }
+  function clearForm() {
+    formDirty = false; loadedConfig = false; formJobId = null; formConfigSignature = "";
+    $("stocks").value = ""; $("interval").value = "60"; $("client").value = "curl";
+    defaultDates(1); display("config-state", "未配置");
   }
   function counter(name, aliases = []) {
     const stats = objectValue(first(status, ["aggregate", "counters", "metrics", "stats", "counts"], {}));
@@ -211,16 +237,21 @@
     if (config) {
       const effectiveTo = first(data.job, ["effective_to_shanghai", "effective_to"]);
       display("job-window", `${config.from_date || "—"} 至 ${config.to_date || "—"}${effectiveTo ? " · 本次截止 " + time(effectiveTo) : ""}`);
-      if (!loadedConfig) loadForm(config);
+      const jobId = first(data.job, ["id"], first(data, ["job_id"]));
+      if (!formDirty && (!loadedConfig || formJobId !== jobId || formConfigSignature !== JSON.stringify(config))) loadForm(config);
       if (!formDirty) display("config-state", "已保存");
-    } else display("job-window", "未配置日期窗口");
+    } else {
+      display("job-window", "未配置日期窗口");
+      if (loadedConfig && !formDirty) clearForm();
+      if (!formDirty) display("config-state", "未配置");
+    }
     const target = first(data, ["current_target", "current", "target"]);
     if (target && typeof target === "object") {
       const kind = first(target, ["kind", "type"]);
       const stock = first(target, ["stock", "stock_code", "bar_code"], "");
       const page = first(target, ["page", "page_number"]);
       const id = first(target, ["post_id", "source_item_id", "id"]);
-      const label = kind === "detail" || id != null ? `${stock ? stock + " · " : ""}正文 ${id || ""}` : `${stock || "列表"}${page == null ? "" : " · 第 " + page + " 页"}`;
+      const label = kind === "detail" || id != null ? `${stock ? stock + " · " : ""}正文 ${id || ""}` : `${stock || "列表"}${target.purpose === "recovery" ? " · 校准" : ""}${page == null ? "" : " · 源页码 " + page}`;
       display("current-target", label.trim());
     } else display("current-target", target || (config ? "等待下一项" : "—"));
     const success = first(data, ["last_success_at", "last_success", "last_source_success"]);
@@ -234,6 +265,10 @@
     }
     display("metric-attempts", number(counter("attempts", ["requests", "request_count"])));
     display("metric-pages", number(counter("list_pages", ["list_pages_success", "pages"])));
+    const forwardPages = counter("list_pages", ["list_pages_success", "pages"]);
+    const calibrationPages = counter("calibration_pages");
+    display("metric-calibration", `校准成功 ${number(calibrationPages)} / 尝试 ${number(counter("calibration_requests"))}`);
+    display("metric-list-total", `列表成功合计 ${number(forwardPages == null || calibrationPages == null ? null : Number(forwardPages) + Number(calibrationPages))} 次`);
     display("metric-posts", number(counter("unique_posts", ["posts", "posts_count"])));
     display("metric-bodies", number(counter("body_complete", ["bodies_complete", "detail_success", "complete_posts"])));
     display("metric-pending", number(counter("pending", ["pending_details", "body_pending"])));
@@ -242,6 +277,7 @@
     display("metric-body-breakdown", `非空 ${number(counter("body_nonempty", ["nonempty_body", "nonempty_bodies", "nonempty", "body_non_empty"]))} · 有效空正文 ${number(counter("body_empty", ["source_empty_body", "empty_bodies", "empty"]))}`);
     renderBlock(data);
     renderCoverage(data, config);
+    renderRecovery(data);
     renderTiming();
     controls();
   }
@@ -271,7 +307,7 @@
     if (!Array.isArray(items)) items = [];
     const list = $("coverage-list"); list.replaceChildren();
     if (!items.length && config && Array.isArray(config.stocks)) items = config.stocks.map((stock) => ({ stock, status: "pending" }));
-    display("coverage-count", items.length ? `${items.length} 只股票` : "未配置");
+    display("coverage-count", items.length ? `${items.length} 只股票 · 覆盖未确认` : "未配置");
     if (!items.length) { list.append(el("div", "empty-state", "保存股票和日期窗口后，这里会显示覆盖进度。")); return; }
     for (const item of items) {
       const stock = first(item, ["stock", "stock_code", "bar_code", "code"], "未知代码");
@@ -282,7 +318,16 @@
       const row = el("article", "coverage-item");
       const header = el("div", "coverage-item-header");
       const hasGap = Array.isArray(gaps) ? gaps.length > 0 : !!gaps;
-      header.append(el("strong", "", stock), el("span", `tag${complete ? " success" : hasGap ? " warning" : ""}`, complete ? "已发现项完成" : hasGap ? "存在缺口" : item.date_boundary_reached ? "已到窗口边界" : labels[state] || state));
+      const actions = el("div", "coverage-item-actions");
+      actions.append(el("span", `tag${complete ? " success" : hasGap ? " warning" : ""}`, complete ? "已发现项完成" : hasGap ? "存在缺口" : item.date_boundary_reached ? "已到窗口边界" : labels[state] || state));
+      if (config && config.stocks?.includes(String(stock)) && /^\d{6}$/.test(String(stock))) {
+        const remove = el("button", "stock-remove", "移除");
+        remove.type = "button"; remove.dataset.removeStock = String(stock);
+        remove.setAttribute("aria-label", `移除股票 ${stock} 的后续采集`);
+        remove.addEventListener("click", () => confirmDeletion(String(stock)));
+        actions.append(remove);
+      }
+      header.append(el("strong", "", stock), actions);
       row.append(header);
       const earliest = first(item, ["earliest_publish_time", "earliest_published_at", "earliest", "min_published_at", "oldest"]);
       const latest = first(item, ["latest_publish_time", "latest_published_at", "latest", "max_published_at", "newest"]);
@@ -293,7 +338,7 @@
       const bodies = first(item, ["body_complete", "bodies_complete", "complete_posts"], first(details, ["complete"]));
       const posts = first(item, ["unique_posts", "posts", "total_posts"], first(details, ["required"]));
       const pending = first(item, ["pending", "pending_details"], first(details, ["pending"]));
-      const counts = [["列表页", pages], ["原始列表行", first(item, ["rows"])], ["窗口内帖", posts], ["正文", bodies], ["待取", pending]];
+      const counts = [["前进列表", pages], ["原始列表行", first(item, ["rows"])], ["窗口内帖", posts], ["正文", bodies], ["待取", pending]];
       counts.forEach(([label, value]) => counters.append(el("span", "", `${label} ${number(value)}`)));
       row.append(counters);
       if (posts != null && bodies != null && Number(posts) > 0) {
@@ -312,7 +357,66 @@
       const gapText = Array.isArray(gaps) ? gaps.filter(Boolean).map(describeGap).join("；") : describeGap(gaps);
       const reason = first(item, ["reason", "message"]);
       if (gapText || reason || ["exhausted", "source_exhausted"].includes(state)) row.append(el("p", "coverage-gap", gapText || reason || "源数据已到尾。目标窗口是否有未覆盖历史，请核对保留证据。"));
+      if (item.recovery) row.append(el("div", "stock-recovery", recoveryDescription(item.recovery)));
       list.append(row);
+    }
+  }
+  const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
+  const recoveryReasons = { process_restart: "进程重启后重新定位", manual_resume: "暂停恢复后重新定位", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后核对列表偏移", forward_no_progress: "前进列表没有新增 ID，重新定位", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
+  function recoveryProof(info) {
+    if (info.time_fallback || info.proof_level === "time_boundary_with_gap") return "旧 ID 不可见，仅按时间回扫，缺口保留。";
+    if (info.time_order_verified === false || info.proof_level === "id_interval_time_order_unverified") return "发布时间次序尚未核实，局部覆盖不能确认。";
+    if (info.proof_level === "two_matching_anchor_interval_observations") return "已观察的 ID 与时间局部区间两轮一致；整体覆盖仍未确认。";
+    return "";
+  }
+  function recoveryDescription(recovery) {
+    const info = objectValue(recovery);
+    const phase = first(info, ["phase"], "pending");
+    const facts = [recoveryPhases[phase] || phase, info.anchor_page == null ? "" : `原始源页码 ${number(info.anchor_page)}`, info.current_page == null ? "" : `当前源页码 ${number(info.current_page)}`, info.passes == null ? "" : `校准轮次 ${number(info.passes)}`, info.new_posts == null ? "" : `新增发现 ${number(info.new_posts)} 帖`].filter(Boolean);
+    if (info.reason) facts.push(recoveryReasons[info.reason] || textValue(info.reason));
+    if (recoveryProof(info)) facts.push(recoveryProof(info));
+    return facts.join(" · ");
+  }
+  function renderRecovery(data) {
+    let info = first(data, ["recovery", "current_recovery"]);
+    if (Array.isArray(info)) info = info.find((entry) => entry.stock === data.current?.stock) || info[0];
+    if (info && typeof info === "object" && !info.phase && !Object.hasOwn(info, "anchor_page")) {
+      const values = Object.entries(info).filter(([, value]) => value && typeof value === "object");
+      info = info[data.current?.stock] || values[0]?.[1];
+    }
+    $("recovery-panel").hidden = false;
+    const facts = $("recovery-facts"); facts.replaceChildren();
+    if (!info || typeof info !== "object") {
+      display("recovery-phase", "尚未校准");
+      display("recovery-reason", "尚无分页恢复校准记录。");
+      return;
+    }
+    const phase = first(info, ["phase"], "pending");
+    display("recovery-phase", recoveryPhases[phase] || phase);
+    const values = [["股票", first(info, ["stock", "stock_code"], data.current?.stock)], ["原始源页码", info.anchor_page], ["当前源页码", info.current_page], ["校准轮次", info.passes], ["偏移观察", info.drift_count], ["新增发现帖", info.new_posts]];
+    values.forEach(([label, value]) => { if (value != null) facts.append(el("span", "", `${label} ${label === "股票" ? textValue(value) : number(value)}`)); });
+    display("recovery-reason", [recoveryReasons[info.reason] || info.reason || "校准进度由服务端保存。暂停、编辑和刷新不会自动开始采集。", recoveryProof(info)].filter(Boolean).join(" · "));
+  }
+  function renderJobs(data) {
+    const items = unpack(data, "jobs");
+    const list = $("history-list"); list.replaceChildren();
+    const archived = items.filter((job) => job.status === "archived" || job.archived_at || job.archived).length;
+    display("history-count", `${items.length} 个任务 · ${archived} 已归档`);
+    if (!items.length) { list.append(el("div", "empty-state", "尚无任务记录。")); return; }
+    for (const job of items) {
+      const config = objectValue(job.config);
+      const archive = job.status === "archived" || job.archived_at || job.archived;
+      const current = !archive && (job.current === true || job.status === "active" || String(job.id) === String(status?.job?.id));
+      const item = el("article", "history-item");
+      const head = el("div", "history-item-head");
+      head.append(el("strong", "", `任务 #${job.id == null ? "—" : textValue(job.id)}${job.revision == null ? "" : " · 配置版本 " + number(job.revision)}`), el("span", `tag${current ? " success" : ""}`, archive ? "已归档" : current ? "当前任务" : "已保留"));
+      item.append(head);
+      const stocks = Array.isArray(config.stocks) ? config.stocks.join("，") : "—";
+      item.append(el("p", "", `${stocks} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
+      item.append(el("p", "history-times", `创建 ${time(first(job, ["created_at", "created"]))}${archive ? " · 归档 " + time(first(job, ["archived_at", "archived"])) : ""} · ${number(config.interval_seconds)} 秒 / 次 · ${config.client || "—"}`));
+      const reason = first(job, ["archive_reason", "archived_reason"]);
+      if (reason) item.append(el("p", "", reason));
+      list.append(item);
     }
   }
   function unpack(data, key) {
@@ -339,7 +443,8 @@
       const attempt = first(request, ["id", "attempt_no", "sequence", "attempt"], "—");
       const outcome = textValue(first(request, ["outcome", "result", "state"], "unknown"));
       const http = first(request, ["http_status", "status_code", "status"]);
-      const title = `#${attempt} · ${stock ? stock + " · " : ""}${kind === "detail" || id != null ? "正文 " + (id || "") : "列表" + (page == null ? "" : "第 " + page + " 页")}`;
+      const purpose = first(request, ["purpose"], first(target, ["purpose"], first(request.analysis, ["purpose"])));
+      const title = `#${attempt} · ${stock ? stock + " · " : ""}${kind === "detail" || id != null ? "正文 " + (id || "") : (purpose === "recovery" ? "校准列表" : "前进列表") + (page == null ? "" : " · 源页码 " + page)}`;
       const row = el("div", "activity-row");
       row.append(el("div", "activity-time", time(first(request, ["started_at", "requested_at", "at", "timestamp"]))));
       const main = el("div", "activity-main"); main.append(el("div", "activity-title", title));
@@ -372,18 +477,20 @@
   }
   async function poll() {
     if (!authenticated || polling || busy) return;
+    const generation = statusGeneration;
     polling = true; controls();
     try {
-      const results = await Promise.allSettled([api("status"), api("requests?limit=30"), api("events?limit=20")]);
-      if (!authenticated) return;
-      const [s, requests, events] = results;
+      const results = await Promise.allSettled([api("status"), api("requests?limit=30"), api("events?limit=20"), api("jobs")]);
+      if (!authenticated || generation !== statusGeneration) return;
+      const [s, requests, events, jobs] = results;
       if (s.status === "rejected") { setConnection(false); notice(`无法读取本地状态：${s.reason.message}。显示的是最近取得的状态。`, true); return; }
       if (requests.status === "fulfilled") renderRequests(requests.value);
       if (events.status === "fulfilled") renderEvents(events.value);
       lastPoll = Date.now();
       renderStatus(s.value);
+      if (jobs.status === "fulfilled") renderJobs(jobs.value);
       setConnection(true);
-      if (requests.status === "rejected" || events.status === "rejected") notice("状态已更新，但部分运行记录暂时无法读取。", true);
+      if (requests.status === "rejected" || events.status === "rejected" || jobs.status === "rejected") notice("状态已更新，但部分运行记录或任务历史暂时无法读取。", true);
       else if ($("notice").dataset.networkError === "true") { notice(""); delete $("notice").dataset.networkError; }
     } catch (error) {
       if (authenticated) { setConnection(false); notice(`本地服务连接失败：${error.message}`, true); }
@@ -395,20 +502,68 @@
     tickTimer = setInterval(renderTiming, 1000);
   }
   function stopTimers() { clearInterval(timer); clearInterval(tickTimer); timer = null; tickTimer = null; }
-  async function post(path, payload, message) {
+  function applyStatus(result) {
+    if (result && result.state) { lastPoll = Date.now(); renderStatus(result); setConnection(true); }
+  }
+  async function pauseAndWait(expectedJobId = null) {
+    let snapshot = await api("status");
+    if (expectedJobId != null && String(snapshot.job?.id) !== String(expectedJobId)) throw new Error("当前任务已变化，请刷新配置后重新操作。");
+    applyStatus(snapshot);
+    if (snapshot.state === "running" || snapshot.probe_pending || snapshot.request_inflight) {
+      notice("正在暂停采集并等待当前请求结束；已有响应将保留，之后不会自动开始。");
+      snapshot = await api("control", "POST", { action: "pause" });
+      applyStatus(snapshot);
+    }
+    const deadline = Date.now() + 45000;
+    while (snapshot.state === "running" || snapshot.probe_pending || snapshot.request_inflight) {
+      if (Date.now() >= deadline) throw new Error("暂停已提交，但当前请求尚未结束。请等待状态更新后重试；没有修改配置或删除任务。");
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      snapshot = await api("status");
+      if (expectedJobId != null && String(snapshot.job?.id) !== String(expectedJobId)) throw new Error("等待期间当前任务已变化，请刷新后重新操作。");
+      applyStatus(snapshot);
+    }
+    return snapshot;
+  }
+  async function post(path, payload, message, method = "POST", options = {}) {
     if (busy || !authenticated || !online) return false;
-    busy = true; controls(); notice("");
+    busy = true; statusGeneration += 1; controls(); notice(""); delete $("notice").dataset.networkError;
     let success = false;
     try {
-      const result = await api(path, "POST", payload);
+      if (options.pauseFirst) await pauseAndWait(options.expectedJobId);
+      const result = await api(path, method, payload);
       if (authenticated) {
-        if (result && result.state) { lastPoll = Date.now(); renderStatus(result); setConnection(true); }
+        if (options.clearDraft) { formDirty = false; loadedConfig = false; }
+        if (options.clearForm || (options.clearDraft && result && !result.job && !result.config)) clearForm();
+        applyStatus(result);
         notice(message); success = true;
       }
     } catch (error) {
       if (authenticated) notice(error.message, true);
     } finally { busy = false; controls(); if (authenticated) await poll(); }
     return success;
+  }
+  async function prepareEdit() {
+    if (busy || !authenticated || !online || !jobConfig()) return;
+    busy = true; statusGeneration += 1; controls();
+    try {
+      await pauseAndWait(status?.job?.id);
+      notice(status?.active_halt ? "已停止请求，可以编辑配置。当前阻断原因仍保留，保存不会自动开始。" : "已暂停并等待当前请求结束，可以编辑配置。保存后由你决定何时开始。");
+    } catch (error) { if (authenticated) notice(error.message, true); }
+    finally {
+      busy = false; controls();
+      if (!$("config-fields").disabled) { $("config-form").scrollIntoView({ behavior: "smooth", block: "center" }); $("stocks").focus({ preventScroll: true }); }
+      if (authenticated) await poll();
+    }
+  }
+  function confirmDeletion(stock = null) {
+    if (busy || !online || !jobConfig()) return;
+    const stocks = jobConfig().stocks || [];
+    const last = stock != null && stocks.length === 1;
+    pendingDeletion = { stock, last, jobId: status?.job?.id };
+    display("delete-title", stock ? `移除股票 ${stock}？` : "删除当前任务？");
+    display("delete-description", stock ? `取消 ${stock} 的后续采集，保留已经取得的记录。${last ? "这是当前任务的最后一只股票，移除后任务将归档。" : "其他股票的队列保留，任务保持暂停。"}` : "当前任务将归档，取消尚未执行的采集队列。");
+    display("confirm-delete", stock ? "确认移除股票" : "确认删除任务");
+    $("delete-dialog").showModal();
   }
   $("auth-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -429,8 +584,9 @@
     catch (error) { if (authenticated) notice(error.message, true); }
     finally { busy = false; controls(); }
   });
-  $("config-form").addEventListener("input", () => { formDirty = true; display("config-state", "未保存"); });
-  document.querySelectorAll("[data-years]").forEach((button) => button.addEventListener("click", () => { defaultDates(Number(button.dataset.years)); formDirty = true; display("config-state", "未保存"); }));
+  function markDirty() { formDirty = true; display("config-state", "未保存"); controls(); }
+  $("config-form").addEventListener("input", markDirty);
+  document.querySelectorAll("[data-years]").forEach((button) => button.addEventListener("click", () => { defaultDates(Number(button.dataset.years)); markDirty(); }));
   $("config-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if ($("save-config").disabled) return;
@@ -441,9 +597,19 @@
     if (!stocks.length || stocks.some((stock) => !/^\d{6}$/.test(stock))) { notice("请填写 6 位股票代码，用逗号、空格或换行分隔。", true); $("stocks").focus(); return; }
     if (!from || !to || from > to) { notice("开始日期不能晚于结束日期。日期以 Asia/Shanghai 为准。", true); $("from-date").focus(); return; }
     if (!Number.isInteger(interval) || interval < 60) { notice("全局请求间隔必须是至少 60 秒的整数。", true); $("interval").focus(); return; }
-    if (jobConfig() && !window.confirm("保存会创建新的实验任务，并保持暂停。当前任务的证据由服务端保留。确认保存这组股票和日期窗口？")) return;
-    const saved = await post("jobs", { stocks, from_date: from, to_date: to, interval_seconds: interval, client: $("client").value }, "配置已保存，尚未发起源请求。点击开始采集后才会调度。");
+    const editing = !!jobConfig();
+    const saved = await post(editing ? "jobs/current" : "jobs", { stocks, from_date: from, to_date: to, interval_seconds: interval, client: $("client").value }, editing ? "当前任务修改已保存，已有数据和响应保留。任务保持暂停或原有阻断状态，尚未重新开始采集。" : "任务已创建，尚未发起源请求。点击开始采集后才会调度。", editing ? "PATCH" : "POST", { pauseFirst: editing, expectedJobId: editing ? status?.job?.id : null, clearDraft: true });
     if (saved && status && jobConfig()) { formDirty = false; loadedConfig = false; loadForm(jobConfig()); controls(); }
+  });
+  $("pause-edit").addEventListener("click", () => { void prepareEdit(); });
+  $("reset-config").addEventListener("click", () => { formDirty = false; loadedConfig = false; loadForm(jobConfig()); controls(); notice("已撤销页面中尚未保存的修改，恢复当前任务配置。"); });
+  $("delete-job").addEventListener("click", () => confirmDeletion());
+  $("delete-dialog").addEventListener("close", () => {
+    const target = pendingDeletion; pendingDeletion = null;
+    if ($("delete-dialog").returnValue !== "confirm" || !target) return;
+    const path = target.stock ? `jobs/current/stocks/${encodeURIComponent(target.stock)}` : "jobs/current";
+    const message = target.stock && !target.last ? `已移除 ${target.stock} 的后续采集。已有记录保留，其他股票保持暂停；现有阻断原因也保留。` : "任务已归档，后续采集已取消。已有帖子、原始响应和阻断证据保留。";
+    void post(path, undefined, message, "DELETE", { pauseFirst: true, expectedJobId: target.jobId, clearDraft: true, clearForm: !target.stock || target.last });
   });
   $("start").addEventListener("click", () => { void post("control", { action: "start" }, "已提交开始指令；源请求由服务端按全局间隔安排。"); });
   $("pause").addEventListener("click", () => { void post("control", { action: "pause" }, "已提交暂停指令，队列与响应证据会保留。"); });

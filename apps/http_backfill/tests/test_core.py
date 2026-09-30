@@ -118,7 +118,9 @@ class CoreTests(unittest.TestCase):
 
     def test_pacing_and_list_all_details_before_next_list(self):
         a, b = row(), row("1002")
-        wire = Wire(ok(list_html([a, b])), ok(detail_html(a)), ok(detail_html(b, "")), ok(list_html([])))
+        wire = Wire(ok(list_html([a, b])), ok(detail_html(a)), ok(detail_html(b, "")),
+                    ok(list_html([a, b])), ok(list_html([a, b])), ok(list_html([])),
+                    ok(list_html([a, b])), ok(list_html([a, b])))
         e = self.started(wire)
         e.tick()
         self.assertEqual(e.status()["current"]["kind"], "detail")
@@ -131,9 +133,12 @@ class CoreTests(unittest.TestCase):
         self.tick_due(e)
         self.assertIn("1002", wire.calls[2][0])
         self.assertEqual(e.status()["current"]["kind"], "list")
-        self.tick_due(e)
+        for _ in range(5):
+            self.tick_due(e)
         counts = e.status()["aggregate"]
-        self.assertEqual(counts["attempts"], 4)
+        self.assertEqual(counts["attempts"], 8)
+        self.assertEqual(counts["list_pages"], 2)
+        self.assertEqual(counts["calibration_requests"], 4)
         self.assertEqual(counts["body_complete"], 2)
         self.assertEqual(counts["nonempty_body"], 1)
         self.assertEqual(counts["source_empty_body"], 1)
@@ -147,7 +152,7 @@ class CoreTests(unittest.TestCase):
         e.tick()
         due = e.status()["next_request_epoch"]
         e.close()
-        wire = Wire(ok(detail_html(a)))
+        wire = Wire(ok(list_html([a])), ok(detail_html(a)))
         new = self.engine(wire)
         self.assertEqual(new.status()["state"], "paused")
         new.start()
@@ -156,6 +161,10 @@ class CoreTests(unittest.TestCase):
         self.clock.now = due
         new.tick()
         self.assertEqual(len(wire.calls), 1)
+        self.assertIn("list,", wire.calls[0][0])
+        self.assertEqual(new.requests()[0]["purpose"], "recovery")
+        self.tick_due(new)
+        self.assertEqual(new.status()["aggregate"]["body_complete"], 1)
 
     def test_single_process_lock(self):
         self.engine(Wire())
@@ -343,10 +352,11 @@ class CoreTests(unittest.TestCase):
     def test_two_old_pages_confirm_boundary_without_body_fetch(self):
         a = row("1001", published="2024-12-31 23:59:59")
         b = row("1002", published="2024-12-30 00:00:00")
-        e = self.started(Wire(ok(list_html([a])), ok(list_html([b]))))
+        e = self.started(Wire(*[ok(list_html(rows)) for rows in ([a], [a], [a], [b], [a], [b], [a], [b])]))
         e.tick()
         self.assertEqual(e.status()["current"]["kind"], "list")
-        self.tick_due(e)
+        for _ in range(7):
+            self.tick_due(e)
         status = e.status()
         self.assertEqual(status["state"], "completed")
         self.assertTrue(status["coverage"][0]["date_boundary_reached"])
@@ -354,20 +364,24 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(status["observed_work_complete"])
         self.assertEqual(status["aggregate"]["body_complete"], 0)
 
-    def test_duplicate_pagination_pauses_before_advance(self):
+    def test_duplicate_forward_repositions_then_pauses_if_no_progress(self):
         a = row(published="2025-02-01 00:00:00")
-        e = self.started(Wire(ok(list_html([a])), ok(list_html([a]))))
+        e = self.started(Wire(*[ok(list_html([a])) for _ in range(6)]))
         e.tick()
-        self.tick_due(e)
+        for _ in range(5):
+            self.tick_due(e)
         self.assertEqual(e.status()["state"], "error")
         self.assertEqual(e.status()["coverage"][0]["pages"], 1)
-        self.assertEqual(e.status()["current"]["page"], 2)
+        self.assertEqual(e.status()["current"]["purpose"], "recovery")
+        self.assertIn("分页无进展", e.status()["reason"])
 
     def test_global_post_dedupe_with_both_bar_associations(self):
         a = row(stock="600519")
-        wire = Wire(ok(list_html([a])), ok(detail_html(a)), ok(list_html([a])))
+        wire = Wire(ok(list_html([a])), ok(detail_html(a)), ok(list_html([a])), ok(list_html([a])), ok(list_html([a])))
         e = self.started(wire, {**CONFIG, "stocks": ["601012", "600519"]})
         e.tick()
+        self.tick_due(e)
+        self.tick_due(e)
         self.tick_due(e)
         self.tick_due(e)
         self.assertEqual(e.status()["aggregate"]["unique_posts"], 1)

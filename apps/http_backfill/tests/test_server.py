@@ -48,6 +48,25 @@ class StubEngine:
     def raw_posts(self, limit, offset):
         return []
 
+    def jobs(self):
+        return [{"id": 1, "status": "active"}]
+
+    def update_job(self, config):
+        if self.state == "running":
+            raise RuntimeError("请先暂停任务")
+        if not config.get("stocks"):
+            raise ValueError("stocks required")
+        self.calls.append(("update", config))
+
+    def remove_stock(self, stock):
+        if not re.fullmatch(r"[0-9]{6}", stock):
+            raise ValueError("六位股票代码")
+        self.calls.append(("remove", stock))
+
+    def delete_job(self):
+        self.calls.append("archive")
+        self.state = "paused"
+
 
 class ConsoleTests(unittest.TestCase):
     def setUp(self):
@@ -125,6 +144,32 @@ class ConsoleTests(unittest.TestCase):
                 status, _, content = self.request("/" + asset)
                 self.assertEqual(status, 200)
                 self.assertTrue(content)
+
+    def test_job_edit_remove_archive_are_authenticated_and_origin_checked(self):
+        config = {"stocks": ["601012"]}
+        self.assertEqual(self.request("/api/jobs/current", config, "PATCH")[0], 401)
+        self.assertEqual(self.request("/api/jobs/current", method="DELETE")[0], 401)
+        self.assertEqual(self.request("/api/jobs/current/stocks/601012", method="DELETE")[0], 401)
+        self.login()
+        for path, method, obj in (("/api/jobs/current", "PATCH", config),
+                                  ("/api/jobs/current", "DELETE", None),
+                                  ("/api/jobs/current/stocks/601012", "DELETE", None)):
+            self.assertEqual(self.request(path, obj, method, {"Origin": "https://another.invalid"})[0], 403)
+        self.assertEqual(self.engine.calls, [])
+        self.assertEqual(self.request("/api/jobs/current", config, "PATCH")[0], 200)
+        self.assertEqual(self.request("/api/jobs/current/stocks/601012", method="DELETE")[0], 200)
+        self.assertEqual(self.request("/api/jobs/current/stocks/invalid", method="DELETE")[0], 400)
+        self.assertEqual(self.request("/api/jobs/current", method="DELETE")[0], 200)
+        self.assertEqual(self.engine.calls, [("update", config), ("remove", "601012"), "archive"])
+        status, _, body = self.request("/api/jobs")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)[0]["status"], "active")
+
+    def test_edit_running_job_returns_conflict(self):
+        self.login()
+        self.engine.state = "running"
+        self.assertEqual(self.request("/api/jobs/current", {"stocks": ["601012"]}, "PATCH")[0], 409)
+        self.assertEqual(self.engine.calls, [])
 
 
 if __name__ == "__main__":
