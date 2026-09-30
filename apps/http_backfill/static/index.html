@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#123d36">
+  <meta name="color-scheme" content="light">
+  <title>股吧 · 低频回补控制台</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到控制台</a>
+  <header class="topbar">
+    <a class="brand" href="./" aria-label="回补控制台首页"><span class="brand-mark" aria-hidden="true">↳</span><span>DataCollector <small>低频回补</small></span></a>
+    <div class="topbar-meta"><span class="isolation-tag">独立实验库</span><button id="logout" type="button" class="button quiet small" hidden>退出</button></div>
+  </header>
+
+  <main id="main" class="shell">
+    <section id="auth-panel" class="auth-card" aria-labelledby="auth-title">
+      <div class="eyebrow">HTTP BACKFILL / PRIVATE CONSOLE</div>
+      <h1 id="auth-title">把闲时，留给数据。</h1>
+      <p class="intro">查看无浏览器采集的连续表现。服务端按设定间隔请求股吧，发现验证码或异常即暂停。</p>
+      <form id="auth-form">
+        <label for="token">控制台访问密钥</label>
+        <div class="auth-input"><input id="token" name="token" type="password" autocomplete="current-password" required placeholder="输入部署时设置的密钥"><button id="login" class="button primary" type="submit">进入控制台</button></div>
+        <p id="auth-message" class="field-note" role="status">正在确认会话…</p>
+      </form>
+      <p class="auth-note">密钥仅用于建立会话，不保存在浏览器本地存储中。</p>
+    </section>
+
+    <div id="console" hidden>
+      <div class="page-heading"><div><div class="eyebrow">HTTP BACKFILL / 连续观察</div><h1>股吧低频回补</h1><p>先观察每分钟一次能持续多久，再积累可追溯的历史数据。</p></div><div class="connection"><span id="connection-dot" class="connection-dot"></span><span id="connection-text">连接中</span><small id="updated-at">—</small></div></div>
+      <div id="notice" class="notice" role="status" hidden></div>
+
+      <section class="run-card" aria-labelledby="run-title">
+        <div class="run-topline"><span id="state-badge" class="state-badge"><span class="state-dot"></span><span id="state-label">待配置</span></span><span class="quiet-text">服务端独立运行 · 亚洲/上海时间</span></div>
+        <h2 id="run-title">配置窗口，开始长期观察</h2>
+        <p id="run-reason" class="run-reason">尚未设置股票和日期窗口。保存配置后，手动启动采集。</p>
+        <div class="run-grid">
+          <div><span class="datum-label" id="run-duration-label">任务历时</span><strong id="run-duration">—</strong><small id="run-start">尚未启动</small></div>
+          <div><span class="datum-label">下一次源请求</span><strong id="next-request">—</strong><small id="next-request-time">由服务端统一调度</small></div>
+          <div><span class="datum-label">当前目标</span><strong id="current-target">—</strong><small id="job-window">未配置日期窗口</small></div>
+          <div><span class="datum-label">最近一次源成功</span><strong id="last-success">—</strong><small id="observed-rate">实际请求速率尚无观测</small></div>
+        </div>
+        <div class="run-actions"><button id="start" type="button" class="button primary" disabled>开始采集</button><button id="pause" type="button" class="button secondary" disabled>暂停</button><button id="retry" type="button" class="button secondary" disabled>单次探测重试</button><span id="action-note" class="action-note">保存配置不会发起源请求。</span></div>
+      </section>
+
+      <section id="block-panel" class="block-card" aria-labelledby="block-title" hidden>
+        <div class="section-heading"><div><div class="eyebrow">暂停与证据</div><h2 id="block-title">已停止后续请求</h2></div><span id="block-kind" class="tag warning">待检查</span></div>
+        <p id="block-reason"></p>
+        <div id="block-facts" class="evidence-facts"></div>
+        <p class="small-note">验证码或拒绝响应是观测结果；仅凭这些响应无法确认是否进入 IP 黑名单。不会自动循环重试。</p>
+        <details><summary>查看保留的阻断证据</summary><pre id="block-evidence"></pre></details>
+      </section>
+
+      <section class="metrics-section" aria-labelledby="metrics-title">
+        <div class="section-heading compact"><h2 id="metrics-title">隔离数据产出</h2><span class="quiet-text">本任务统计 · 尚未导入训练库</span></div>
+        <div class="metrics-grid">
+          <article class="metric"><span>源请求尝试</span><strong id="metric-attempts">—</strong><small id="metric-failures">失败 / 异常 —</small></article>
+          <article class="metric"><span>成功列表页</span><strong id="metric-pages">—</strong><small>列表与详情共用请求间隔</small></article>
+          <article class="metric"><span>独立帖子</span><strong id="metric-posts">—</strong><small>窗口内标准帖 · 保留跨吧关联</small></article>
+          <article class="metric"><span>已核实正文</span><strong id="metric-bodies">—</strong><small id="metric-body-breakdown">非空 — · 有效空正文 —</small></article>
+          <article class="metric"><span>待取正文</span><strong id="metric-pending">—</strong><small id="metric-removed">详情不可访问 —</small></article>
+        </div>
+        <div class="data-boundary"><span aria-hidden="true">◈</span><p>原始响应与完整列表行保存在独立实验库中，正文队列覆盖窗口内标准帖子。<strong>局部产出不代表日期窗口完整覆盖</strong>，完成情况请看下方股票覆盖。</p></div>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="card config-card" aria-labelledby="config-title">
+          <div class="section-heading"><div><div class="eyebrow">任务配置</div><h2 id="config-title">选择回补窗口</h2></div><span id="config-state" class="tag">未保存</span></div>
+          <form id="config-form">
+            <fieldset id="config-fields">
+              <label for="stocks">股票代码 <span class="optional">支持多个</span></label>
+              <textarea id="stocks" name="stocks" rows="2" placeholder="例如：601012，600519" required spellcheck="false"></textarea>
+              <p class="field-note">6 位代码，用逗号、空格或换行分隔。</p>
+              <div class="date-grid"><div><label for="from-date">开始日期</label><input id="from-date" type="date" required></div><div><label for="to-date">结束日期</label><input id="to-date" type="date" required></div></div>
+              <div class="date-shortcuts"><span>建议窗口</span><button type="button" data-years="1">近 1 年</button><button type="button" data-years="2">近 2 年</button><button type="button" data-years="5">近 5 年</button></div>
+              <div class="date-grid config-options"><div><label for="interval">全局请求间隔 <span class="optional">秒</span></label><input id="interval" type="number" min="60" step="1" value="60" required inputmode="numeric"></div><div><label for="client">HTTP 客户端</label><select id="client"><option value="curl">curl</option><option value="urllib">urllib</option></select></div></div>
+              <p class="field-note">默认 60 秒一次，包含列表、详情、失败和手动探测。该频率是否稳定，需由连续实测判断。</p>
+            </fieldset>
+            <div class="config-footer"><button id="save-config" type="submit" class="button secondary">保存配置</button><span id="config-message" class="field-note">保存后保持暂停，手动启动。</span></div>
+          </form>
+        </section>
+
+        <section class="card coverage-card" aria-labelledby="coverage-title">
+          <div class="section-heading"><div><div class="eyebrow">范围与缺口</div><h2 id="coverage-title">股票覆盖</h2></div><span id="coverage-count" class="tag">未配置</span></div>
+          <p class="section-intro">逐股展示实际观察到的时间范围，以及仍未取得的正文和覆盖缺口。</p>
+          <div id="coverage-list" class="coverage-list"><div class="empty-state">保存股票和日期窗口后，这里会显示覆盖进度。</div></div>
+          <p class="small-note">此处仅代表已观察页面与已发现帖子的进度。移动分页尚无全面对账，历史保留深度也未知；所有已发现项完成仍不等于目标窗口无遗漏。</p>
+        </section>
+      </div>
+
+      <section class="card activity-card" aria-labelledby="activity-title">
+        <div class="section-heading"><div><div class="eyebrow">运行记录</div><h2 id="activity-title">最近请求与事件</h2></div><button id="refresh" type="button" class="button quiet small">刷新</button></div>
+        <div class="tabbar" role="tablist" aria-label="运行记录类型"><button id="requests-tab" role="tab" aria-selected="true" aria-controls="requests-panel" type="button">源请求 <span id="request-count">0</span></button><button id="events-tab" role="tab" aria-selected="false" aria-controls="events-panel" type="button" tabindex="-1">控制事件 <span id="event-count">0</span></button></div>
+        <div id="requests-panel" role="tabpanel" aria-labelledby="requests-tab"><div id="request-list" class="activity-list"><div class="empty-state">尚无源请求记录。</div></div></div>
+        <div id="events-panel" role="tabpanel" aria-labelledby="events-tab" hidden><div id="event-list" class="activity-list"><div class="empty-state">尚无控制事件。</div></div></div>
+        <p class="small-note activity-note">页面每 5 秒读取本地状态。关闭页面后服务端仍按计划运行；刷新页面不会请求股吧。</p>
+      </section>
+      <footer class="footer"><span>DataCollector / HTTP backfill</span><span>独立实验 · 完整覆盖需逐项核实</span></footer>
+    </div>
+  </main>
+
+  <dialog id="retry-dialog" class="confirm-dialog" aria-labelledby="retry-title">
+    <form method="dialog"><div class="eyebrow">明确的单次操作</div><h2 id="retry-title">安排一次探测？</h2><p>服务端会在全局请求间隔和冷却期满足后，向当前源目标发送 <strong>一次真实请求</strong>。该操作不会处理验证码，不会清除已有阻断记录。</p><p>探测成功后仍保持暂停；由你决定是否继续采集。</p><p id="retry-due" class="field-note"></p><div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="confirm" id="confirm-retry" class="button primary">确认单次探测</button></div></form>
+  </dialog>
+  <noscript><p class="noscript">此控制台需要 JavaScript 读取本地服务状态；源采集由服务端负责。</p></noscript>
+</body>
+</html>

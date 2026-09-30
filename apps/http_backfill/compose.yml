@@ -1,0 +1,20 @@
+services:
+  collector-console:
+    build:
+      context: ../..
+      dockerfile: apps/http_backfill/Dockerfile
+      args:
+        BASE_IMAGE: ${BACKFILL_BASE_IMAGE:-fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8790:8790"
+    environment:
+      BACKFILL_COOKIE_PATH: /collector/
+    volumes:
+      - ./data:/data
+    stop_grace_period: 40s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

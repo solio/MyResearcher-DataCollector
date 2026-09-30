@@ -1,0 +1,21 @@
+[Unit]
+Description=MyResearcher low-frequency HTTP backfill console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=collector
+WorkingDirectory=/opt/MyResearcher-DataCollector
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=BACKFILL_COOKIE_PATH=/collector/
+ExecStart=/usr/bin/python3 apps/http_backfill/server.py --host 127.0.0.1 --port 8790 --data-dir /var/lib/myresearcher-http-backfill
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+UMask=0077
+StateDirectory=myresearcher-http-backfill
+
+[Install]
+WantedBy=multi-user.target

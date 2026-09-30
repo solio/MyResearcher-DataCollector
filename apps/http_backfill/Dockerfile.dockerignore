@@ -1,0 +1,10 @@
+**
+!src/
+!src/**
+!apps/
+!apps/http_backfill/
+!apps/http_backfill/**
+apps/http_backfill/data/
+apps/http_backfill/.env
+**/__pycache__/
+**/*.pyc
