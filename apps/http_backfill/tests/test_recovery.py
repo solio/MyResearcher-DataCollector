@@ -120,6 +120,26 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn("f_2.html", site.calls[:site.calls.index(f"https://guba.eastmoney.com/news,601012,{skipped_id}.html")])
         self.assertFalse(e.status()["coverage_complete"])
 
+    def test_recovered_short_title_is_retained_without_new_detail_request(self):
+        source = rows()
+        source[2]["post_title"] = "回扫新发现的短标题"
+        site = MovingSite(source)
+        e = self.started(site)
+        for _ in range(3):
+            self.tick(e)
+        e.pause()
+        site.rows = source[1:]
+        e.start()
+        self.tick(e)
+        found = next(p for p in e.raw_posts() if p["post_id"] == source[2]["post_id"])
+        self.assertEqual(found["status"], "list_only")
+        self.assertEqual(found["content"], source[2]["post_title"])
+        self.assertEqual(found["content_source"], "list_title")
+        self.assertFalse(found["body_complete"])
+        self.until(e, lambda: e.status()["recovery"][0]["phase"] == "complete")
+        self.assertFalse(any(f",{source[2]['post_id']}.html" in url and "/news," in url for url in site.calls))
+        self.assertEqual(e.status()["aggregate"]["list_only"], 1)
+
     def test_resume_insertion_relocates_frontier_to_new_physical_page(self):
         source = rows()
         site = MovingSite(source)

@@ -1,7 +1,7 @@
 # Low-frequency HTTP backfill console — experimental contract
 
-Status: v2 SINGLE-SERVER IMPROVEMENTS IMPLEMENTED; LOCAL OFFLINE VERIFICATION;
-USER HAS DEPLOYED v1; v2 REMOTE UPGRADE NOT EXECUTED HERE.
+Status: v3 SINGLE-SERVER REUSE AND PAGINATION IMPLEMENTED; LOCAL VERIFICATION;
+USER HAS DEPLOYED AN EARLIER RELEASE; v3 REMOTE UPGRADE NOT EXECUTED HERE.
 Date: 2026-10-01, Asia/Shanghai. Role: Developer.
 
 ## Confirmed user goal
@@ -32,12 +32,14 @@ This app is an isolated experiment, not a production transport amendment.
 - Block reason/evidence persist across restart. No automatic retry loop after a
   block. Manual retry schedules ONE probe at/after persisted rate/cooldown;
   success stays paused until user chooses continue. Retry never erases history.
-- Isolated SQLite and raw directory. Never write `data/collector.db`, model data
-  or production coverage. Partial data stays in the experiment and export labels
-  its completion/coverage explicitly. There is no automatic production promotion.
-- For each list page, retain all source rows; queue all in-window type0 detail
-  links before the next list page. Deduplicate source IDs and preserve bar
-  associations. No semantic filtering or title substitution for missing content.
+- Isolated app-local SQLite and raw directory. Reuse SimplePostStore in the
+  app's `data/collector.db`; never write the root production `data/collector.db`,
+  model data or production coverage. Partial data stays in the experiment and
+  export labels its completion/coverage. No automatic production promotion.
+- For each list page, retain all source rows; queue in-window type0 details
+  selected by the shared stripped-title-length >=40 rule before the next list
+  page. Deduplicate source IDs and preserve bar associations. No semantic
+  filtering or title substitution for missing detail bodies.
 - A full job has explicit stocks/date range and per-stock list coverage plus
   per-item detail outcomes. Source exhaustion before requested history means a
   visible coverage gap. Valid empty source body is separate from nonempty body.
@@ -67,6 +69,7 @@ duration, blocking evidence and per-stock coverage/gaps. All timestamps explicit
 - Relative static URLs and APIs work under `/collector/` nginx prefix.
 - GET `api/status`, `api/requests?limit=50`, `api/events?limit=50`,
   `api/posts?limit=100&offset=0` return JSON. JSON responses not cacheable.
+  Requests/events support `paged=1` ID cursor snapshots as specified below.
 - POST `api/jobs` accepts config; POST `api/control` accepts
   `{action: start|pause|retry}`. Errors JSON with readable `error`, HTTP400 for
   invalid configuration, HTTP409 for state conflict. No external messaging.
@@ -128,3 +131,47 @@ require another server to use this release.
   nonstandard intervals may compare IDs but carry time_order_unverified gaps.
   Two matching canonical (ID, publication time) sets are local interval
   observations, not proof of global completeness or identical display order.
+
+## 2026-10-01 authorized reuse and record navigation correction
+
+The user identifies missing activity pagination, divergent collector data shape
+and unnecessary detail requests. This amendment supersedes the experimental
+all-type0-detail policy above; acquisition of posts is not filtered by length.
+
+- Reuse eastmoney_guba.content_rules.detail_enrichment_trigger. By default only
+  stripped list titles of length >=40 queue detail acquisition, matching the
+  existing browser enrichment rule. Short titles remain acquired list records,
+  labelled content_source=list_title, never claimed as verified detail bodies.
+  Existing detail bodies remain detail_body even for short titles. No title is
+  discarded and no semantic/content-quality filter is added.
+- Migrate already queued short-title details to list-only/skipped work without
+  deleting evidence. An existing halted short-title target retains one explicit
+  validation probe and cooldown; that probe cannot enqueue new short details.
+  Counters distinguish list-only records, required details and verified bodies.
+- Reuse the existing SimplePostStore and model mapping for an app-local
+  data/collector.db with the same posts/backfill schema as the deployed browser
+  collector. The independent experiment.sqlite3 retains task/request/recovery
+  state and source provenance. Do not open or write the root production
+  data/collector.db, invent completed coverage, or promote data to models.
+  Missing detail content remains NULL in the compatible posts table; title and
+  body are distinct. Real empty detail content remains an observed empty string.
+- Project existing and new observations idempotently into the compatible store,
+  preserving source IDs, original publication and acquisition times, nullable
+  fields and acquired detail bodies. Validate retained raw hashes. Use per-write
+  incremental projection rather than scanning all posts after every request.
+  Raw/request data must commit first so a projection failure is recoverable
+  locally without requesting the source again. No duplicate raw storage is
+  required. Compatibility database adds no private ledger tables; projection
+  bookkeeping belongs to experiment.sqlite3.
+- Preserve GET api/requests and api/events array responses by default. Add
+  paged=1 with limit (1..200), optional positive before_id and snapshot_id;
+  return {items,has_more,next_cursor,snapshot_id,total}. Descending ID keyset
+  traversal uses a fixed upper snapshot, so concurrent inserts cannot skip or
+  duplicate records during older-page browsing. Reject malformed cursors.
+- H5 gives requests and events independent previous/next/latest controls.
+  Latest pages may refresh; historical pages retain their cursor and entries
+  while status continues to poll. Rendering stays bounded to one page.
+- Verify zero-source-request migration on a clone of the paused old database,
+  idempotent reopen/projection, >=40 boundaries, retained completed short bodies,
+  blocked-target migration, compatibility with original store/enrichment query,
+  stable pagination during new inserts, authenticated API and mobile controls.

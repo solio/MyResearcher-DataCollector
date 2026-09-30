@@ -1,13 +1,16 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v2.
+Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v3.
 
 The user has deployed v1 on one server and explicitly authorized fixing stock
 configuration editing/deletion and improving pause/recovery, challenge handling
-and continuous list/detail work. This release targets that single server.
+and continuous list/detail work. The user subsequently requested activity paging,
+reuse of the original collector.db structure and original detail trigger. This
+release implements those corrections and targets the deployed single server.
 Multi-node scheduling, one central console and data merge remain future work.
 
-Implementation is confined to this app plus a root Docker context allowlist.
+Implementation is confined to this app; the existing root Docker context
+allowlist is retained.
 Production src/parser is imported read-only. No production DB/config/source
 contract is changed, and no automatic model promotion is implemented.
 
@@ -38,35 +41,64 @@ contract is changed, and no automatic model promotion is implemented.
   JavaScript-only challenges remain unobservable. No 100% claim applies.
 - v1 schema migration is additive. A stable instance UUID accompanies status,
   request and post outputs for future provenance. Data/token paths are unchanged.
+- Shared detail_enrichment_trigger now controls the detail queue: stripped title
+  length >=40 by default, including exactly 40. Short titles remain list_only
+  records with list_title provenance. Existing genuine bodies are retained,
+  including short and empty bodies. Old pending short details become skipped;
+  a halted short-detail target retains its cooldown and one probe-only action.
+- App-local data/collector.db reuses SimplePostStore and its existing schema,
+  including original posts queries and detail-enrichment candidate semantics.
+  No private columns or ledger tables are added to that compatible database.
+  Missing body is NULL and observed empty body is an empty string. Removed or
+  unavailable detail evidence reuses the original local enrich skip ledger.
+- experiment.sqlite3 retains request/task/recovery/provenance and projection
+  bookkeeping. Startup replays committed evidence idempotently; subsequent
+  source responses project only affected posts. Raw hashes, source identities,
+  publication and original acquisition timestamps are independently verified.
+  Raw/request commits precede compatible writes. A local storage failure stops
+  acquisition; start/retry repair locally and retain source halt/cooldown.
+- Authenticated requests/events pagination uses independent descending ID
+  cursors and fixed snapshot membership. H5 shows 30 requests or 20 events per
+  page with previous/next/latest controls. History remains visible while status
+  polls. The old default array API is retained; paged=1 opts into a page object.
+  Indexed keyset reads and a bounded total cache avoid growing page DOM and
+  repeated whole-ledger counts on routine polling.
 
 ## Validation
 
-85 offline Engine, recovery, lifecycle and HTTP tests pass, including real Engine
-behind authenticated APIs, insertion/deletion drift, long detail processing,
-challenge during recovery, probes after archive, atomic edit rollback on damaged
-evidence, legacy migration and restart/cooldown persistence. JavaScript syntax
-and Docker Compose configuration pass.
+124 offline app tests pass with ResourceWarning treated as errors. Coverage
+includes existing Engine/recovery/lifecycle/HTTP behavior plus >=40 boundaries,
+short-title migration, retained genuine bodies, original store/enrich semantics,
+incremental projections, replay after crash, local-only storage repair, preserved
+independent source blocks, authenticated paging and actual app.js history/DOM
+behavior. Original content_rules, SimplePostStore and detail_enrichment unit tests
+also pass: 20 tests. JavaScript syntax and Compose configuration pass.
 
 A backup clone of the paused v1 real trial database migrated successfully:
 179 requests, 229 posts, 240 row observations, 3 page observations and 179 raw
-files remained unchanged; every recorded raw SHA-256 matched. Edit/archive and
-reopen preserved data and instance ID. No source request was sent by this check.
+files remained unchanged; every recorded raw SHA-256 matched. The compatible
+store contains all 229 posts, retains all 176 genuine bodies, and original enrich
+queries identify the same 9 remaining long-title candidates. All 44 old pending
+short titles become list_only. Repeated projection/reopen is idempotent and
+preserves timestamps. No source request was sent by this check.
 The original trial directory was not migrated or edited by this verification.
 
 Actual 390x844 browser verification used an isolated fake-response Engine without
-a source worker. Saving interval=90, removing a stock and archiving a job all
-produced the intended paused state; document scroll width equals viewport width.
-The confirmation explains retained data and halted-state behavior.
+a source worker. Request and event histories navigated independently and retained
+their pages during status refresh, with 30/20 rendered rows and document width
+equal to viewport width. The screenshot uses offline demonstration records;
+it is not the user's live server or evidence of sustained source availability.
 
 Linux amd64 rebuild retained the base/apt instructions and reused the cached
 curl/CA installation layer. The Docker context excludes data, credentials, Git
 and unrelated research runs. Disposable container checks cover health,
-authenticated v2 status, edit/remove/archive and Secure/HttpOnly /collector/
-cookie path, with zero source attempts.
+authenticated v3 status, automatic compatible DB creation, edit/remove/archive,
+paged event traversal and Secure/HttpOnly /collector/ cookie path, with zero
+source attempts. The temporary smoke container was removed after validation.
 
 ## Deployment and evidence limits
 
-The user confirmed their v1 server build/deployment. v2 remote upgrade is not
+The user confirmed their earlier server build/deployment. v3 remote upgrade is not
 executed here: no remote access credentials or verified checkout path were
 provided. README.zh-CN.md supplies pause, stop, whole-data backup, git pull and
 docker compose up -d --build commands. Existing /collector/ nginx, loopback
@@ -78,7 +110,8 @@ Local v1 trial started 2026-09-30 20:00:59 Shanghai using ordinary curl for
 179 attempts, 3 forward pages, 176 nonempty complete bodies, 229 discovered
 eligible posts, 53 pending and no failures in that observed period. This is
 local evidence, not the user's server status or a sustained-access guarantee.
-No new live source traffic was required for v2 verification.
+No new live source traffic was required for v3 verification. The original local
+trial remains paused with its old loaded code; clone checks did not upgrade it.
 
 All results remain observed_pages_only, coverage_complete=false,
 dataset_complete=false and model_database_eligible=false. Local reconciliation

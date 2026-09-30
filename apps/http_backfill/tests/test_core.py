@@ -41,7 +41,9 @@ class Wire:
 
 
 def row(pid="1001", stock="601012", published="2025-01-10 10:00:00", **extra):
-    return {"post_id": pid, "post_type": 0, "post_title": "源标题", "stockbar_code": stock,
+    # Most existing tests exercise detail transport; use an eligible title.
+    # Policy-boundary tests explicitly provide short/exact/overflow titles.
+    return {"post_id": pid, "post_type": 0, "post_title": "源" * 40, "stockbar_code": stock,
             "post_publish_time": published, "post_last_time": "2026-01-01 00:00:00",
             "user_id": "12345", "user_nickname": "源作者", "post_top_status": 0, **extra}
 

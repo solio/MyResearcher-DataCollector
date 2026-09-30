@@ -28,9 +28,14 @@ import uuid
 from urllib.parse import urljoin, urlparse
 
 from myresearcher_collector.sources.eastmoney_guba import parser as guba
+from myresearcher_collector.sources.eastmoney_guba.content_rules import (
+    DETAIL_BODY_CONTENT_SOURCE, LIST_TITLE_CONTENT_SOURCE,
+    detail_body_metadata, detail_enrichment_trigger, list_title_metadata,
+)
 from lifecycle import LifecycleMixin
+from compatible_store import CompatibleDataStore
 
-VERSION = "http-backfill.v2"
+VERSION = "http-backfill.v3"
 MAX_BODY = 16 * 1024 * 1024
 UA = "MyResearcher-HTTP-Backfill/1.0 (public-source research)"
 REDIRECTS = {301, 302, 303, 307, 308}
@@ -202,9 +207,10 @@ class Engine(LifecycleMixin):
     def __init__(self, data_dir, transport=None, clock=None):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        # Deliberately refuse the known production database path/name.
-        if self.data_dir.name == "data" and (self.data_dir / "collector.db").exists():
-            raise ValueError("实验数据目录不能使用生产 collector.db 所在目录")
+        # An owned app-local collector.db is supported; the repository's
+        # production directory is never an experiment destination.
+        if self.data_dir == (Path(__file__).resolve().parents[2] / "data").resolve():
+            raise ValueError("实验数据目录不能使用仓库生产 data 目录")
         self.raw_dir = self.data_dir / "raw"
         self.raw_dir.mkdir(exist_ok=True, mode=0o700)
         self._lock_file = open(self.data_dir / "worker.lock", "a+b")
@@ -255,7 +261,8 @@ class Engine(LifecycleMixin):
                                             ("tasks", "recovery_id", "INTEGER"),
                                             ("requests", "purpose", "TEXT DEFAULT 'forward'"),
                                             ("requests", "probe_only", "INTEGER DEFAULT 0"),
-                                            ("page_observations", "purpose", "TEXT DEFAULT 'forward'")):
+                                            ("page_observations", "purpose", "TEXT DEFAULT 'forward'"),
+                                            ("posts", "content_source", "TEXT")):
             if column not in {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}:
                 self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
         self._init_lifecycle_schema()
@@ -292,9 +299,12 @@ class Engine(LifecycleMixin):
                 last_observed = self.db.execute("SELECT MAX(COALESCE(finished,started)) FROM requests WHERE job=?", (self._get("job_id"),)).fetchone()[0]
                 self._end_segment("restart_paused", last_observed)
             self._set("probe", False)
+            self._migrate_content_policy()
             self._migrate_frontiers()
             if self._get("job_id") and self._get("state") != "completed":
                 self._mark_recovery_needed("process_restart")
+        self.compatible_store = CompatibleDataStore(self.data_dir, self._get("instance_id"))
+        self._sync_storage()
 
     def _get(self, key, default=None):
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -320,6 +330,90 @@ class Engine(LifecycleMixin):
     def _config(self):
         row = self.db.execute("SELECT config FROM jobs WHERE id=?", (self._get("job_id"),)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def _store_list_post(self, item, source_row, request_id):
+        """Keep every eligible list item; the shared rule controls enrichment."""
+        data = asdict(item)
+        data["source_metadata"] = list_title_metadata(item.source_metadata, item.title)
+        status = "pending" if detail_enrichment_trigger(item.title) else "list_only"
+        self.db.execute("INSERT INTO posts(post_id,item,source_row,status,list_request,content,content_source) VALUES(?,?,?,?,?,?,?)",
+                        (item.source_item_id, _dump(data), source_row, status, request_id,
+                         item.title or "", LIST_TITLE_CONTENT_SOURCE))
+        return status
+
+    def _migrate_content_policy(self):
+        """Repair old queues without rewriting source requests or acquired bodies."""
+        if self._get("content_policy_version") == 3:
+            return
+        halt = self._halt_target() if self._get("active_halt") else None
+        retained = halt["id"] if halt else None
+        changed, skipped = 0, 0
+        for post in self.db.execute("SELECT * FROM posts").fetchall():
+            data = json.loads(post["item"])
+            title = data.get("title")
+            trigger = detail_enrichment_trigger(title)
+            status, content = post["status"], post["content"]
+            if status == "complete":
+                metadata = detail_body_metadata(data.get("source_metadata") or {}, title=title, trigger=trigger)
+                source = DETAIL_BODY_CONTENT_SOURCE
+            else:
+                metadata = list_title_metadata(data.get("source_metadata") or {}, title)
+                source = LIST_TITLE_CONTENT_SOURCE
+                if status == "pending" and trigger is None:
+                    status, content = "list_only", title or ""
+                    skipped += self.db.execute("UPDATE tasks SET status='skipped' WHERE kind='detail' AND post_id=? AND status IN ('pending','inflight') AND id!=COALESCE(?,-1)",
+                                               (post["post_id"], retained)).rowcount
+                    if halt and halt["kind"] == "detail" and halt["post_id"] == post["post_id"]:
+                        self._set("halted_task_id", retained)
+                        self._set("halt_task_id", retained)
+                        self._set("halted_probe_only", True)
+                if content is None:
+                    content = title or ""
+            data["source_metadata"] = metadata
+            self.db.execute("UPDATE posts SET item=?,status=?,content=?,content_source=? WHERE post_id=?",
+                            (_dump(data), status, content, source, post["post_id"]))
+            changed += 1
+        self._set("content_policy_version", 3)
+        self._set("content_policy", {"version": 3, "trigger": "shared detail_enrichment_trigger", "default": "strip(title) length >=40", "short_title": "retain list_title; never claim detail_body"})
+        self._event("content_policy_migrated", "统一原采集详情触发规则：标题去首尾空白后 >=40 才补详情；保留短标题列表与已有正文", {"version": 3, "posts_annotated": changed, "short_detail_tasks_skipped": skipped, "retained_probe_task": retained})
+
+    def _sync_storage(self, request_id=None):
+        """A local, replayable projection after the primary transaction commits."""
+        with self._mutex:
+            previous = self._get("storage_halt")
+            if previous:
+                request_id = None  # Repair every committed row before clearing a local halt.
+            try:
+                summary = self.compatible_store.sync(self, request_id)
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                with self.db:
+                    halt = previous or {"previous_state": self._get("state"), "previous_reason": self._get("reason")}
+                    halt.update({"kind": "local_storage_error", "error": message, "request_id": request_id, "at": _iso(self.clock())})
+                    self._set("storage_halt", halt)
+                    self._set("data_storage", {"schema_version": "legacy_posts", "status": "error", "db_path": str(self.compatible_store.db_path),
+                                               "last_error": message, "research_only": True, "model_database_eligible": False})
+                    self._set("state", "blocked" if self._get("active_halt") and self._get("state") == "blocked" else "error")
+                    self._set("reason", "本地兼容数据投影失败；原始响应/主台账已保留，请修复存储后本地重投影: " + message)
+                    self._set("probe", False)
+                    self._end_segment("local_storage_error")
+                    self._event("local_storage_error", self._get("reason"), halt)
+                return False
+            with self.db:
+                self._set("data_storage", {**summary, "schema_version": "legacy_posts", "status": "ready",
+                                           "last_error": None, "last_synced_at": _iso(self.clock())})
+                if previous:
+                    self._set("storage_halt", None)
+                    self._set("probe", False)
+                    if self._get("active_halt"):
+                        self._set("state", previous["previous_state"] if previous["previous_state"] in {"blocked", "error"} else "error")
+                        self._set("reason", previous["previous_reason"])
+                    else:
+                        self._set("state", "paused")
+                        self._set("reason", "本地兼容数据投影已修复；未请求来源，等待继续")
+                        self._set("resume_recovery", True)
+                    self._event("local_storage_repaired", "本地数据已重投影，来源阻断/间隔保留；未请求来源", summary)
+            return True
 
     def _halt_target(self):
         hid = self._get("halted_task_id", self._get("halt_task_id"))
@@ -352,7 +446,7 @@ class Engine(LifecycleMixin):
     def create_job(self, config):
         config = _validate_config(config)
         with self._mutex, self.db:
-            if self._inflight or self._get("active_halt"):
+            if self._inflight or self._get("active_halt") or self._get("storage_halt"):
                 raise RuntimeError("已有未解决的暂停原因；不能新建任务绕过，请先单次探测")
             if self._get("job_id") and self._get("state") != "completed":
                 raise RuntimeError("已有未完成任务；请继续现有任务，避免丢失覆盖进度")
@@ -601,6 +695,10 @@ class Engine(LifecycleMixin):
         return {"phase": "seek", "verification_pending": True}
 
     def start(self):
+        with self._mutex:
+            if self._get("storage_halt"):
+                self._sync_storage()
+                return self.status()
         with self._mutex, self.db:
             if self._inflight:
                 raise RuntimeError("当前请求尚在执行，请等待其结果保存后继续")
@@ -636,6 +734,10 @@ class Engine(LifecycleMixin):
         return self.status()
 
     def retry(self):
+        with self._mutex:
+            if self._get("storage_halt"):
+                self._sync_storage()
+                return self.status()
         with self._mutex, self.db:
             if self._inflight or self._get("probe"):
                 raise RuntimeError("请求或单次探测已在执行/排队")
@@ -654,7 +756,7 @@ class Engine(LifecycleMixin):
     def tick(self):
         """Reserve durably, release control lock during I/O, then commit one outcome."""
         with self._mutex, self.db:
-            if self._closed or self._inflight or self._get("state") != "running" or self.clock() < self._get("next_due", 0):
+            if self._closed or self._inflight or self._get("storage_halt") or self._get("state") != "running" or self.clock() < self._get("next_due", 0):
                 return {"attempted": False}
             task = self._target(probe_target=self._get("probe", False))
             if not task:
@@ -694,6 +796,7 @@ class Engine(LifecycleMixin):
                     self._halt("error", "internal_error", f"结果保存/解析错误，需要人工处理: {exc}", rid)
             finally:
                 self._inflight = False
+            self._sync_storage(rid)
             return {"attempted": True, "request_id": rid, "state": self._get("state")}
 
     def _record_response(self, rid, task, response, config, probe, probe_only=False):
@@ -787,6 +890,10 @@ class Engine(LifecycleMixin):
                 else:
                     self._accept_detail(rid, task, html, probe_only=probe_only)
             except (ValueError, TypeError, KeyError) as exc:
+                saved = self.db.execute("SELECT analysis FROM requests WHERE id=?", (rid,)).fetchone()
+                validated = json.loads(saved[0]) if saved and saved[0] else {}
+                if validated.get("list_structure_validated"):
+                    evidence.update(validated)
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
                 return
@@ -906,6 +1013,7 @@ class Engine(LifecycleMixin):
         if probe_only:
             stats["probe_only"] = True
             return stats
+        self.db.execute("UPDATE requests SET analysis=? WHERE id=?", (_dump({"list_structure_validated": True, "list_observation": stats}), rid))
         cov = self.db.execute("SELECT * FROM coverage WHERE job=? AND stock=?", (task["job"], task["stock"])).fetchone()
         if cov is None:
             raise ValueError("任务股票已不在活动覆盖范围")
@@ -934,11 +1042,10 @@ class Engine(LifecycleMixin):
                 prior = self.db.execute("SELECT status FROM posts WHERE post_id=?", (pid,)).fetchone()
                 if prior is None:
                     stats["new_eligible_posts"] += 1
-                    self.db.execute("INSERT INTO posts(post_id,item,source_row,list_request) VALUES(?,?,?,?)",
-                                    (pid, _dump(asdict(item)), _dump(row), rid))
-                    self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
-                                    (task["job"], task["stock"], task["page"], pid, item.url, item.url))
-                elif prior["status"] == "pending":
+                    status = self._store_list_post(item, _dump(row), rid)
+                else:
+                    status = prior["status"]
+                if status == "pending" and detail_enrichment_trigger(item.title):
                     exists = self.db.execute("SELECT 1 FROM tasks WHERE job=? AND kind='detail' AND post_id=? AND status IN ('pending','inflight')", (task["job"], pid)).fetchone()
                     if not exists:
                         self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
@@ -989,7 +1096,7 @@ class Engine(LifecycleMixin):
             raise ValueError("详情响应 URL 的源 ID 不匹配")
         detail = guba.parse_detail_page(html)
         item = _item_load(post["item"])
-        guba.merge_list_and_detail(item, detail)
+        merged = guba.merge_list_and_detail(item, detail)
         if detail.source_item_id != task["post_id"]:
             raise ValueError("详情源 ID 不匹配")
         payload = guba._embedded_json(html, "post_article")
@@ -997,8 +1104,11 @@ class Engine(LifecycleMixin):
             raise ValueError("详情发布时间格式不完整")
         if probe_only:
             return
-        self.db.execute("UPDATE posts SET status='complete',detail_request=?,detail_payload=?,content=? WHERE post_id=?",
-                        (rid, _dump(payload), detail.content, task["post_id"]))
+        data = json.loads(post["item"])
+        data["source_metadata"] = detail_body_metadata(merged["source_metadata"], title=item.title,
+                                                      trigger=detail_enrichment_trigger(item.title))
+        self.db.execute("UPDATE posts SET status='complete',detail_request=?,detail_payload=?,content=?,item=?,content_source=? WHERE post_id=?",
+                        (rid, _dump(payload), detail.content, _dump(data), DETAIL_BODY_CONTENT_SOURCE, task["post_id"]))
         self._event("detail_acquired", "正文已完整获取" if detail.content else "来源返回合法空正文",
                     {"request_id": rid, "post_id": task["post_id"], "characters": len(detail.content)})
 
@@ -1018,6 +1128,8 @@ class Engine(LifecycleMixin):
                                      "SUM(outcome NOT IN ('real_data','redirect','detail_unavailable','reserved')) AS failures FROM requests WHERE job=?", (job_id,)).fetchone()
             post_counts = self.db.execute("SELECT COUNT(*) AS unique_posts,SUM(status='complete') AS body_complete,"
                                          "SUM(status='pending') AS pending,SUM(status='removed') AS removed,"
+                                         "SUM(status='list_only') AS list_only,SUM(status IN ('pending','complete','removed')) AS detail_required,"
+                                         "SUM(json_extract(item,'$.source_metadata.list_title_length')>=40) AS detail_policy_required,"
                                          "SUM(status='complete' AND content!='') AS nonempty_body,SUM(status='complete' AND content='') AS source_empty_body "
                                          "FROM posts WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1)", (job_id,)).fetchone()
             aggregate = {k: counts[k] or 0 for k in counts.keys()} | {k: post_counts[k] or 0 for k in post_counts.keys()}
@@ -1027,7 +1139,9 @@ class Engine(LifecycleMixin):
                 c = dict(row)
                 c["gaps"] = json.loads(c["gaps"])
                 c["list_complete"], c["date_boundary_reached"] = bool(c["list_complete"]), bool(c.pop("boundary"))
-                n = self.db.execute("SELECT COUNT(*) AS required,SUM(p.status='complete') AS complete,SUM(p.status='pending') AS pending,SUM(p.status='removed') AS removed "
+                n = self.db.execute("SELECT SUM(p.status IN ('pending','complete','removed')) AS required,COUNT(*) AS observed,"
+                                    "SUM(p.status='list_only') AS list_only,SUM(json_extract(p.item,'$.source_metadata.list_title_length')>=40) AS policy_required,"
+                                    "SUM(p.status='complete') AS complete,SUM(p.status='pending') AS pending,SUM(p.status='removed') AS removed "
                                     "FROM associations a JOIN posts p ON p.post_id=a.post_id WHERE a.job=? AND a.stock=? AND a.eligible=1", (job_id, c["stock"])).fetchone()
                 c["details"] = {k: n[k] or 0 for k in n.keys()}
                 c["details_complete"] = c["details"]["pending"] == 0 and c["details"]["removed"] == 0
@@ -1061,6 +1175,8 @@ class Engine(LifecycleMixin):
                       "last_success": _iso(self._get("last_success")), "block_evidence": self._get("block_evidence"),
                       "active_halt": self._get("active_halt"), "probe_pending": self._get("probe", False),
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
+                      "content_policy": self._get("content_policy"),
+                      "data_storage": self._get("data_storage"), "storage_halt": self._get("storage_halt"),
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
             result["observed_work_complete"] = bool(coverage) and all(c["date_boundary_reached"] and c["details_complete"] and not c["gaps"] for c in coverage)
             result["recovery"] = [c["recovery"] for c in coverage if c["recovery"]]
@@ -1116,10 +1232,14 @@ class Engine(LifecycleMixin):
                 d = dict(row)
                 for key in ("item", "source_row", "detail_payload"):
                     d[key] = json.loads(d[key]) if d[key] else None
+                d["source_metadata"] = d["item"].get("source_metadata") or {}
+                d["detail_enrichment_trigger"] = detail_enrichment_trigger(d["item"].get("title"))
+                d["detail_policy_required"] = d["detail_enrichment_trigger"] is not None
+                d["detail_required"] = d["status"] in {"pending", "complete", "removed"}
                 d["associations"] = [dict(r) for r in self.db.execute("SELECT job,stock,request_id FROM associations WHERE post_id=? AND eligible=1", (row["post_id"],)).fetchall()]
                 d["raw_refs"] = [dict(r) for r in self.db.execute("SELECT id,raw_ref,sha256,outcome FROM requests WHERE id IN (?,?)", (row["list_request"], row["detail_request"])).fetchall()]
                 d.update({"source": "eastmoney_guba", "source_item_id": row["post_id"], "schema_version": VERSION, "instance_id": self._get("instance_id"),
-                          "body_complete": row["status"] == "complete", "research_only": True,
+                          "body_complete": row["status"] == "complete" and row["content_source"] == DETAIL_BODY_CONTENT_SOURCE, "research_only": True,
                           "model_database_eligible": False, "dataset_complete": False,
                           "coverage_proof": "observed_pages_only", "job_id": self._get("job_id"),
                           "effective_to": _iso(self._get("effective_to_epoch"))})

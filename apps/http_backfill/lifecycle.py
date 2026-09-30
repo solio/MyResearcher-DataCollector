@@ -5,7 +5,6 @@ by core: a changed scope starts at page 1 instead of inheriting a stale cursor.
 """
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -153,7 +152,7 @@ class LifecycleMixin:
         return item
 
     def _rebuild_scope(self, job, old_config, config, effective_to, retained):
-        from core import guba, _item_load
+        from core import guba, _item_load, detail_enrichment_trigger
         old_stocks, new_stocks = set(old_config["stocks"]), set(config["stocks"])
         window_changed = any(config[k] != old_config[k] for k in ("from_date", "to_date"))
         reset = new_stocks if window_changed else new_stocks - old_stocks
@@ -170,12 +169,12 @@ class LifecycleMixin:
             self._enqueue_list(job, stock, 1)
         if not reset:
             self._mark_recovery_needed("config_updated")
-            return
+            return []
         probe_target = retained if self._get("halted_probe_only", False) else None
         queued = {r[0] for r in self.db.execute(
             "SELECT post_id FROM tasks WHERE job=? AND kind='detail' AND status IN ('pending','inflight') AND (? IS NULL OR id!=?)",
             (job, probe_target, probe_target))}
-        cache, seen = {}, set()
+        cache, seen, projection_requests = {}, set(), set()
         reset = sorted(reset)
         placeholders = ",".join("?" for _ in reset)
         observations = self.db.execute(
@@ -198,20 +197,20 @@ class LifecycleMixin:
             post = self.db.execute("SELECT * FROM posts WHERE post_id=?", (observation["post_id"],)).fetchone()
             if post is None:
                 item = self._observed_item(observation, cache)
-                self.db.execute("INSERT INTO posts(post_id,item,source_row,list_request) VALUES(?,?,?,?)",
-                                (item.source_item_id, _json(asdict(item)), observation["source_row"], observation["request_id"]))
-                status = "pending"
+                status = self._store_list_post(item, observation["source_row"], observation["request_id"])
+                projection_requests.add(observation["request_id"])
             else:
                 item, status = _item_load(post["item"]), post["status"]
                 if item.published_at != published:
                     raise ValueError("历史相同源 ID 的发布时间不一致，不能重建配置范围")
-            if status == "pending" and item.source_item_id not in queued:
+            if status == "pending" and detail_enrichment_trigger(item.title) and item.source_item_id not in queued:
                 queued.add(item.source_item_id)
                 # A retained old probe only validates; normal acquisition has
                 # its own task after the halt has been resolved.
                 self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
                                 (job, observation["stock"], observation["page"], item.source_item_id, item.url, item.url))
         self._mark_recovery_needed("config_updated")
+        return sorted(projection_requests)
 
     def _record_job_revision(self, job, config, effective_to, reason, before):
         row = self.db.execute("SELECT revision FROM job_lifecycle WHERE job=?", (job,)).fetchone()
@@ -224,6 +223,7 @@ class LifecycleMixin:
     def update_job(self, config):
         from core import _validate_config
         config = _validate_config(config)
+        projection_requests = []
         with self._mutex, self.db:
             job, old = self._editable_job()
             if config == old:
@@ -246,13 +246,16 @@ class LifecycleMixin:
                 target = self.db.execute("SELECT stock FROM tasks WHERE id=?", (retained,)).fetchone() if retained else None
                 if target and target["stock"] in affected:
                     self._detach_halt_probe(old, retained)
-                self._rebuild_scope(job, old, config, cutoff, retained)
+                projection_requests = self._rebuild_scope(job, old, config, cutoff, retained)
             self._end_segment("config_updated")
             if not self._get("active_halt"):
                 self._set("state", "paused")
                 self._set("reason", "配置已更新；等待开始" + ("并重新核对来源列表位置" if scope_changed else ""))
             self._record_job_revision(job, config, cutoff, "config_updated", before)
             self._event("config_updated", "修改任务配置；已采原始响应与历史配置保留", {"previous": old, "config": config, "scope_rebuilt": scope_changed})
+        for request_id in projection_requests:
+            if not self._sync_storage(request_id):
+                break
         return self.status()
 
     def remove_stock(self, stock):

@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent.parent / "src"))
+from activity import activity_page, activity_query
 
 
 class ConsoleServer(ThreadingHTTPServer):
@@ -116,7 +117,9 @@ class Handler(BaseHTTPRequestHandler):
             if not self.authenticated():
                 return self.send(401, {"error": "请先登录控制台"})
             try:
-                query = parse_qs(parsed.query)
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                if path in {"api/requests", "api/events"} and "paged" in query:
+                    return self.send(200, activity_page(self.server.engine, path.split("/")[-1], **activity_query(query)))
                 limit = int(query.get("limit", ["50"])[0])
                 offset = int(query.get("offset", ["0"])[0])
                 if not 1 <= limit <= 1000 or offset < 0:

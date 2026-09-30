@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import sqlite3
 import threading
 import unittest
 import urllib.error
@@ -18,6 +19,16 @@ class StubEngine:
     def __init__(self):
         self.state = "idle"
         self.calls = []
+        self._mutex = threading.RLock()
+        self.db = sqlite3.connect(":memory:", check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript("""
+        CREATE TABLE requests(id INTEGER PRIMARY KEY,started REAL,finished REAL,headers TEXT,analysis TEXT);
+        CREATE TABLE events(id INTEGER PRIMARY KEY,created REAL,kind TEXT,message TEXT,evidence TEXT);
+        """)
+
+    def _get(self, key):
+        return "server-test-instance" if key == "instance_id" else None
 
     def status(self):
         return {"state": self.state, "attempts": 0}
@@ -84,6 +95,7 @@ class ConsoleTests(unittest.TestCase):
         self.server.shutdown()
         self.thread.join()
         self.server.server_close()
+        self.engine.db.close()
 
     def request(self, path, obj=None, method=None, headers=None):
         req = urllib.request.Request(self.base + path,
@@ -169,6 +181,46 @@ class ConsoleTests(unittest.TestCase):
         self.login()
         self.engine.state = "running"
         self.assertEqual(self.request("/api/jobs/current", {"stocks": ["601012"]}, "PATCH")[0], 409)
+        self.assertEqual(self.engine.calls, [])
+
+    def test_paged_activity_auth_snapshot_and_legacy_arrays(self):
+        self.assertEqual(self.request("/api/requests?paged=1")[0], 401)
+        self.login()
+        with self.engine.db:
+            for row_id in range(1, 5):
+                self.engine.db.execute("INSERT INTO requests VALUES(?,?,?,NULL,NULL)", (row_id, 1000, 1001))
+                self.engine.db.execute("INSERT INTO events VALUES(?,?,?,'暂停',NULL)", (row_id, 1000, "paused"))
+        for kind in ("requests", "events"):
+            with self.subTest(kind=kind):
+                self.assertIsInstance(json.loads(self.request(f"/api/{kind}")[2]), list)
+                status, headers, body = self.request(f"/api/{kind}?paged=1&limit=2")
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                page = json.loads(body)
+                self.assertEqual([r["id"] for r in page["items"]], [4, 3])
+                self.assertEqual(page["snapshot_id"], 4)
+                if kind == "requests":
+                    self.engine.db.execute("INSERT INTO requests VALUES(5,1000,1001,NULL,NULL)")
+                else:
+                    self.engine.db.execute("INSERT INTO events VALUES(5,1000,'paused','暂停',NULL)")
+                _, _, body = self.request(f"/api/{kind}?paged=1&limit=2&before_id=3&snapshot_id=4")
+                page = json.loads(body)
+                self.assertEqual([r["id"] for r in page["items"]], [2, 1])
+                self.assertEqual(page["total"], 4)
+                self.assertFalse(page["has_more"])
+                self.assertIsNone(page["next_cursor"])
+                self.assertEqual(page["items"][0]["instance_id"], "server-test-instance")
+        self.assertEqual(self.engine.calls, [])
+
+    def test_paged_activity_rejects_bad_cursors_and_limit(self):
+        self.login()
+        for query in ("paged=1&limit=201", "paged=1&limit=0", "paged=1&before_id=0",
+                      "paged=1&snapshot_id=-1", "paged=1&before_id=x", "paged=1&before_id=",
+                      "paged=1&before_id=1&before_id=2", "paged=1&snapshot_id=9223372036854775808", "paged=wrong"):
+            with self.subTest(query=query):
+                status, _, body = self.request("/api/requests?" + query)
+                self.assertEqual(status, 400)
+                self.assertIn("error", json.loads(body))
         self.assertEqual(self.engine.calls, [])
 
 

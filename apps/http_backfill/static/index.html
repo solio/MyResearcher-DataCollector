@@ -66,10 +66,12 @@
           <article class="metric"><span>源请求尝试</span><strong id="metric-attempts">—</strong><small id="metric-failures">失败 / 异常 —</small></article>
           <article class="metric"><span>前进列表成功</span><strong id="metric-pages">—</strong><small id="metric-calibration">校准成功 — / 尝试 —</small><small id="metric-list-total">列表成功合计 — 次</small></article>
           <article class="metric"><span>独立帖子</span><strong id="metric-posts">—</strong><small>窗口内标准帖 · 保留跨吧关联</small></article>
+          <article class="metric"><span>仅列表文本</span><strong id="metric-list-only">—</strong><small>保留短标题 · 不计入详情正文</small></article>
           <article class="metric"><span>已核实正文</span><strong id="metric-bodies">—</strong><small id="metric-body-breakdown">非空 — · 有效空正文 —</small></article>
           <article class="metric"><span>待取正文</span><strong id="metric-pending">—</strong><small id="metric-removed">详情不可访问 —</small></article>
         </div>
-        <div class="data-boundary"><span aria-hidden="true">◈</span><p>原始响应与完整列表行保存在独立实验库中，正文队列覆盖窗口内标准帖子。<strong>局部产出不代表日期窗口完整覆盖</strong>，完成情况请看下方股票覆盖。</p></div>
+        <div class="data-boundary"><span aria-hidden="true">◈</span><p>全部列表行保留。默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情；短标题保留为列表文本，<strong>不当作已核实正文或漏正文</strong>。局部产出不代表日期窗口完整覆盖。</p></div>
+        <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>独立兼容库写入</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p class="small-note">兼容现有 posts / backfill 格式，仍属于独立实验数据，不会自动进入生产模型。</p></div>
       </section>
 
       <div class="workspace-grid">
@@ -107,9 +109,9 @@
       <section class="card activity-card" aria-labelledby="activity-title">
         <div class="section-heading"><div><div class="eyebrow">运行记录</div><h2 id="activity-title">最近请求与事件</h2></div><button id="refresh" type="button" class="button quiet small">刷新</button></div>
         <div class="tabbar" role="tablist" aria-label="运行记录类型"><button id="requests-tab" role="tab" aria-selected="true" aria-controls="requests-panel" type="button">源请求 <span id="request-count">0</span></button><button id="events-tab" role="tab" aria-selected="false" aria-controls="events-panel" type="button" tabindex="-1">控制事件 <span id="event-count">0</span></button></div>
-        <div id="requests-panel" role="tabpanel" aria-labelledby="requests-tab"><div id="request-list" class="activity-list"><div class="empty-state">尚无源请求记录。</div></div></div>
-        <div id="events-panel" role="tabpanel" aria-labelledby="events-tab" hidden><div id="event-list" class="activity-list"><div class="empty-state">尚无控制事件。</div></div></div>
-        <p class="small-note activity-note">页面每 5 秒读取本地状态。关闭页面后服务端仍按计划运行；刷新页面不会请求股吧。</p>
+        <div id="requests-panel" role="tabpanel" aria-labelledby="requests-tab"><div id="request-list" class="activity-list"><div class="empty-state">尚无源请求记录。</div></div><nav class="activity-pager" aria-label="源请求分页"><p id="requests-page-info" class="page-info">正在读取记录…</p><div class="pager-actions"><button id="requests-prev" type="button" class="button secondary small" disabled>上一页</button><button id="requests-next" type="button" class="button secondary small" disabled>下一页</button><button id="requests-latest" type="button" class="button quiet small" disabled>回到最新</button></div><p id="requests-page-error" class="page-error" role="status" hidden></p></nav></div>
+        <div id="events-panel" role="tabpanel" aria-labelledby="events-tab" hidden><div id="event-list" class="activity-list"><div class="empty-state">尚无控制事件。</div></div><nav class="activity-pager" aria-label="控制事件分页"><p id="events-page-info" class="page-info">正在读取记录…</p><div class="pager-actions"><button id="events-prev" type="button" class="button secondary small" disabled>上一页</button><button id="events-next" type="button" class="button secondary small" disabled>下一页</button><button id="events-latest" type="button" class="button quiet small" disabled>回到最新</button></div><p id="events-page-error" class="page-error" role="status" hidden></p></nav></div>
+        <p class="small-note activity-note">每 5 秒读取本地状态与最新页。历史页固定在同一记录快照，采集新增记录不会挤动正在看的页；回到最新后恢复刷新。页面刷新不会请求股吧。</p>
       </section>
       <footer class="footer"><span>DataCollector / HTTP backfill</span><span>独立实验 · 完整覆盖需逐项核实</span></footer>
     </div>

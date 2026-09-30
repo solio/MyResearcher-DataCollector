@@ -15,6 +15,8 @@
   let formDirty = false;
   let lastPoll = null;
   let requestItems = [];
+  let latestRequestItems = [];
+  const activityPages = Object.fromEntries(["requests", "events"].map((kind) => [kind, { limit: kind === "requests" ? 30 : 20, latest: true, index: 0, cursors: [null], snapshot: null, page: null, loading: false, generation: 0 }]));
   let statusGeneration = 0;
   let pendingDeletion = null;
   let formJobId = null;
@@ -129,9 +131,10 @@
     const job = jobConfig();
     const locked = busy || !online || !authenticated;
     const pending = probePending();
-    $("start").disabled = locked || !job || pending || status?.request_inflight || !["paused", "idle"].includes(state);
+    $("start").disabled = locked || !job || pending || status?.storage_halt || status?.active_halt || status?.request_inflight || !["paused", "idle"].includes(state);
     $("pause").disabled = locked || !(state === "running" || pending);
-    $("retry").disabled = locked || (!job && !status?.active_halt) || pending || status?.request_inflight || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state);
+    $("retry").disabled = locked || pending || status?.request_inflight || (status?.storage_halt ? state === "running" : ((!job && !status?.active_halt) || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state)));
+    display("retry", status?.storage_halt ? "重试兼容库写入" : "单次探测重试");
     const awaitingStop = state === "running" || pending || status?.request_inflight;
     $("config-fields").disabled = locked || awaitingStop;
     $("save-config").disabled = $("config-fields").disabled || (!job && !!status?.active_halt);
@@ -147,7 +150,9 @@
     document.querySelectorAll("[data-remove-stock]").forEach((button) => { button.disabled = locked || !job; });
     $("refresh").disabled = busy || polling;
     $("logout").disabled = busy;
-    if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
+    updatePager("requests"); updatePager("events");
+    if (status?.storage_halt) display("action-note", "兼容库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
+    else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
     else if (["blocked", "error"].includes(state)) display("action-note", "已暂停后续请求。检查证据后，可手动安排一次探测。");
     else if (state === "completed") display("action-note", "请核对覆盖。可编辑当前窗口，或删除任务后新建。");
@@ -259,7 +264,7 @@
     const rate = first(data, ["observed_requests_per_minute", "requests_per_minute", "observed_rate_per_minute"]);
     if (rate != null && Number.isFinite(Number(rate))) display("observed-rate", `实际 ${Number(rate).toFixed(2)} 次 / 分钟 · 间隔 ${config ? config.interval_seconds || 60 : "—"} 秒`);
     else {
-      const times = requestItems.map((item) => epoch(first(item, ["started_at", "requested_at", "at", "timestamp"]))).filter((value) => value != null).sort((a, b) => a - b);
+      const times = latestRequestItems.map((item) => epoch(first(item, ["started_at", "requested_at", "at", "timestamp"]))).filter((value) => value != null).sort((a, b) => a - b);
       const rateObserved = times.length > 1 && times[times.length - 1] > times[0] ? (times.length - 1) * 60000 / (times[times.length - 1] - times[0]) : null;
       display("observed-rate", rateObserved == null ? "实际请求速率尚无观测" : `最近 ${times.length} 次：${rateObserved.toFixed(2)} 次 / 分钟`);
     }
@@ -270,6 +275,7 @@
     display("metric-calibration", `校准成功 ${number(calibrationPages)} / 尝试 ${number(counter("calibration_requests"))}`);
     display("metric-list-total", `列表成功合计 ${number(forwardPages == null || calibrationPages == null ? null : Number(forwardPages) + Number(calibrationPages))} 次`);
     display("metric-posts", number(counter("unique_posts", ["posts", "posts_count"])));
+    display("metric-list-only", number(counter("list_only", ["list_only_posts"])));
     display("metric-bodies", number(counter("body_complete", ["bodies_complete", "detail_success", "complete_posts"])));
     display("metric-pending", number(counter("pending", ["pending_details", "body_pending"])));
     display("metric-failures", `失败 / 异常 ${number(counter("failures", ["failed", "errors"]))}`);
@@ -278,13 +284,14 @@
     renderBlock(data);
     renderCoverage(data, config);
     renderRecovery(data);
+    renderStorage(data);
     renderTiming();
     controls();
   }
   function renderBlock(data) {
     const firstBlock = first(data, ["first_block_evidence", "first_block"]);
     const evidence = firstBlock || first(data, ["blocking_evidence", "block_evidence", "block"]);
-    const blocked = ["blocked", "error"].includes(data.state);
+    const blocked = ["blocked", "error"].includes(data.state) && !data.storage_halt;
     $("block-panel").hidden = !blocked && !evidence;
     if ($("block-panel").hidden) return;
     const info = objectValue(evidence);
@@ -336,15 +343,17 @@
       const pages = first(item, ["list_pages", "pages", "pages_completed"]);
       const details = objectValue(item.details);
       const bodies = first(item, ["body_complete", "bodies_complete", "complete_posts"], first(details, ["complete"]));
-      const posts = first(item, ["unique_posts", "posts", "total_posts"], first(details, ["required"]));
+      const required = first(details, ["required"], first(item, ["detail_required"]));
+      const listOnly = first(details, ["list_only"], first(item, ["list_only"]));
+      const posts = first(item, ["unique_posts", "posts", "total_posts"], required == null ? null : Number(required) + Number(listOnly || 0));
       const pending = first(item, ["pending", "pending_details"], first(details, ["pending"]));
-      const counts = [["前进列表", pages], ["原始列表行", first(item, ["rows"])], ["窗口内帖", posts], ["正文", bodies], ["待取", pending]];
+      const counts = [["前进列表", pages], ["原始列表行", first(item, ["rows"])], ["窗口内帖", posts], ["列表文本", listOnly], ["正文", bodies], ["待取详情", pending]];
       counts.forEach(([label, value]) => counters.append(el("span", "", `${label} ${number(value)}`)));
       row.append(counters);
-      if (posts != null && bodies != null && Number(posts) > 0) {
+      if (required != null && bodies != null && Number(required) > 0) {
         const bar = el("div", "coverage-progress");
-        bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", `${stock} 已取得正文占当前发现帖子的比例`);
-        const percent = Math.min(100, Math.max(0, Number(bodies) / Number(posts) * 100));
+        bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", `${stock} 已取得正文占需详情帖子的比例`);
+        const percent = Math.min(100, Math.max(0, Number(bodies) / Number(required) * 100));
         bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", percent.toFixed(0));
         const fill = el("span"); fill.style.width = `${percent}%`; bar.append(fill); row.append(bar);
       }
@@ -419,6 +428,19 @@
       list.append(item);
     }
   }
+  function renderStorage(data) {
+    const storage = objectValue(data.data_storage);
+    $("storage-panel").hidden = !data.data_storage && !data.storage_halt;
+    if ($("storage-panel").hidden) return;
+    const failed = !!data.storage_halt || storage.status === "error";
+    display("storage-state", failed ? "写入异常 · 已暂停" : storage.status === "ready" ? "可用" : "等待状态");
+    $("storage-state").className = `tag ${failed ? "warning" : "success"}`;
+    display("storage-path", storage.db_path || "兼容库路径尚未返回");
+    display("storage-sync", `最近本地同步 ${time(storage.last_synced_at)}${storage.storage_version ? " · 格式 " + textValue(storage.storage_version) : ""}`);
+    const error = first(storage, ["last_error"], data.storage_halt);
+    $("storage-error").hidden = !error;
+    display("storage-error", error ? `${textValue(error)}。已取得的原始记录保留，重试本地写入不会重新请求来源。` : "");
+  }
   function unpack(data, key) {
     if (Array.isArray(data)) return data;
     return Array.isArray(data && data[key]) ? data[key] : Array.isArray(data && data.items) ? data.items : [];
@@ -429,9 +451,67 @@
     if (/success|^ok$|_ok$|complete|^real_data$/i.test(outcome)) return "success";
     return "";
   }
+  function activityUrl(kind, cursor = null, snapshot = null) {
+    let path = `${kind}?paged=1&limit=${activityPages[kind].limit}`;
+    if (cursor != null) path += `&before_id=${encodeURIComponent(cursor)}`;
+    if (snapshot > 0) path += `&snapshot_id=${encodeURIComponent(snapshot)}`;
+    return path;
+  }
+  function updatePager(kind) {
+    const state = activityPages[kind];
+    const locked = busy || !authenticated || !online || state.loading;
+    $(`${kind}-prev`).disabled = locked || state.index === 0;
+    $(`${kind}-next`).disabled = locked || !state.page?.has_more;
+    $(`${kind}-latest`).disabled = locked || state.latest;
+    const total = state.page?.total;
+    display(`${kind}-page-info`, state.loading ? "正在读取这一页…" : state.page ? `${state.latest ? "最新记录" : "历史快照"} · 第 ${state.index + 1} 页 / 共 ${Math.max(1, Math.ceil(Number(total) / state.limit))} 页 · ${number(total)} 条${state.latest ? " · 自动刷新" : " · 保持当前页"}` : "正在读取记录…");
+  }
+  function activityError(kind, message = "") {
+    $(`${kind}-page-error`).hidden = !message;
+    $(`${kind}-page-error`).textContent = message;
+  }
+  function acceptActivity(kind, page, latest = activityPages[kind].latest, index = activityPages[kind].index, cursors = activityPages[kind].cursors) {
+    if (!page || !Array.isArray(page.items) || typeof page.has_more !== "boolean" || !Number.isInteger(page.total)) throw new Error("运行记录分页接口尚未就绪，请检查服务版本。");
+    const state = activityPages[kind];
+    state.page = page; state.latest = latest; state.index = index; state.snapshot = page.snapshot_id; state.cursors = cursors;
+    if (kind === "requests") {
+      if (latest) latestRequestItems = page.items;
+      renderRequests(page);
+    } else renderEvents(page);
+    activityError(kind); updatePager(kind);
+  }
+  async function loadActivity(kind, action) {
+    const state = activityPages[kind];
+    if (!authenticated || !online || busy || state.loading) return;
+    let index = state.index, cursor = null, snapshot = state.snapshot, latest = false, cursors = [...state.cursors];
+    if (action === "next") {
+      if (!state.page?.has_more) return;
+      index += 1; cursor = state.page.next_cursor; cursors[index] = cursor;
+    } else if (action === "prev") {
+      if (index === 0) return;
+      index -= 1; cursor = cursors[index];
+    } else if (action === "latest") {
+      index = 0; snapshot = null; latest = true; cursors = [null];
+    } else return;
+    const generation = ++state.generation;
+    state.loading = true; activityError(kind); updatePager(kind);
+    try {
+      const page = await api(activityUrl(kind, cursor, snapshot));
+      if (authenticated && generation === state.generation) acceptActivity(kind, page, latest, index, cursors);
+    } catch (error) {
+      if (authenticated && generation === state.generation) activityError(kind, `无法读取该页：${error.message}。原有记录保留，可重试翻页。`);
+    } finally { if (generation === state.generation) { state.loading = false; updatePager(kind); } }
+  }
+  async function autoActivity(kind) {
+    const state = activityPages[kind];
+    if (!state.latest || state.loading) return null;
+    const generation = state.generation;
+    const page = await api(activityUrl(kind));
+    return { page, generation };
+  }
   function renderRequests(data) {
     requestItems = unpack(data, "requests");
-    display("request-count", requestItems.length);
+    display("request-count", data.total == null ? requestItems.length : number(data.total));
     const list = $("request-list"); list.replaceChildren();
     if (!requestItems.length) { list.append(el("div", "empty-state", "尚无源请求记录。")); return; }
     for (const request of requestItems) {
@@ -460,7 +540,7 @@
     }
   }
   function renderEvents(data) {
-    const items = unpack(data, "events"); display("event-count", items.length);
+    const items = unpack(data, "events"); display("event-count", data.total == null ? items.length : number(data.total));
     const list = $("event-list"); list.replaceChildren();
     if (!items.length) { list.append(el("div", "empty-state", "尚无控制事件。")); return; }
     const eventLabels = { job_created: "已保存任务配置", started: "开始采集", start: "开始采集", paused: "任务已暂停", pause: "任务已暂停", blocked: "访问拦截，自动暂停", error: "异常，自动暂停", retry: "已安排单次探测", probe_scheduled: "已安排单次探测", retry_scheduled: "已安排单次探测", probe_success: "探测成功，保持暂停", completed: "任务结束", recovered: "重启恢复，保持暂停" };
@@ -480,12 +560,14 @@
     const generation = statusGeneration;
     polling = true; controls();
     try {
-      const results = await Promise.allSettled([api("status"), api("requests?limit=30"), api("events?limit=20"), api("jobs")]);
+      const results = await Promise.allSettled([api("status"), autoActivity("requests"), autoActivity("events"), api("jobs")]);
       if (!authenticated || generation !== statusGeneration) return;
       const [s, requests, events, jobs] = results;
       if (s.status === "rejected") { setConnection(false); notice(`无法读取本地状态：${s.reason.message}。显示的是最近取得的状态。`, true); return; }
-      if (requests.status === "fulfilled") renderRequests(requests.value);
-      if (events.status === "fulfilled") renderEvents(events.value);
+      for (const [kind, result] of [["requests", requests], ["events", events]]) {
+        if (result.status === "fulfilled" && result.value && activityPages[kind].latest && result.value.generation === activityPages[kind].generation) acceptActivity(kind, result.value.page, true, 0, [null]);
+        else if (result.status === "rejected") activityError(kind, `最新记录暂时无法读取：${result.reason.message}`);
+      }
       lastPoll = Date.now();
       renderStatus(s.value);
       if (jobs.status === "fulfilled") renderJobs(jobs.value);
@@ -613,9 +695,13 @@
   });
   $("start").addEventListener("click", () => { void post("control", { action: "start" }, "已提交开始指令；源请求由服务端按全局间隔安排。"); });
   $("pause").addEventListener("click", () => { void post("control", { action: "pause" }, "已提交暂停指令，队列与响应证据会保留。"); });
-  $("retry").addEventListener("click", () => { renderTiming(); $("retry-dialog").showModal(); });
+  $("retry").addEventListener("click", () => {
+    if (status?.storage_halt) { void post("control", { action: "retry" }, "已提交兼容库写入重试，仅处理本地记录。检查状态后，仍需手动开始源采集。"); return; }
+    renderTiming(); $("retry-dialog").showModal();
+  });
   $("retry-dialog").addEventListener("close", () => { if ($("retry-dialog").returnValue === "confirm") void post("control", { action: "retry" }, "已安排一次探测。发送时间遵守间隔与冷却期，成功后仍暂停。"); });
   $("refresh").addEventListener("click", () => { void poll(); });
+  for (const kind of ["requests", "events"]) for (const action of ["prev", "next", "latest"]) $(`${kind}-${action}`).addEventListener("click", () => { void loadActivity(kind, action); });
   function switchTab(requests) {
     $("requests-tab").setAttribute("aria-selected", String(requests)); $("events-tab").setAttribute("aria-selected", String(!requests));
     $("requests-tab").tabIndex = requests ? 0 : -1; $("events-tab").tabIndex = requests ? -1 : 0;
