@@ -41,4 +41,8 @@ image and service-side build strategy. No remote SSH account or checkout path
 was supplied; do not guess them. Preserve the labelapp namespace/port/data.
 Remote deployment remains unexecuted; use an independent /collector/ route and
 data volume when following the instructions.
+User confirmed labeler uses `git pull && docker compose up -d --build` and
+host nginx with a loopback upstream. Collector uses the same command from
+apps/http_backfill; its compose.yml is auto-discovered, verified with
+`docker compose config --quiet` from that directory. No filename change needed.
 Do not copy laptop partial progress into the production DB.

@@ -38,12 +38,12 @@ python3 -B apps/http_backfill/server.py --host 127.0.0.1 --port 8790
 ```bash
 git clone git@github.com:solio/MyResearcher-DataCollector.git
 cd MyResearcher-DataCollector/apps/http_backfill
-docker compose -f compose.yml up -d --build
-docker compose -f compose.yml ps
+docker compose up -d --build
+docker compose ps
 curl -fsS http://127.0.0.1:8790/healthz
 ```
 
-若服务器已有 Collector checkout，进入该目录 `git pull --ff-only origin main`，再进入 `apps/http_backfill` 执行 Compose 命令即可。健康检查返回 `{"ok": true}`。首启处于暂停状态，不会因健康检查或网页刷新请求股吧。
+若服务器已有 Collector checkout，进入 `MyResearcher-DataCollector/apps/http_backfill` 执行 `git pull && docker compose up -d --build` 即可，与 labeler 的更新方式一致。`compose.yml` 是自动识别的文件名，无需 `-f`；命令要在这个应用目录执行。健康检查返回 `{"ok": true}`。首启处于暂停状态，不会因健康检查或网页刷新请求股吧。
 
 基础镜像默认复用 labelapp 使用的 `fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim`。应用镜像直接在服务器构建，不需要推送镜像仓库；已有私有仓库登录和基础镜像缓存可以沿用。首次应用构建仍需访问 Debian 软件包源安装 curl 和 CA 证书。其他环境可设置 `BACKFILL_BASE_IMAGE=python:3.12-slim` 后运行 Compose。应用没有额外 pip 依赖。
 
@@ -73,7 +73,7 @@ curl -fsS https://testapi.zuzurent.com.cn/collector/healthz
 取出首启自动生成的令牌，在手机打开上述 `/collector/` 网址并填入登录框：
 
 ```bash
-docker compose -f compose.yml exec -T collector-console cat /data/console.token
+docker compose exec -T collector-console cat /data/console.token
 ```
 
 登录后创建股票和日期范围明确的任务，客户端选 curl、间隔选 60 秒，再点击“开始”。关闭手机或 SSH 不影响后台采集。列表和详情共用每分钟一次额度；遇到验证码、限流或异常会暂停。手动“重试一次”只发一次探测，成功后仍需点击“开始”继续。
@@ -81,9 +81,8 @@ docker compose -f compose.yml exec -T collector-console cat /data/console.token
 后续更新：先在控制台暂停，等当前请求结束，再在应用目录执行：
 
 ```bash
-git pull --ff-only origin main
-docker compose -f compose.yml up -d --build
-docker compose -f compose.yml logs --tail=30 collector-console
+git pull && docker compose up -d --build
+docker compose logs --tail=30 collector-console
 ```
 
 重建容器保留宿主机 `data/`；进程重启后任务安全暂停，重新登录并点击“开始”继续。若有未确认的中断请求，会显示错误并要求单次探测。备份时停止服务并整体备份 `data/`，随后启动服务；不要只复制运行中的 SQLite 主文件。后续涉及数据库结构变更的版本应先停服务并备份，代码回退也需要确认数据库格式兼容。
