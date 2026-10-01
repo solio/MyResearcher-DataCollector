@@ -32,7 +32,7 @@ class FleetHTTPTests(unittest.TestCase):
         self.b = self.collector("b", [self.a_row, self.short, self.empty_row], ["共同正文", ""])
         self.hub = self.collector("hub", [], [])
         self.fleet = FleetManager(self.root / "hub", self.hub, auto_sync=False)
-        self.a_url = self.serve(self.a, self.node_token)
+        self.a_url = self.serve(self.a, self.node_token, api_only=True)
         self.b_url = self.serve(self.b, self.node_token)
         self.base = self.serve(self.hub, self.token, self.fleet)
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -64,8 +64,8 @@ class FleetHTTPTests(unittest.TestCase):
             engine.pause()
         return engine
 
-    def serve(self, engine, token, fleet=None):
-        server = ConsoleServer(("127.0.0.1", 0), engine, token, fleet=fleet)
+    def serve(self, engine, token, fleet=None, api_only=False):
+        server = ConsoleServer(("127.0.0.1", 0), engine, token, fleet=fleet, api_only=api_only)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.servers.append((server, thread))
@@ -138,6 +138,50 @@ class FleetHTTPTests(unittest.TestCase):
         self.assertEqual([len(w.calls) for w in self.wires], before)
         for method, path, body in [("POST", "/api/fleet/sync", {}), ("PATCH", "/api/fleet/nodes/a", {"name": "改名"}), ("DELETE", "/api/fleet/nodes/a", None)]:
             self.assertEqual(self.request(path, body, method, origin="https://unrelated.invalid")[0], 403)
+
+    def test_direct_api_only_node_registration_remote_control_and_transfer(self):
+        before = [len(w.calls) for w in self.wires]
+        port = self.servers[0][0].server_port
+        code, node = self.request("/api/fleet/nodes", {"id": "a", "name": "私网无域名节点", "host": "127.0.0.1", "port": port, "token": self.node_token})
+        self.assertEqual(code, 200, node)
+        self.assertEqual((node["connection_mode"], node["host"], node["port"], node["scheme"]), ("direct", "127.0.0.1", port, "http"))
+        self.assertNotIn(self.node_token, json.dumps(node))
+        self.assertEqual(self.request("/api/nodes/a/status")[1]["instance_id"], self.a.status()["instance_id"])
+        self.assertEqual(self.request("/api/nodes/a/control", {"action": "start"})[1]["state"], "running")
+        self.assertEqual(self.request("/api/nodes/a/control", {"action": "pause"})[1]["state"], "paused")
+        self.assertEqual(self.request("/healthz", base=self.a_url, auth=False), (200, {"ok": True}))
+        self.assertEqual(self.request("/", base=self.a_url, auth=False)[0], 404)
+        for method, body in (("GET", None), ("POST", {"token": self.node_token}), ("DELETE", None)):
+            self.assertEqual(self.request("/api/session", body, method, base=self.a_url, token=self.node_token)[0], 404)
+        self.assertEqual(self.servers[0][0].sessions, {})
+        self.assertEqual(self.request("/api/federation/export", base=self.a_url, auth=False)[0], 401)
+        self.synchronize("a", targets=[self.a])
+        self.assertEqual(set(self.merged_rows()), {"9101", "9102"})
+        old_cursor = self.fleet.merge_store.cursor(self.a.status()["instance_id"])
+        self.fleet.close()
+        self.fleet = FleetManager(self.root / "hub", self.hub, auto_sync=False)
+        self.servers[-1][0].fleet = self.fleet
+        restored = self.request("/api/fleet")[1]["nodes"][1]
+        self.assertEqual((restored["connection_mode"], restored["host"], restored["port"]), ("direct", "127.0.0.1", port))
+        self.assertEqual(restored["sync"]["cursor"], old_cursor)
+        self.assertEqual(self.request("/api/nodes/a/status")[0], 200)
+        self.assertEqual([len(w.calls) for w in self.wires], before)
+
+    def test_direct_bad_inputs_return_400_without_registering_or_contacting_source(self):
+        before = [len(w.calls) for w in self.wires]
+        bad = [{"host": "127.0.0.1"}, {"port": 8790}, {"scheme": "http"},
+               {"host": "localhost", "port": 8790}, {"host": "127.0.0.1", "port": True},
+               {"host": "127.0.0.1", "port": "8790"}, {"host": "127.0.0.1", "port": 8790.0},
+               {"host": "127.0.0.1", "port": 65536}, {"host": "127.0.0.1", "port": 8790, "scheme": []},
+               {"host": "127.0.0.1", "port": 8790, "scheme": {}},
+               {"host": "127.0.0.1", "port": 8790, "base_url": self.a_url}]
+        for fields in bad:
+            with self.subTest(fields=fields):
+                code, failure = self.request("/api/fleet/nodes", {"id": "bad", "token": self.node_token, **fields})
+                self.assertEqual(code, 400, failure)
+                self.assertNotIn(self.node_token, json.dumps(failure))
+        self.assertEqual(len(self.fleet.list_nodes()), 1)
+        self.assertEqual([len(w.calls) for w in self.wires], before)
 
     def test_two_instances_merge_overlap_empty_and_missing_body_with_retained_raw(self):
         self.register("a", self.a_url)

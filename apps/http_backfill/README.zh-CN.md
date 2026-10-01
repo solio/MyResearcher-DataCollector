@@ -54,7 +54,9 @@ python3 -B apps/http_backfill/server.py --host 127.0.0.1 --port 8790
 
 ## 多实例统一控制与合并
 
-现有服务器可以同时作为采集实例和中央服务，无需迁移原任务。打开 `/collector/` 的“采集实例”区域，登记其他服务器的实例 ID、名称、服务地址和访问密钥；当前支持本机加最多 16 台远程实例。服务地址是中央服务器能够访问的采集服务根地址，例如已有 HTTPS 入口的 `https://<采集机域名>/collector/`，或者明确配置的内网地址 `http://<采集机内网IP>:8790/`。
+现有服务器可以同时作为采集实例和中央服务，无需迁移原任务。手机只打开中央服务器的 `/collector/`。在“采集实例”区域登记其他服务器的实例别名、名称、**IP、端口和访问密钥**，协议默认 HTTP；当前支持本机加最多 16 台远程实例。例如填 IP `10.0.0.12`、端口 `8790`，中央服务直接访问该机的鉴权 API。采集节点不需要域名、nginx 或单独供手机访问的前端。
+
+填写中央服务器能够访问的 IP，可以用同一 VPC/可路由内网的私有地址。安全组/防火墙只需放行中央服务器到采集节点这个 TCP 端口；手机不需要访问节点端口。登记表单的高级“服务 URL”方式保留已有 HTTPS/nginx 路径入口，例如 `https://<已有域名>/collector/`，原登记无需改写。新节点部署命令见下方“只运行采集 API 的节点”。
 
 v5 中央服务支持 v4/v5 采集实例逐台升级；先升级中央服务，再升级其他节点。要删除某节点的旧任务库，在该节点执行迁移命令。登记时中央服务先验证版本和持久化 UUID，同一个实例不能重复登记；复制原 `data/` 会复制实例身份，不能当作新的独立采集机。登记已有独立运行实例可保留它的数据与任务；全新采集机使用自己的空 `data/`。修改登记时访问密钥留空会保留旧密钥；更换密钥后重新验证连接。密钥只存中央服务的私有 `data/fleet/registry.json`（0600），不返回浏览器、不写浏览器本地存储。
 
@@ -155,11 +157,39 @@ python3 -B apps/http_backfill/migrate_storage.py --data-dir apps/http_backfill/d
 
 同样的 nginx 片段保存在 [deploy/nginx.conf.example](deploy/nginx.conf.example)。
 
-新增采集机同样在 `apps/http_backfill` 执行 `git pull && docker compose up -d --build`。默认端口仍只绑定 `127.0.0.1:8790`，通过该服务器已有的 HTTPS nginx `/collector/` 入口连接；原 nginx 片段可以复用。若使用内网直连，在该采集机本地 `.env` 设置 `BACKFILL_BIND_ADDRESS` 为实际内网 IP 后重建容器，中央控制台登记该内网 URL。默认值保持 `127.0.0.1`，不会因升级自动开放公网端口。
+### 只运行采集 API 的节点
 
-中央服务器保留默认 `BACKFILL_FLEET_SYNC_ENABLED=1`。仅作为远程采集机、无需再建立自己的汇总副本时，可在该机本地 `.env` 设置 `BACKFILL_FLEET_SYNC_ENABLED=0` 后执行原 Compose 更新命令；导出接口和远程控制继续工作，显式本地同步也仍可使用。分别取出每台采集机自己的 `/data/console.token`，在中央网页登记，无需在手机上登录每台机器。
+节点只启动 Docker 采集服务，使用自己的数据目录和自动生成的访问密钥，不配置域名或 nginx。在节点的 `apps/http_backfill` 目录创建本地 `.env`，以下 `10.0.0.12` 必须替换为**这台节点实际拥有的内网 IP**：
 
-新增接口均需现有控制台鉴权：`GET api/fleet` 查看实例与汇总状态，`POST api/fleet/nodes` 登记，`PATCH/DELETE api/fleet/nodes/{id}` 修改/移除，`POST api/fleet/sync` 以 `{node_id:"all"}` 或指定实例安排后台同步。`api/nodes/{id}/...` 转发受限的现有采集接口；`GET api/federation/export` 与 `GET api/federation/raw` 提供可校验的增量证据。所有转发都在服务器端完成，浏览器不直接连接采集机，也无需跨域配置。
+```dotenv
+BACKFILL_BIND_ADDRESS=10.0.0.12
+BACKFILL_PORT=8790
+BACKFILL_API_ONLY=1
+BACKFILL_FLEET_SYNC_ENABLED=0
+```
+
+示例也保存在 [deploy/node.env.example](deploy/node.env.example)，可复制为 `.env` 后修改 IP。`BACKFILL_PORT` 是宿主机端口，容器内仍用 8790。`BACKFILL_API_ONLY=1` 关闭节点的静态网页和浏览器登录，只保留鉴权 API 与健康检查；`BACKFILL_FLEET_SYNC_ENABLED=0` 关闭该节点自身的后台汇总，主控仍能控制和读取其数据。`.env` 保留在节点本地，后续更新命令会继续使用它。
+
+新节点运行：
+
+```bash
+git pull && docker compose up -d --build
+docker compose exec -T collector-console cat /data/console.token
+```
+
+已有 v1–v4 数据的节点先执行 `git pull && bash migrate-storage.sh`，完成单库迁移；已有 v5 数据使用上述普通更新命令。全新节点保持暂停，登记不会自动开始来源请求。
+
+在主控服务器验证到节点的网络连通：
+
+```bash
+curl --connect-timeout 3 --max-time 5 -fsS http://10.0.0.12:8790/healthz
+```
+
+返回 `{"ok": true}` 后，在**中央手机网页**点“登记远端实例”，填这个 IP、端口、节点令牌。股票/日期、开始/暂停、历史查看和增量合并全部在中央网页操作；节点不用再登记主控地址。主控负责向节点发起连接，所以安全组放行的是主控到节点，而不是手机到节点。主控与节点必须已有可路由网络连接；没有路由或端口被防火墙拦截时，控制台会显示连接错误。
+
+中央服务器继续使用默认 `BACKFILL_API_ONLY=0`、`BACKFILL_FLEET_SYNC_ENABLED=1` 和原 `127.0.0.1:8790`/nginx 配置；本次升级无需修改中央 nginx。
+
+新增接口均需现有控制台鉴权：`GET api/fleet` 查看实例与汇总状态，`POST api/fleet/nodes` 登记，`PATCH/DELETE api/fleet/nodes/{id}` 修改/移除，`POST api/fleet/sync` 以 `{node_id:"all"}` 或指定实例安排后台同步。直接登记请求使用 `{id,name,host,port,scheme,token}`，`host` 为裸 IPv4/IPv6、`port` 为 1–65535 整数、`scheme` 默认 `http`；旧 `{id,name,base_url,token}` 接口继续兼容，不能同时提交两种地址。`api/nodes/{id}/...` 转发受限的现有采集接口；`GET api/federation/export` 与 `GET api/federation/raw` 提供可校验的增量证据。所有转发都在服务器端完成，浏览器不直接连接采集机，也无需跨域配置。
 
 不用 Docker 时可用 [deploy/collector-console.service](deploy/collector-console.service)，按实际路径与服务用户修改模板，准备可写的数据目录并安装系统 curl（如果选 curl 客户端）。服务和网页可重启，数据与暂停原因均持久化。
 

@@ -1,5 +1,26 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-01 direct IP/port collector registration
+
+The user clarifies that additional collectors have no nginx/domain and may only
+be reachable over a private server network. One public H5 on the hub is enough.
+The primary registration form accepts a collector IP, port and HTTP/HTTPS scheme
+(HTTP by default), plus alias/name/token. The hub constructs the API root and
+performs all authenticated control and evidence transfer server-to-server.
+The phone never connects to node addresses. Retain an advanced base-URL option
+for already registered nginx path prefixes; existing identities/cursors remain.
+Validate IPv4/IPv6 and integer ports, reject malformed or ambiguous mixed input,
+and preserve existing credential/redirect/error handling.
+
+Compose permits the collector's actual private bind IP and host port without
+nginx or domain setup. An optional API-only mode suppresses static H5/login
+surfaces on collectors while retaining authenticated control/export and health.
+Only the hub needs the existing /collector/ HTTPS route. Document a concrete
+node deployment and central-only registration, with security-group access from
+the hub to that port. The hub must have a routable connection; the application
+does not bypass firewall rules. Verify direct IP/port registration, restart,
+remote control, transfer, old URL compatibility and API-only serving offline.
+
 ## 2026-10-01 post identity and detail-counter clarification
 
 The user flags misleading counters that present list text and detail bodies as

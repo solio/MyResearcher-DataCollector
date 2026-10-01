@@ -8,6 +8,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -62,6 +63,41 @@ def normalize_base_url(value):
         hostname = "[" + hostname + "]"
     authority = hostname + (f":{port}" if port is not None else "")
     return urlunparse((parsed.scheme.lower(), authority, parsed.path.rstrip("/"), "", "", ""))
+
+
+def direct_base_url(host, port, scheme="http"):
+    """Build a root URL only from an IP literal and an explicit integer port."""
+    if not isinstance(host, str) or not host or host != host.strip() or "%" in host:
+        raise ValueError("host 必须是 IPv4 或 IPv6 地址，不能含域名、空白或区域标识")
+    if host.startswith("[") or host.endswith("]"):
+        if not (host.startswith("[") and host.endswith("]") and ":" in host[1:-1]):
+            raise ValueError("host 的 IPv6 括号不完整")
+        host = host[1:-1]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError as exc:
+        raise ValueError("host 必须是完整 IPv4 或 IPv6 地址，不能含协议、端口、路径或凭据") from exc
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError("port 必须是 1–65535 的整数")
+    if not isinstance(scheme, str) or scheme not in {"http", "https"}:
+        raise ValueError("scheme 必须是 http 或 https")
+    authority = f"[{address}]" if address.version == 6 else str(address)
+    return f"{scheme}://{authority}:{port}"
+
+
+def connection_fields(base_url, local=False):
+    """Derive public edit fields; old registry URLs need no data migration."""
+    result = {"connection_mode": "local" if local else "url", "host": None, "port": None, "scheme": None}
+    if local or base_url is None:
+        return result
+    parsed = urlparse(base_url)
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return result
+    if not parsed.path and parsed.port is not None and "%" not in str(address):
+        result.update(connection_mode="direct", host=str(address), port=parsed.port, scheme=parsed.scheme)
+    return result
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -235,6 +271,13 @@ class FleetManager:
             return {self._redact(str(k), extra): self._redact(v, extra) for k, v in value.items()}
         return value
 
+    @staticmethod
+    def _connection_hint(node):
+        parsed = urlparse(node["base_url"])
+        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        return f"请从中央服务器检查到 {host}:{port} 的连接、节点监听及安全组/防火墙准入"
+
     def _remote(self, node, method, path, body=None, query=None):
         url = node["base_url"] + "/" + path.lstrip("/")
         if query:
@@ -243,9 +286,12 @@ class FleetManager:
             result = self.client.request(method, url, node["token"], body)
             return self._redact(result, (node["token"],))
         except FleetError as exc:
-            raise FleetError(exc.status_code, self._redact(exc.error, (node["token"],))[:2000], exc.ambiguous) from None
-        except Exception as exc:
-            raise FleetError(502, "节点请求失败；请检查连接", method != "GET") from None
+            error = exc.error
+            if exc.status_code in {502, 504}:
+                error += "；" + self._connection_hint(node)
+            raise FleetError(exc.status_code, self._redact(error, (node["token"],))[:2000], exc.ambiguous) from None
+        except Exception:
+            raise FleetError(502, self._redact("节点请求失败；" + self._connection_hint(node), (node["token"],)), method != "GET") from None
 
     def _node(self, alias):
         key = _alias(alias)
@@ -258,15 +304,21 @@ class FleetManager:
 
     def _public(self, node):
         return self._redact({k: node.get(k) for k in ("id", "name", "base_url", "instance_id", "version", "local")}
-                            | {"alias": node["id"], "token_configured": not node.get("local", False)})
+                            | {"alias": node["id"], "token_configured": not node.get("local", False)}
+                            | connection_fields(node.get("base_url"), node.get("local", False)))
 
     def list_nodes(self):
         with self._lock:
             return [self._public(self._local)] + [self._public(n) for n in self._nodes.values()]
 
     def register(self, config):
-        if not isinstance(config, dict) or set(config) - {"id", "alias", "name", "base_url", "token"}:
-            raise ValueError("实例配置只允许 id、name、base_url、token")
+        if not isinstance(config, dict) or set(config) - {"id", "alias", "name", "base_url", "token", "host", "port", "scheme"}:
+            raise ValueError("实例配置只允许 id、alias、name、base_url、host、port、scheme、token")
+        direct = bool(set(config) & {"host", "port", "scheme"})
+        if direct and "base_url" in config:
+            raise ValueError("base_url 不能与 host、port、scheme 混用")
+        if direct and not {"host", "port"}.issubset(config):
+            raise ValueError("直连节点必须同时提供 host 和 port；scheme 不能单独修改")
         key = _alias(config.get("id", config.get("alias")))
         if key == "local" or (config.get("id") and config.get("alias") and config["id"] != config["alias"]):
             raise ValueError("local 为本机保留 ID，或 id/alias 不一致")
@@ -276,7 +328,8 @@ class FleetManager:
                 raise RuntimeError("实例管理器已关闭")
             if prior is None and len(self._nodes) >= MAX_NODES:
                 raise ValueError(f"最多注册 {MAX_NODES} 个远程实例")
-        url = normalize_base_url(config.get("base_url", (prior or {}).get("base_url")))
+        url = (direct_base_url(config["host"], config["port"], config.get("scheme", "http")) if direct
+               else normalize_base_url(config.get("base_url", (prior or {}).get("base_url"))))
         token = self._token(config.get("token", (prior or {}).get("token")))
         name = config.get("name", (prior or {}).get("name", key))
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 80 or any(ord(c) < 32 for c in name):

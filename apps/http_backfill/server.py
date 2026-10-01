@@ -27,9 +27,10 @@ from activity import activity_page, activity_query
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, engine, token, cookie_path="/", fleet=None):
+    def __init__(self, address, engine, token, cookie_path="/", fleet=None, api_only=False):
         super().__init__(address, Handler)
         self.engine = engine
+        self.api_only = bool(api_only)
         self.token_digest = hashlib.sha256(token.encode()).digest()
         self.sessions = {}
         self.session_lock = threading.Lock()
@@ -67,6 +68,8 @@ class Handler(BaseHTTPRequestHandler):
         bearer = self.headers.get("Authorization", "")
         if bearer.startswith("Bearer ") and self.server.token_valid(bearer[7:]):
             return True
+        if self.server.api_only:
+            return False
         jar = cookies.SimpleCookie()
         try:
             jar.load(self.headers.get("Cookie", ""))
@@ -192,11 +195,13 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path).lstrip("/")
         if path == "healthz":
             return self.send(200, {"ok": True})
+        if self.server.api_only and (path == "api/session" or not path.startswith("api/")):
+            return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})
         if path == "api/session":
             return self.send(200, {"authenticated": self.authenticated()})
         if path.startswith("api/"):
             if not self.authenticated():
-                return self.send(401, {"error": "请先登录控制台"})
+                return self.send(401, {"error": "节点 API 需要有效 Bearer 令牌" if self.server.api_only else "请先登录控制台"})
             try:
                 query = parse_qs(parsed.query, keep_blank_values=True)
                 if self.fleet_route("GET", path, query=query) or self.export_route(path, query):
@@ -230,9 +235,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, asset.read_bytes(), content_type)
 
     def do_POST(self):
+        path = unquote(urlparse(self.path).path).lstrip("/")
+        if self.server.api_only and (path == "api/session" or not path.startswith("api/")):
+            return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})
         if not self.origin_valid():
             return self.send(403, {"error": "跨站控制请求已拒绝"})
-        path = urlparse(self.path).path.lstrip("/")
         try:
             obj = self.read_json()
             if path == "api/session":
@@ -244,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.sessions[session] = time.time() + 43200
                 return self.send(200, {"authenticated": True}, headers={"Set-Cookie": self.cookie(session, 43200)})
             if not self.authenticated():
-                return self.send(401, {"error": "请先登录控制台"})
+                return self.send(401, {"error": "节点 API 需要有效 Bearer 令牌" if self.server.api_only else "请先登录控制台"})
             if self.fleet_route("POST", path, obj=obj):
                 return
             if path == "api/jobs":
@@ -263,10 +270,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send(409, {"error": str(exc)})
 
     def do_PATCH(self):
+        path = unquote(urlparse(self.path).path).lstrip("/")
+        if self.server.api_only and path == "api/session":
+            return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})
         if not self.origin_valid():
             return self.send(403, {"error": "跨站控制请求已拒绝"})
         if not self.authenticated():
-            return self.send(401, {"error": "请先登录控制台"})
+            return self.send(401, {"error": "节点 API 需要有效 Bearer 令牌" if self.server.api_only else "请先登录控制台"})
         path = unquote(urlparse(self.path).path).lstrip("/")
         if path.startswith("api/fleet/") or path.startswith("api/nodes/"):
             try:
@@ -285,17 +295,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send(409, {"error": str(exc)})
 
     def do_DELETE(self):
+        path = unquote(urlparse(self.path).path).lstrip("/")
+        if self.server.api_only and path == "api/session":
+            return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})
         if not self.origin_valid():
             return self.send(403, {"error": "跨站请求已拒绝"})
         path = unquote(urlparse(self.path).path).lstrip("/")
         if path.startswith("api/fleet/") or path.startswith("api/nodes/"):
             if not self.authenticated():
-                return self.send(401, {"error": "请先登录控制台"})
+                return self.send(401, {"error": "节点 API 需要有效 Bearer 令牌" if self.server.api_only else "请先登录控制台"})
             self.fleet_route("DELETE", path)
             return
         if path == "api/jobs/current" or path.startswith("api/jobs/current/stocks/"):
             if not self.authenticated():
-                return self.send(401, {"error": "请先登录控制台"})
+                return self.send(401, {"error": "节点 API 需要有效 Bearer 令牌" if self.server.api_only else "请先登录控制台"})
             try:
                 if path == "api/jobs/current":
                     self.server.engine.delete_job()
@@ -328,6 +341,14 @@ def main():
     p.add_argument("--data-dir", type=Path, default=HERE / "data")
     p.add_argument("--token-file", type=Path)
     args = p.parse_args()
+    api_only = os.environ.get("BACKFILL_API_ONLY", "0")
+    if api_only not in {"0", "1"}:
+        p.error("BACKFILL_API_ONLY 必须为 0 或 1")
+    sync_enabled = os.environ.get("BACKFILL_FLEET_SYNC_ENABLED", "1")
+    if sync_enabled not in {"0", "1"}:
+        p.error("BACKFILL_FLEET_SYNC_ENABLED 必须为 0 或 1")
+    if not 1 <= args.port <= 65535:
+        p.error("--port 必须为 1–65535 的整数")
     args.data_dir.mkdir(parents=True, exist_ok=True)
     token_file = args.token_file or args.data_dir / "console.token"
     token = os.environ.get("BACKFILL_TOKEN")
@@ -340,12 +361,9 @@ def main():
         token = token_file.read_text().strip()
     if len(token) < 24:
         p.error("访问令牌至少 24 个字符；使用自动生成的 token 文件或 BACKFILL_TOKEN")
-    sync_enabled = os.environ.get("BACKFILL_FLEET_SYNC_ENABLED", "1")
-    if sync_enabled not in {"0", "1"}:
-        p.error("BACKFILL_FLEET_SYNC_ENABLED 必须为 0 或 1")
     engine = Engine(args.data_dir)
     fleet = FleetManager(args.data_dir, engine, auto_sync=sync_enabled == "1")
-    srv = ConsoleServer((args.host, args.port), engine, token, os.environ.get("BACKFILL_COOKIE_PATH", "/"), fleet=fleet)
+    srv = ConsoleServer((args.host, args.port), engine, token, os.environ.get("BACKFILL_COOKIE_PATH", "/"), fleet=fleet, api_only=api_only == "1")
     stopped = threading.Event()
 
     def worker():
@@ -377,7 +395,8 @@ def main():
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    print(f"控制台 http://{args.host}:{args.port}/，初始任务状态 {engine.status()['state']}；访问令牌文件 {token_file}", flush=True)
+    surface = "仅 API 节点" if api_only == "1" else "控制台"
+    print(f"{surface} http://{args.host}:{args.port}/，初始任务状态 {engine.status()['state']}；访问令牌文件 {token_file}", flush=True)
     try:
         srv.serve_forever(poll_interval=0.5)
     finally:

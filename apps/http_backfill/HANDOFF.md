@@ -2,6 +2,48 @@
 
 Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: one hub, collectors registered by IP/port
+
+The user clarifies that remote collectors do not have domains/nginx and may
+only expose a private server port. H5 registration defaults to host IP, integer
+port and HTTP scheme, and sends those fields to the hub. All controls and
+evidence transfer remain authenticated server-to-server; the phone talks only
+to the hub. Existing base_url/path-prefix registrations remain compatible.
+Public connection fields are derived from existing registry URLs, preserving
+UUID pinning, private tokens and transfer cursors without a data migration.
+
+Collector Compose supports BACKFILL_BIND_ADDRESS (actual private interface IP),
+BACKFILL_PORT (host port), BACKFILL_API_ONLY=1 and existing
+BACKFILL_FLEET_SYNC_ENABLED=0. API-only collectors do not serve H5 or browser
+sessions, but retain Bearer-authenticated control/export and /healthz. Only the
+hub needs the existing public HTTPS /collector/ nginx location. Copy/edit
+deploy/node.env.example as the node's local .env; keep each node's own data/UUID.
+The network/security group must permit the hub to reach the node port; no public
+node domain or phone-to-node connection is required. README has exact steps.
+
+Offline validation PASS with ResourceWarning treated as errors: fleet 20,
+real authenticated three-server HTTP 6, actual app.js UI 12, server 11 and
+activity/pagination 6 (55 total). The actual API-only node is registered by
+IP/port, controlled/exported/merged through the hub, and survives registry/cursor
+reopen; malformed/mixed addresses return 400 without a node/source request.
+Real 390x844 browser validation registered an isolated API-only node through
+the H5 and reopened its direct fields with an empty token input; document width
+is 390 and the dialog fits. Local demonstration screenshot is retained at
+runtime/screenshots/http-backfill-ipport-mobile-20261001.png (ignored by Git).
+Compose's resolved node config verifies private host IP, alternate host port,
+fixed container port 8790, API-only=1 and node automatic merge=0. JavaScript
+syntax and diff whitespace checks pass. No live source traffic or remote
+deployment was performed; temporary UI servers/databases were removed and
+the temporary browser viewport override reset.
+
+The previously untracked research run was organized separately: reports and
+small evidence summaries are repository memory; full raw/JSONL/database exports
+and historical diagnostic scripts were SHA-verified and archived outside Git.
+See runs/guba-http-research-20260930/EVIDENCE-ARCHIVE.md. Its current handoff now
+records the genuine request-78 challenge and incomplete backfill rather than
+the stale preliminary PASS. Production/runtime data and the paused local pilot
+were not moved or migrated by this cleanup.
+
 ## Latest correction: post counts and enrichment subsets
 
 The user flags the misleading stock counters “window posts 293 / list text 241 /
@@ -216,9 +258,10 @@ executed here: no remote access credentials or verified checkout path were
 provided. README.zh-CN.md supplies the one-command migration wrapper and standalone CLI. Existing /collector/ nginx, loopback
 port 8790, bind-mounted data and token remain compatible. Startup is paused;
 the user continues after inspecting the upgraded task.
-Other servers deploy the same app, expose their verified HTTPS nginx endpoint or
-an explicitly configured private BACKFILL_BIND_ADDRESS, and register through the
-hub H5. Each keeps its own data directory/UUID. Their stock/date jobs are configured
+Other servers deploy the same app with their explicitly configured private
+BACKFILL_BIND_ADDRESS/host port and register IP/port/token through the hub H5;
+nginx/domain setup is only required for the existing public hub. Old node HTTPS
+path endpoints remain compatible. Each keeps its own data directory/UUID. Their stock/date jobs are configured
 individually in the one hub view; no automatic global job partitioning or source
 request failover is implemented or claimed.
 

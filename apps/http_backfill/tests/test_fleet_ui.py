@@ -32,6 +32,7 @@ function response(data,code=200){return {ok:code>=200&&code<300,status:code,head
 function deferred(predicate){let resolve;const promise=new Promise(r=>resolve=r);const hold={predicate,promise,resolve,used:false};holds.push(hold);return hold;}
 async function fetch(url,opt={}){
   const u=new URL(url),name=u.pathname.replace('/collector/api/',''),method=opt.method||'GET';
+  assert.strictEqual(u.origin,'http://localhost','phone must only call the hub, never the collector IP');
   const call={name,method,query:u.search,payload:opt.body?JSON.parse(opt.body):undefined};calls.push(call);
   const hold=holds.find(h=>!h.used&&h.predicate(call));if(hold){hold.used=true;return await hold.promise;}
   const failure=failures.get(name);if(failure)return response({error:failure.error,ambiguous:failure.ambiguous===true},failure.code);
@@ -142,8 +143,8 @@ t.requestSelection('alpha');ids['switch-node-dialog'].close('confirm');await tic
     def test_tokens_are_write_only_omitted_when_unchanged_and_cleared(self):
         self.run_ui(r"""
 const t=await ready(),node=fleet.nodes.find(n=>n.id==='alpha');
-t.openNodeForm(node);assert.strictEqual(ids['node-token'].value,'');assert.strictEqual(ids['node-token'].required,false);
-await trigger('node-form','submit');const unchanged=calls.find(c=>c.method==='PATCH');assert.strictEqual(unchanged.name,'fleet/nodes/alpha');assert(!Object.hasOwn(unchanged.payload,'token'));assert.strictEqual(ids['node-token'].value,'');
+t.openNodeForm(node);assert.strictEqual(ids['node-token'].value,'');assert.strictEqual(ids['node-token'].required,false);assert.strictEqual(ids['node-connect-mode'].value,'url');assert.strictEqual(ids['node-direct-fields'].disabled,true);
+await trigger('node-form','submit');const unchanged=calls.find(c=>c.method==='PATCH');assert.strictEqual(unchanged.name,'fleet/nodes/alpha');assert.strictEqual(unchanged.payload.base_url,node.base_url);assert(!Object.hasOwn(unchanged.payload,'host'));assert(!Object.hasOwn(unchanged.payload,'token'));assert.strictEqual(ids['node-token'].value,'');
 const secret=crypto.randomBytes(24).toString('hex');t.openNodeForm(node);ids['node-token'].value=secret;failures.set('fleet/nodes/alpha',{code:502,error:'意外错误 '+secret});await trigger('node-form','submit');
 assert.strictEqual(ids['node-token'].value,'');assert(!text(ids['node-form-error']).includes(secret));assert(!text(ids.notice).includes(secret));assert(text(ids['node-form-error']).includes('[已隐藏密钥]'));
 failures.delete('fleet/nodes/alpha');t.openNodeForm(node);ids['node-token'].value=secret;await trigger('cancel-node','click');assert.strictEqual(ids['node-token'].value,'');assert(!ids['node-dialog'].open);
@@ -152,12 +153,37 @@ assert(!source.includes('localStorage'));assert(!calls.some(c=>c.name.includes('
 
     def test_registration_sync_and_removal_never_issue_source_controls(self):
         self.run_ui(r"""
-const t=await ready();t.openNodeForm();ids['node-id'].value='gamma';ids['node-name'].value='备用实例';ids['node-url'].value='https://gamma.invalid/collector/';ids['node-token'].value=crypto.randomBytes(24).toString('hex');await trigger('node-form','submit');assert.strictEqual(ids['node-token'].value,'');
+const t=await ready();t.openNodeForm();assert.strictEqual(ids['node-connect-mode'].value,'direct');assert.strictEqual(ids['node-port'].value,'8790');assert.strictEqual(ids['node-scheme'].value,'http');assert.strictEqual(ids['node-url-fields'].disabled,true);ids['node-id'].value='gamma';ids['node-name'].value='备用实例';ids['node-host'].value='10.0.0.12';ids['node-token'].value=crypto.randomBytes(24).toString('hex');await trigger('node-form','submit');assert.strictEqual(ids['node-token'].value,'');
 await trigger('sync-fleet','click');await tick();
 await t.switchNode('alpha');t.confirmNodeRemoval(fleet.nodes.find(n=>n.id==='alpha'));ids['remove-node-dialog'].close('confirm');await tick();await tick();await tick();
 assert.strictEqual(t.get().selectedNode,'local');assert(!calls.some(c=>c.name.includes('control')));
 const mutations=calls.filter(c=>c.method!=='GET');assert.deepStrictEqual(mutations.map(c=>c.name),['fleet/nodes','fleet/sync','fleet/nodes/alpha']);assert.deepStrictEqual(mutations[1].payload,{node_id:'all'});assert.strictEqual(mutations[2].method,'DELETE');
+assert.strictEqual(mutations[0].payload.host,'10.0.0.12');assert.strictEqual(mutations[0].payload.port,8790);assert.strictEqual(mutations[0].payload.scheme,'http');assert(!Object.hasOwn(mutations[0].payload,'base_url'));
 assert.strictEqual(ids['fleet-nodes'].children.length,3,'overview DOM bounded to registered nodes');
+""")
+
+    def test_direct_registration_rejects_invalid_ip_port_and_scheme_before_fetch(self):
+        self.run_ui(r"""
+const t=await ready();t.openNodeForm();ids['node-id'].value='gamma';ids['node-name'].value='采集机';ids['node-token'].value=crypto.randomBytes(24).toString('hex');
+for(const host of ['', 'collector.example', 'http://10.0.0.12', '10.0.0.12:8790', '256.0.0.1', '10.00.0.12', '[10.0.0.12]', 'fd00::gg', 'fd00::2%eth0']){ids['node-host'].value=host;await trigger('node-form','submit');assert(ids['node-form-error'].textContent.includes('IPv4 或 IPv6'));}
+ids['node-host'].value='10.0.0.12';for(const port of ['0','65536','1.5','1e3','8790abc']){ids['node-port'].value=port;await trigger('node-form','submit');assert(ids['node-form-error'].textContent.includes('1 到 65535 的整数'));}
+ids['node-port'].value='8790';ids['node-scheme'].value='ftp';await trigger('node-form','submit');assert(ids['node-form-error'].textContent.includes('HTTP 或 HTTPS'));assert(!calls.some(c=>c.method!=='GET'),'bad inputs must not submit any registration or source control');
+""")
+
+    def test_direct_edit_uses_public_metadata_and_preserves_identity_and_token(self):
+        self.run_ui(r"""
+const t=await ready(),old={id:'alpha',instance_id:'alpha-uuid',base_url:'http://10.0.0.12:8790/',name:'采集机'};
+t.openNodeForm(old);assert.strictEqual(ids['node-connect-mode'].value,'direct');assert.strictEqual(ids['node-host'].value,'10.0.0.12');assert.strictEqual(ids['node-port'].value,'8790');assert.strictEqual(ids['node-scheme'].value,'http');
+t.openNodeForm({...old,connection_mode:'direct',host:'10.0.0.12',port:8443,scheme:'https'});assert.strictEqual(ids['node-port'].value,'8443');assert.strictEqual(ids['node-scheme'].value,'https');assert.strictEqual(ids['node-token'].value,'');assert.strictEqual(ids['node-id'].disabled,true);
+await trigger('node-form','submit');const edited=calls.find(c=>c.method==='PATCH');assert.deepStrictEqual(edited.payload,{id:'alpha',name:'采集机',host:'10.0.0.12',port:8443,scheme:'https'});assert.strictEqual(edited.name,'fleet/nodes/alpha');assert.strictEqual(old.instance_id,'alpha-uuid');assert(!calls.some(c=>c.name.includes('control')));
+t.openNodeForm({...old,base_url:'http://10.0.0.12:8790/collector/'});assert.strictEqual(ids['node-connect-mode'].value,'url');assert.strictEqual(ids['node-url'].value,'http://10.0.0.12:8790/collector/');assert.strictEqual(ids['node-host'].required,false);
+""")
+
+    def test_ipv6_registration_submits_bare_literal_and_switch_to_advanced_url(self):
+        self.run_ui(r"""
+const t=await ready();for(const [input,expected] of [['fd00::2','fd00::2'],['[2001:db8::2]','2001:db8::2']]){t.openNodeForm();ids['node-id'].value='gamma';ids['node-name'].value='IPv6采集机';ids['node-host'].value=input;ids['node-token'].value=crypto.randomBytes(24).toString('hex');await trigger('node-form','submit');const registration=calls.filter(c=>c.method==='POST'&&c.name==='fleet/nodes').at(-1);assert.strictEqual(registration.payload.host,expected);assert.strictEqual(registration.payload.port,8790);assert.strictEqual(registration.payload.scheme,'http');assert(!Object.hasOwn(registration.payload,'base_url'));assert.strictEqual(ids['node-token'].value,'');}
+t.openNodeForm({id:'alpha',name:'IPv6采集机',base_url:'http://[fd00::2]:8790/'});assert.strictEqual(ids['node-connect-mode'].value,'direct');assert.strictEqual(ids['node-host'].value,'fd00::2');
+ids['node-connect-mode'].value='url';await trigger('node-connect-mode','change');assert.strictEqual(ids['node-direct-fields'].disabled,true);assert.strictEqual(ids['node-url-fields'].disabled,false);ids['node-url'].value='https://alpha.invalid/collector/';await trigger('node-form','submit');const edited=calls.filter(c=>c.method==='PATCH').at(-1);assert.deepStrictEqual(edited.payload,{id:'alpha',name:'IPv6采集机',base_url:'https://alpha.invalid/collector/'});assert(!Object.hasOwn(edited.payload,'host'));assert(!Object.hasOwn(edited.payload,'port'));
 """)
 
     def test_remote_error_preserves_hub_session_and_other_nodes(self):

@@ -171,7 +171,7 @@
       const config = state.job?.config || state.config;
       if (config) card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
       if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复采集数据库写入。" : "保留来源阻断，需在该实例明确安排一次探测。"));
-      if (node.last_error) card.append(el("p", "node-error", `连接错误：${textValue(node.last_error)}。这不等于来源采集失败。`));
+      if (node.last_error) card.append(el("p", "node-error", `主控到节点的连接错误：${textValue(node.last_error)}。请检查主控到采集机的网络、端口和安全组；这不等于来源采集失败。`));
       const sync = objectValue(node.sync), labels = { idle: "等待同步", syncing: "正在同步", error: "同步异常", ready: "已同步" };
       card.append(el("p", "node-sync", `${labels[sync.state] || "同步状态尚未取得"} · 游标 ${number(first(sync, ["cursor", "last_cursor", "last_seq"], data.merge?.cursors?.[node.instance_id]))} · 最近状态 ${time(node.last_seen_at)}${sync.last_synced_at ? " · 最近同步 " + time(sync.last_synced_at) : ""}`));
       if (sync.error) card.append(el("p", "node-error", `同步错误：${textValue(sync.error)}`));
@@ -227,11 +227,41 @@
     if (fleetData) renderFleet(fleetData); else $("selected-node").value = id;
     await poll(); return true;
   }
+  function nodeHost(value) {
+    let host = value.trim();
+    if (/^\[[^\]]+\]$/.test(host)) { if (!host.includes(":")) return null; host = host.slice(1, -1); }
+    if (host.includes(":")) {
+      if (!/^[0-9a-fA-F:.]+$/.test(host)) return null;
+      try { new URL(`http://[${host}]/`); return host; } catch { return null; }
+    }
+    const parts = host.split(".");
+    return parts.length === 4 && parts.every((part) => /^(0|[1-9][0-9]{0,2})$/.test(part) && Number(part) <= 255) ? host : null;
+  }
+  function nodeConnectionMode(mode = $("node-connect-mode").value) {
+    const direct = mode === "direct";
+    $("node-connect-mode").value = direct ? "direct" : "url";
+    $("node-direct-fields").hidden = !direct; $("node-direct-fields").disabled = !direct;
+    $("node-url-fields").hidden = direct; $("node-url-fields").disabled = direct;
+    $("node-host").required = direct; $("node-port").required = direct; $("node-url").required = !direct;
+  }
   function openNodeForm(node = null) {
     if (busy) return;
     editingNode = node ? String(first(node, ["id", "alias"])) : null;
     display("node-dialog-title", node ? "编辑实例登记" : "登记远端实例"); display("save-node", node ? "保存登记修改" : "登记实例");
     $("node-id").value = editingNode || ""; $("node-id").disabled = !!node; $("node-name").value = node?.name || ""; $("node-url").value = node?.base_url || ""; $("node-token").value = ""; $("node-token").required = !node;
+    $("node-host").value = ""; $("node-port").value = "8790"; $("node-scheme").value = "http";
+    let mode = node ? "url" : "direct";
+    if (node?.connection_mode === "direct" && nodeHost(node.host || "") && Number.isInteger(node.port)) {
+      mode = "direct"; $("node-host").value = nodeHost(node.host); $("node-port").value = String(node.port); $("node-scheme").value = node.scheme || "http";
+    } else if (node?.base_url && node.connection_mode !== "url") {
+      try {
+        const url = new URL(node.base_url), host = nodeHost(url.hostname);
+        if (host && url.port && url.pathname === "/" && !url.search && !url.hash && !url.username && !url.password) {
+          mode = "direct"; $("node-host").value = host; $("node-port").value = url.port; $("node-scheme").value = url.protocol.slice(0, -1);
+        }
+      } catch { /* Keep an unrecognized existing URL visible for correction. */ }
+    }
+    nodeConnectionMode(mode);
     display("node-token-note", node ? "留空保留现有密钥。输入新密钥时替换服务端配置；浏览器不保存。" : "仅写入当前服务端的私密配置，浏览器不保存，接口不回传。");
     $("node-form-error").hidden = true; $("node-dialog").showModal();
   }
@@ -856,17 +886,27 @@
   $("selected-node").addEventListener("change", () => requestSelection($("selected-node").value));
   $("switch-node-dialog").addEventListener("close", () => { const target = pendingSelection; pendingSelection = null; if ($("switch-node-dialog").returnValue === "confirm" && target) void switchNode(target); });
   $("add-node").addEventListener("click", () => openNodeForm());
+  $("node-connect-mode").addEventListener("change", () => nodeConnectionMode());
   $("cancel-node").addEventListener("click", () => { $("node-token").value = ""; $("node-dialog").close(); });
   $("node-dialog").addEventListener("close", () => { $("node-token").value = ""; editingNode = null; });
   $("node-form").addEventListener("submit", async (event) => {
     event.preventDefault(); if (busy) return;
     const id = editingNode || $("node-id").value.trim(), token = $("node-token").value;
-    const payload = { id, name: $("node-name").value.trim(), base_url: $("node-url").value.trim() };
+    const payload = { id, name: $("node-name").value.trim() };
     const showError = (message) => { $("node-form-error").hidden = false; display("node-form-error", message); };
     if (!id || id === "local" || !payload.name) { showError("请填写实例别名与名称；local 保留给本机。密钥请勿填入别名或地址。"); return; }
-    let url;
-    try { url = new URL(payload.base_url); } catch { showError("请填写有效的 HTTP(S) 控制台地址。"); return; }
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) { showError("地址只支持 HTTP(S)，不能包含用户名、密码、查询参数或片段；访问密钥请单独填写。"); return; }
+    if ($("node-connect-mode").value === "direct") {
+      const host = nodeHost($("node-host").value), portText = $("node-port").value.trim(), scheme = $("node-scheme").value;
+      if (!host) { showError("请填写有效的 IPv4 或 IPv6 地址；这里只填 IP，不带协议、端口或路径。"); return; }
+      if (!/^[0-9]+$/.test(portText) || Number(portText) < 1 || Number(portText) > 65535) { showError("端口必须是 1 到 65535 的整数。"); return; }
+      if (!["http", "https"].includes(scheme)) { showError("协议只能选择 HTTP 或 HTTPS。"); return; }
+      Object.assign(payload, { host, port: Number(portText), scheme });
+    } else {
+      payload.base_url = $("node-url").value.trim();
+      let url;
+      try { url = new URL(payload.base_url); } catch { showError("请填写有效的 HTTP(S) 完整地址。"); return; }
+      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) { showError("地址只支持 HTTP(S)，不能包含用户名、密码、查询参数或片段；访问密钥请单独填写。"); return; }
+    }
     if (!editingNode && !token) { showError("首次登记需要填写远端访问密钥。"); return; }
     if (token) payload.token = token;
     const editing = editingNode;

@@ -14,7 +14,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 import test_core  # Makes the app/source import paths available.
-from fleet import FleetError, FleetManager, NodeClient, normalize_base_url
+from fleet import FleetError, FleetManager, NodeClient, normalize_base_url, direct_base_url, connection_fields
 
 LOCAL_ID = "11111111-1111-4111-8111-111111111111"
 REMOTE_ID = "22222222-2222-4222-8222-222222222222"
@@ -202,6 +202,76 @@ class FleetTests(unittest.TestCase):
                     "http://localhost/../collector", "http://localhost/%2fcollector", "http://localhost//collector", " http://localhost", "http://localhost:invalid"):
             with self.subTest(url=bad), self.assertRaises(ValueError):
                 normalize_base_url(bad)
+
+    def test_direct_address_literal_port_and_scheme_validation(self):
+        self.assertEqual(direct_base_url("10.1.2.3", 8790), "http://10.1.2.3:8790")
+        self.assertEqual(direct_base_url("2001:0db8::1", 443, "https"), "https://[2001:db8::1]:443")
+        self.assertEqual(direct_base_url("[fd00::2]", 65535), "http://[fd00::2]:65535")
+        for host in ("localhost", "https://10.0.0.1", "10.0.0.1:80", "10.0.0.1/path", "user@10.0.0.1", "10.0.0.01", " 10.0.0.1", "fe80::1%eth0", "[::1", "[127.0.0.1]", None, [], True):
+            with self.subTest(host=host), self.assertRaises(ValueError):
+                direct_base_url(host, 8790)
+        for port in (True, False, "8790", 8790.0, None, [], {}, 0, -1, 65536):
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                direct_base_url("10.0.0.1", port)
+        for scheme in (None, [], {}, True, "ftp", "HTTP", "http "):
+            with self.subTest(scheme=scheme), self.assertRaises(ValueError):
+                direct_base_url("10.0.0.1", 8790, scheme)
+
+    def test_direct_registration_fields_restore_from_unchanged_registry(self):
+        class FixtureClient:
+            def __init__(self):
+                self.calls = []
+            def request(self, method, url, token, body=None):
+                self.calls.append((method, url, token))
+                return {"instance_id": REMOTE_ID, "version": "http-backfill.v5", "state": "paused"}
+        client, manager = FixtureClient(), self.manager(auto_sync=False)
+        manager.client = client
+        node = manager.register({"id": "ip-node", "host": "[fd00::2]", "port": 8791, "token": TOKEN})
+        self.assertEqual({k: node[k] for k in ("connection_mode", "host", "port", "scheme", "base_url")},
+                         {"connection_mode": "direct", "host": "fd00::2", "port": 8791, "scheme": "http", "base_url": "http://[fd00::2]:8791"})
+        self.assertEqual(client.calls[-1][1], "http://[fd00::2]:8791/api/status")
+        manager.register({"id": "ip-node", "name": "只改名称"})
+        self.assertEqual(client.calls[-1][2], TOKEN)
+        saved = json.loads(manager.registry_path.read_text())
+        self.assertEqual(saved["version"], 1)
+        self.assertNotIn("host", saved["nodes"][0])
+        manager.close()
+        reopened = self.manager(auto_sync=False, client=client)
+        restored = reopened.list_nodes()[1]
+        self.assertEqual(restored["base_url"], node["base_url"])
+        self.assertEqual(restored["host"], "fd00::2")
+        self.assertEqual(restored["instance_id"], REMOTE_ID)
+        self.assertNotIn(TOKEN, json.dumps(restored))
+        reopened.register({"id": "ip-node", "base_url": "http://10.0.0.2:8790/collector"})
+        advanced = reopened.list_nodes()[1]
+        self.assertEqual(advanced["connection_mode"], "url")
+        self.assertIsNone(advanced["host"])
+        self.assertEqual(advanced["base_url"], "http://10.0.0.2:8790/collector")
+        self.assertEqual(connection_fields("http://10.0.0.2"), {"connection_mode": "url", "host": None, "port": None, "scheme": None})
+        self.assertEqual(connection_fields(None, True)["connection_mode"], "local")
+
+    def test_connection_failure_identifies_central_to_node_route_and_redacts_token(self):
+        manager = self.manager(auto_sync=False)
+        with patch.object(manager.client, "request", side_effect=FleetError(504, "timed out " + TOKEN)), self.assertRaises(FleetError) as caught:
+            manager.register({"id": "private", "host": "fd00::2", "port": 8791, "token": TOKEN})
+        self.assertEqual(caught.exception.status_code, 504)
+        self.assertIn("中央服务器", caught.exception.error)
+        self.assertIn("[fd00::2]:8791", caught.exception.error)
+        self.assertIn("安全组", caught.exception.error)
+        self.assertNotIn(TOKEN, caught.exception.error)
+        self.assertFalse(manager._nodes)
+
+    def test_mixed_or_partial_address_registration_is_rejected_before_network(self):
+        manager = self.manager(auto_sync=False)
+        configs = [{"host": "10.0.0.1"}, {"port": 8790}, {"scheme": "http"},
+                   {"host": "10.0.0.1", "port": 8790, "base_url": "http://10.0.0.1:8790"},
+                   {"scheme": "http", "base_url": "http://10.0.0.1"}]
+        with patch.object(manager.client, "request") as network:
+            for config in configs:
+                with self.subTest(config=config), self.assertRaises(ValueError):
+                    manager.register({"id": "invalid", "token": TOKEN, **config})
+            network.assert_not_called()
+        self.assertEqual(len(manager.list_nodes()), 1)
 
     def test_local_is_immediately_usable_without_registration_or_source_request(self):
         manager = self.manager(auto_sync=False)

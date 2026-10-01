@@ -1,11 +1,18 @@
 import http.cookiejar
 import importlib.util
+from contextlib import redirect_stderr
+import io
+import os
+import sys
+import tempfile
+import time
 import json
 from pathlib import Path
 import re
 import sqlite3
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 
@@ -83,7 +90,7 @@ class ConsoleTests(unittest.TestCase):
     def setUp(self):
         self.engine = StubEngine()
         self.token = "test-console-token-is-at-least-32-characters"
-        self.server = server.ConsoleServer(("127.0.0.1", 0), self.engine, self.token)
+        self.server = server.ConsoleServer(("127.0.0.1", 0), self.engine, self.token, api_only=getattr(self, "API_ONLY", False))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = "http://127.0.0.1:" + str(self.server.server_port)
@@ -223,6 +230,55 @@ class ConsoleTests(unittest.TestCase):
                 self.assertIn("error", json.loads(body))
         self.assertEqual(self.engine.calls, [])
 
+
+class APIOnlyConsoleTests(unittest.TestCase):
+    API_ONLY = True
+    setUp = ConsoleTests.setUp
+    tearDown = ConsoleTests.tearDown
+    request = ConsoleTests.request
+
+    def test_api_only_disables_static_login_session_and_logout_without_cookies(self):
+        for path in ("/", "/index.html", "/app.js", "/style.css", "/api/session", "/api%2fsession"):
+            with self.subTest(path=path):
+                code, headers, _ = self.request(path, headers={"Authorization": "Bearer " + self.token})
+                self.assertEqual(code, 404)
+                self.assertNotIn("Set-Cookie", headers)
+        for method, body in (("POST", {"token": self.token}), ("DELETE", None), ("PATCH", {"token": self.token})):
+            with self.subTest(method=method):
+                code, headers, _ = self.request("/api/session", body, method)
+                self.assertEqual(code, 404)
+                self.assertNotIn("Set-Cookie", headers)
+        self.assertEqual(self.server.sessions, {})
+        self.assertEqual(self.engine.calls, [])
+        self.assertEqual(self.request("/healthz")[0], 200)
+
+    def test_api_only_ignores_existing_browser_cookie_and_retains_bearer_control(self):
+        self.server.sessions["old-browser-session"] = time.time() + 600
+        cookie = {"Cookie": "backfill_session=old-browser-session"}
+        self.assertEqual(self.request("/api/status", headers=cookie)[0], 401)
+        self.assertEqual(self.request("/api/control", {"action": "start"}, headers=cookie)[0], 401)
+        self.assertEqual(self.engine.calls, [])
+        bearer = {"Authorization": "Bearer " + self.token}
+        self.assertEqual(self.request("/api/status", headers=bearer)[0], 200)
+        self.assertEqual(self.request("/api/jobs", {"stocks": ["601012"]}, headers=bearer)[0], 200)
+        self.assertEqual(self.request("/api/control", {"action": "start"}, headers=bearer)[0], 200)
+        self.assertEqual(self.request("/api/control", {"action": "pause"}, headers=bearer)[0], 200)
+        self.assertEqual(self.request("/api/jobs/current", {"stocks": ["601012"]}, "PATCH", bearer)[0], 200)
+        self.assertEqual(self.request("/api/jobs/current", method="DELETE", headers=bearer)[0], 200)
+        self.assertEqual(self.engine.calls[-1], "archive")
+        self.assertEqual(set(self.server.sessions), {"old-browser-session"})
+
+
+class ConsoleConfigurationTests(unittest.TestCase):
+    def test_invalid_api_only_environment_rejected_before_storage_creation(self):
+        for value in ("true", "false", "2", "", " 1"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp:
+                data_dir = Path(temp) / "must-not-create"
+                with patch.dict(os.environ, {"BACKFILL_API_ONLY": value, "BACKFILL_FLEET_SYNC_ENABLED": "0"}), patch.object(sys, "argv", ["server", "--data-dir", str(data_dir)]), redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as caught:
+                        server.main()
+                self.assertEqual(caught.exception.code, 2)
+                self.assertFalse(data_dir.exists())
 
 if __name__ == "__main__":
     unittest.main()
