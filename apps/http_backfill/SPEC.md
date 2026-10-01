@@ -1,5 +1,21 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-01 collector startup without per-node configuration
+
+The user rejects manually configuring deployment switches on every collector.
+Provide a standalone node Compose preset usable with one standard command and
+no .env: listen on host port 8790, API-only enabled, node automatic merge disabled,
+automatic private token and persistent local data. IP/port/token registration
+and all acquisition task settings remain only in the hub. The node preset uses
+the same Compose project/service/data identity as the existing deployment so
+switching roles preserves data; keep the hub's default loopback/H5 deployment.
+Optional bind/port overrides remain for existing deployments, without being
+required setup. Node port access is governed by routing/security groups.
+Old database migration must be able to use this same node preset throughout
+build/stop/offline migration/start/health checks, without restoring hub settings.
+Validate resolved node/hub Compose defaults and wrapper selection/failure paths;
+do not deploy remotely or send live source requests for these checks.
+
 ## 2026-10-01 direct IP/port collector registration
 
 The user clarifies that additional collectors have no nginx/domain and may only

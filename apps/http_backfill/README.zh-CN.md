@@ -159,25 +159,35 @@ python3 -B apps/http_backfill/migrate_storage.py --data-dir apps/http_backfill/d
 
 ### 只运行采集 API 的节点
 
-节点只启动 Docker 采集服务，使用自己的数据目录和自动生成的访问密钥，不配置域名或 nginx。在节点的 `apps/http_backfill` 目录创建本地 `.env`，以下 `10.0.0.12` 必须替换为**这台节点实际拥有的内网 IP**：
+节点不需要手写 `.env`、填写自身 IP、配置域名或 nginx。节点专用
+[compose.node.yml](compose.node.yml) 已准备好运行模式：默认监听宿主机端口
+8790，只开放鉴权 API 和健康检查，关闭节点自身的后台汇总。访问密钥首启
+自动生成并保存；股票、日期、频率和开始/暂停全部由主控配置。
 
-```dotenv
-BACKFILL_BIND_ADDRESS=10.0.0.12
-BACKFILL_PORT=8790
-BACKFILL_API_ONLY=1
-BACKFILL_FLEET_SYNC_ENABLED=0
-```
-
-示例也保存在 [deploy/node.env.example](deploy/node.env.example)，可复制为 `.env` 后修改 IP。`BACKFILL_PORT` 是宿主机端口，容器内仍用 8790。`BACKFILL_API_ONLY=1` 关闭节点的静态网页和浏览器登录，只保留鉴权 API 与健康检查；`BACKFILL_FLEET_SYNC_ENABLED=0` 关闭该节点自身的后台汇总，主控仍能控制和读取其数据。`.env` 保留在节点本地，后续更新命令会继续使用它。
-
-新节点运行：
+在节点的 `apps/http_backfill` 目录，首次启动及以后更新都用同一条命令：
 
 ```bash
-git pull && docker compose up -d --build
-docker compose exec -T collector-console cat /data/console.token
+git pull && docker compose -f compose.node.yml up -d --build
 ```
 
-已有 v1–v4 数据的节点先执行 `git pull && bash migrate-storage.sh`，完成单库迁移；已有 v5 数据使用上述普通更新命令。全新节点保持暂停，登记不会自动开始来源请求。
+首次登记时取出自动生成的密钥：
+
+```bash
+docker compose -f compose.node.yml exec -T collector-console cat /data/console.token
+```
+
+主控面板登记节点的 IP、端口 `8790` 和这个密钥即可；节点不用再登记主控，
+也不用配置任何采集任务。默认端口监听宿主网络接口，安全组/防火墙允许主控
+访问该端口。不同节点各用自己的 `data/`，不要复制其他节点的数据目录。
+
+已有 v1–v4 数据的节点先执行 `git pull && bash migrate-storage.sh --node`，完成
+单库迁移并以节点模式启动；已有 v5 数据直接用上述更新命令。两份 Compose
+使用同一应用目录、服务名和 `./data:/data`，切换节点模式保留现有数据、令牌
+和实例 UUID。全新节点保持暂停，登记不会自动开始来源请求。
+
+仅在现有部署要求特定监听 IP 或宿主端口时，才可选使用
+`BACKFILL_BIND_ADDRESS` / `BACKFILL_PORT` 覆盖默认值；正常节点无需这些配置。
+若此前已经创建过含这两个变量的 `.env`，节点模式继续尊重已有值。
 
 在主控服务器验证到节点的网络连通：
 

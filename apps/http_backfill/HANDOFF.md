@@ -2,6 +2,29 @@
 
 Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: node deployment has ready-made defaults
+
+The user rejects needing to configure four environment switches per collector.
+Nodes now use `docker compose -f compose.node.yml up -d --build` with no .env:
+default host listener 0.0.0.0:8790, API-only=1, automatic node merge=0, private
+automatic token and persistent data. The standalone preset keeps the existing
+Compose project/service/data paths, preserving data/token/UUID on a role switch.
+Hub defaults remain loopback/H5 with the existing nginx. Optional existing bind
+and host-port overrides are respected; they are not required node setup.
+The now-unnecessary deploy/node.env.example was removed and README corrected.
+All acquisition configuration remains in the hub. Nodes only need a running
+service reachable through the network/security group and their first token
+registered in the hub. Old-layout node migration uses migrate-storage.sh --node
+for the complete build/stop/migration/start/health sequence.
+
+Validation: actual Docker Compose config resolution with no .env confirms the
+node/hub share project name http_backfill, build configuration and the exact
+data bind mount. Node defaults resolve 0.0.0.0:8790 / API-only=1 / auto merge=0;
+hub defaults still resolve 127.0.0.1:8790 / H5 / auto merge=1. Optional existing
+bind/port overrides resolve correctly while node role flags remain fixed.
+All 7 migration wrapper regressions and bash syntax/diff checks PASS. No source
+requests, image rebuild, live service switch or remote deployment was performed.
+
 ## Latest correction: one hub, collectors registered by IP/port
 
 The user clarifies that remote collectors do not have domains/nginx and may
@@ -12,12 +35,12 @@ to the hub. Existing base_url/path-prefix registrations remain compatible.
 Public connection fields are derived from existing registry URLs, preserving
 UUID pinning, private tokens and transfer cursors without a data migration.
 
-Collector Compose supports BACKFILL_BIND_ADDRESS (actual private interface IP),
-BACKFILL_PORT (host port), BACKFILL_API_ONLY=1 and existing
-BACKFILL_FLEET_SYNC_ENABLED=0. API-only collectors do not serve H5 or browser
+Collector startup uses the ready-made compose.node.yml described above.
+It applies BACKFILL_API_ONLY=1 and BACKFILL_FLEET_SYNC_ENABLED=0 itself.
+API-only collectors do not serve H5 or browser
 sessions, but retain Bearer-authenticated control/export and /healthz. Only the
-hub needs the existing public HTTPS /collector/ nginx location. Copy/edit
-deploy/node.env.example as the node's local .env; keep each node's own data/UUID.
+hub needs the existing public HTTPS /collector/ nginx location. Keep each node's
+own data/UUID; no per-node .env is required.
 The network/security group must permit the hub to reach the node port; no public
 node domain or phone-to-node connection is required. README has exact steps.
 
