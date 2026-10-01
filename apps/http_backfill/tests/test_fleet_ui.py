@@ -17,10 +17,11 @@ class Element {
   setAttribute(k,v){this.attrs[k]=v;}getAttribute(k){return this.attrs[k];}
   addEventListener(k,f){(this.listeners[k]||=[]).push(f);}focus(){}scrollIntoView(){}
   showModal(){this.open=true;this.returnValue='';}close(v){if(v!==undefined)this.returnValue=v;this.open=false;for(const f of this.listeners.close||[])f({});}
+  click(){if(this.download)downloads.push({filename:this.download,url:this.href});}remove(){this.removed=true;}
 }
 const ids=Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],new Element()]));
 const descend=n=>[n,...n.children.flatMap(descend)];
-const document={baseURI:'http://localhost/collector/',hidden:false,getElementById:k=>ids[k],createElement:()=>new Element(),querySelector:()=>new Element(),querySelectorAll(selector){const key=selector.match(/^\[data-(.+)\]$/)?.[1]?.replace(/-([a-z])/g,(_,s)=>s.toUpperCase());return key?Object.values(ids).flatMap(descend).filter(n=>n.dataset[key]!==undefined):[];},addEventListener(){}};
+const document={baseURI:'http://localhost/collector/',body:new Element(),hidden:false,getElementById:k=>ids[k],createElement:()=>new Element(),querySelector:()=>new Element(),querySelectorAll(selector){const key=selector.match(/^\[data-(.+)\]$/)?.[1]?.replace(/-([a-z])/g,(_,s)=>s.toUpperCase());return key?Object.values(ids).flatMap(descend).filter(n=>n.dataset[key]!==undefined):[];},addEventListener(){}};
 const window={addEventListener(){}};
 const config={stocks:['601012'],from_date:'2025-10-01',to_date:'2026-10-01',interval_seconds:60,client:'curl'};
 function fixture(node,count){return {instance_id:node+'-uuid',state:'paused',job:{id:1,config},config,aggregate:{attempts:65,list_pages:65,calibration_pages:0,calibration_requests:0,unique_posts:count,list_only:6,body_complete:3,detail_required:4,pending:1},coverage:[{stock:'601012',pages:65,details:{required:4,complete:3,pending:1,list_only:6},gaps:[]}],current:{kind:'list',stock:'601012',page:66},server_time:'2026-10-01T00:00:00Z'};}
@@ -28,6 +29,7 @@ const statuses={local:fixture('local',10),alpha:fixture('alpha',20),beta:fixture
 const records=Object.fromEntries(Object.keys(statuses).map(node=>[node,{requests:Array.from({length:65},(_,i)=>({id:i+1,kind:'list',stock:'601012',page:i+1,outcome:'real_data',started_at:'2026-10-01T00:00:00Z',instance_id:node+'-uuid'})),events:Array.from({length:42},(_,i)=>({id:i+1,kind:'paused',message:node+'人工暂停',created_at:'2026-10-01T00:00:00Z'}))}]));
 const fleet={nodes:Object.keys(statuses).map(id=>({id,alias:id,name:id==='local'?'本机':id,local:id==='local',base_url:'https://'+id+'.invalid/collector/',instance_id:id+'-uuid',connection:id==='beta'?'offline':'online',status:statuses[id],last_error:id==='beta'?'连接超时':null,last_seen_at:'2026-10-01T00:00:00Z',sync:{state:id==='beta'?'error':'ready',cursor:5,error:id==='beta'?'暂未同步':null}})),merge:{unique_posts:25,body_complete:8,conflicts:1,observations:38,instances:2,cursors:{'local-uuid':5,'alpha-uuid':5},db_path:'/isolated/fleet/collector.db'}};
 const calls=[],holds=[],failures=new Map();
+const downloads=[],blobs=[];let blobReads=0;URL.createObjectURL=blob=>{blobs.push(blob);return 'blob:fixture-'+blobs.length;};URL.revokeObjectURL=()=>{};
 function response(data,code=200){return {ok:code>=200&&code<300,status:code,headers:{get:()=> 'application/json'},json:async()=>structuredClone(data)};}
 function deferred(predicate){let resolve;const promise=new Promise(r=>resolve=r);const hold={predicate,promise,resolve,used:false};holds.push(hold);return hold;}
 async function fetch(url,opt={}){
@@ -36,6 +38,7 @@ async function fetch(url,opt={}){
   const call={name,method,query:u.search,payload:opt.body?JSON.parse(opt.body):undefined};calls.push(call);
   const hold=holds.find(h=>!h.used&&h.predicate(call));if(hold){hold.used=true;return await hold.promise;}
   const failure=failures.get(name);if(failure)return response({error:failure.error,ambiguous:failure.ambiguous===true},failure.code);
+  if(name==='download/posts'){const scope=u.searchParams.get('scope'),format=u.searchParams.get('format');assert(['local','fleet'].includes(scope));assert(['csv','jsonl'].includes(format));const headers={'content-type':format==='csv'?'text/csv':'application/x-ndjson','content-disposition':`attachment; filename="collector-${scope}-posts-fixture.${format}"`,'x-collector-post-count':'3','x-export-snapshot-at':'2026-10-01T00:00:00Z'};return{ok:true,status:200,headers:{get:k=>headers[k.toLowerCase()]||null},blob:async()=>{blobReads++;return{scope,format};}};}
   let data;if(name==='session')data={authenticated:false};else if(name==='fleet')data=fleet;
   else if(name.startsWith('fleet/'))data=name==='fleet/sync'?{scheduled:['local','alpha']}:{id:call.payload?.id||name.split('/').at(-1)};
   else {
@@ -52,7 +55,7 @@ async function fetch(url,opt={}){
     }else throw Error('Unexpected route '+name);
   }return response(data);
 }
-const instrumented=source.replace('throw err;', 'window.lastApiError=err; throw err;').replace(/\}\)\(\);\s*$/,`window.test={load(s){authenticated=true;online=true;renderStatus(s);},setFleet(d){fleetData=d;renderFleet(d);},api,poll,switchNode,requestSelection,loadActivity,post,openNodeForm,refreshFleet,fleetMutation,confirmNodeRemoval,markDirty,get(){return{selectedNode,nodeEpoch,status,busy,authenticated,online,formDirty,pages:activityPages,fleetData};}};})();`);
+const instrumented=source.replace('throw err;', 'window.lastApiError=err; throw err;').replace(/\}\)\(\);\s*$/,`window.test={load(s){authenticated=true;online=true;renderStatus(s);},setFleet(d){fleetData=d;renderFleet(d);},api,poll,switchNode,requestSelection,loadActivity,post,openNodeForm,refreshFleet,fleetMutation,confirmNodeRemoval,markDirty,downloadPosts,get(){return{selectedNode,nodeEpoch,status,busy,authenticated,online,formDirty,pages:activityPages,fleetData};}};})();`);
 vm.runInNewContext(instrumented,{document,window,fetch,URL,Intl,Date,Promise,JSON,Number,String,Object,Array,Math,RegExp,Error,setInterval:()=>0,clearInterval(){},setTimeout:f=>f()});
 const tick=()=>new Promise(setImmediate);
 async function ready(){await tick();const t=window.test;t.load(statuses.local);t.setFleet(fleet);await t.poll();return t;}
@@ -72,6 +75,31 @@ class FleetUITests(unittest.TestCase):
                                     capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS", result.stdout)
+
+    def test_rate_audit_shows_real_network_window_and_unknowns_not_post_rate(self):
+        self.run_ui(r"""
+const t=await ready();await t.switchNode('alpha');const example=fixture('alpha',5274);t.load(example);assert.strictEqual(ids['rate-state'].textContent,'未可核验');assert(ids['observed-rate'].textContent.includes('不能由帖子数推算'));
+example.config.interval_seconds=90;example.rate_audit={verdict:'fail',interval_seconds:60,scope:{mode:'tail',limit:1000,first_request_id:21,last_request_id:1050,truncated:true},confirmed_requests:80,first_started_at:'2026-10-01T00:00:00Z',last_started_at:'2026-10-01T02:00:00Z',checked_pairs:76,min_finish_to_start_seconds:57.25,violations:{count:2},unknown:{attempt_rows:4,timing_rows:3,unfinished_rows:2,pairs:4,overlaps:1,clock_anomalies:1},config_policy:{violations:{count:5,items:[],omitted:5},unknown_pairs:7,history_truncated:true}};t.load(example);
+assert.strictEqual(ids['metric-posts'].textContent,'5,274');assert(ids['rate-scope'].textContent.includes('请求 ID 21 至 1,050'));assert(ids['rate-scope'].textContent.includes('有更早记录未纳入'));assert.strictEqual(ids['rate-state'].textContent,'发现已知违规');const facts=text(ids['rate-facts']);assert(facts.includes('当前配置间隔 90 秒'));assert(facts.includes('审计下限 60 秒'));assert(facts.includes('确认网络尝试 80'));assert(facts.includes('最小完成→下次开始 57.25 秒'));assert(facts.includes('已知低于下限 2'));assert(!facts.includes('5,274'));assert(ids['rate-uncertainty'].textContent.includes('未完成 2 行'));assert(ids['rate-uncertainty'].textContent.includes('时钟异常 1 项'));assert(!ids['observed-rate'].textContent.includes('次 / 分钟'),'unknown timings must not invent a reliable average');
+assert(facts.includes('历史配置策略违规 5'),'history policy has a structured violation count');
+example.rate_audit.violations.count=0;example.rate_audit.verdict='unknown';t.load(example);assert(ids['rate-state'].textContent.includes('存在未知 / 样本不足，尚不能确认'));assert(ids['rate-uncertainty'].textContent.includes('未知项不能视为遵守间隔'));assert(!ids['observed-rate'].textContent.includes('次 / 分钟'));assert(!text(ids['rate-facts']).includes('全部合规'));
+example.rate_audit.unknown=Object.fromEntries(Object.keys(example.rate_audit.unknown).map(k=>[k,0]));example.rate_audit.min_finish_to_start_seconds=60;example.rate_audit.verdict='pass';t.load(example);assert(ids['rate-state'].textContent.includes('所示样本未观察到 <60 秒'));assert(ids['observed-rate'].textContent.includes('仅限所示样本'));
+delete example.rate_audit.verdict;t.load(example);assert.strictEqual(ids['rate-state'].textContent,'未可核验','counts alone without an explicit audit verdict must not imply pass');
+example.rate_audit.verdict='pass';delete example.rate_audit.unknown.attempt_rows;t.load(example);assert.strictEqual(ids['rate-state'].textContent,'未可核验','missing unknown counts must not imply pass');
+fleet.nodes[1].status=example;t.setFleet(fleet);const card=text(ids['fleet-nodes'].children[1]);assert(card.includes('已采集帖子 5,274'));assert(card.includes('源请求尝试 65'));assert(card.includes('近期网络尝试 80'));assert(!card.includes('5274 次'));
+await t.switchNode('local');assert.strictEqual(ids['rate-state'].textContent,'未可核验');assert(!calls.some(c=>c.method!=='GET'));
+""")
+
+    def test_download_scopes_stay_on_hub_and_errors_never_become_files(self):
+        self.run_ui(r"""
+const t=await ready();await t.switchNode('alpha');
+for(const scope of ['local','fleet'])for(const format of ['csv','jsonl']){const href=new URL(ids[`download-${scope}-${format}`].getAttribute('href'));assert.strictEqual(href.origin,'http://localhost');assert.strictEqual(href.pathname,'/collector/api/download/posts');assert.strictEqual(href.searchParams.get('scope'),scope);await t.downloadPosts(scope,format);assert.strictEqual(downloads.at(-1).filename,`collector-${scope}-posts-fixture.${format}`);assert.strictEqual(blobs.at(-1).scope,scope);}
+assert.strictEqual(downloads.length,4);assert.strictEqual(blobReads,4);assert.strictEqual(t.get().selectedNode,'alpha');assert(!calls.some(c=>c.method!=='GET'),'downloads never control acquisition');
+failures.set('download/posts',{code:503,error:'生成导出失败'});await t.downloadPosts('local','csv');assert.strictEqual(downloads.length,4);assert.strictEqual(blobReads,4);assert(ids.notice.textContent.includes('生成导出失败'));
+failures.set('download/posts',{code:200,error:'代理错误页'});await t.downloadPosts('fleet','jsonl');assert.strictEqual(downloads.length,4);assert(ids.notice.textContent.includes('未返回文件附件'));
+failures.set('download/posts',{code:404,error:'接口不存在'});await t.downloadPosts('local','csv');assert.strictEqual(downloads.length,4);assert(ids.notice.textContent.includes('检查主控是否已更新'));
+failures.set('download/posts',{code:401,error:'会话过期'});await t.downloadPosts('local','csv');assert.strictEqual(downloads.length,4);assert.strictEqual(t.get().authenticated,false);assert.strictEqual(ids.console.hidden,true);assert(ids['auth-message'].textContent.includes('重新登录'));
+""")
 
     def test_details_are_shown_within_acquired_posts_for_293_post_example(self):
         self.run_ui(r"""

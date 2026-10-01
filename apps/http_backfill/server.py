@@ -16,6 +16,8 @@ import sqlite3
 import sys
 import threading
 import time
+import tempfile
+from datetime import datetime, timezone
 from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = Path(__file__).resolve().parent
@@ -190,6 +192,52 @@ class Handler(BaseHTTPRequestHandler):
             self.send(409, {"error": str(exc)})
         return True
 
+    def download_posts(self, query):
+        """Authenticated projections only; prepare a snapshot before HTTP 200."""
+        from data_export import export_posts
+        headers_sent = False
+        try:
+            if set(query) - {"scope", "format"} or any(len(values) != 1 for values in query.values()):
+                raise ValueError("下载只允许单个 scope 和 format 参数")
+            scope = query.get("scope", ["local"])[0]
+            format = query.get("format", ["jsonl"])[0]
+            if scope not in {"local", "fleet"} or format not in {"csv", "jsonl"}:
+                raise ValueError("scope 必须是 local/fleet，format 必须是 csv/jsonl")
+            if scope == "fleet":
+                if self.server.fleet is None:
+                    return self.send(503, {"error": "当前服务未启用中央合并"})
+                source = self.server.fleet.merge_store.db_path
+            else:
+                source = Path(self.server.engine.data_dir) / "collector.db"
+            with tempfile.TemporaryDirectory(prefix="collector-download-") as directory:
+                path = Path(directory) / ("posts." + format)
+                report = export_posts(source, path, format)
+                filename = f"collector-{scope}-posts-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.{format}"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=utf-8" if format == "csv" else "application/x-ndjson; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(report["bytes"]))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Collector-Post-Count", str(report["posts"]))
+                self.send_header("X-Export-Snapshot-At", report["snapshot_at"])
+                self.send_header("X-Model-Database-Eligible", "false")
+                self.end_headers()
+                headers_sent = True
+                try:
+                    with path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(128 * 1024), b""):
+                            self.wfile.write(chunk)
+                except OSError:
+                    self.close_connection = True  # A closed download does not affect acquisition.
+        except ValueError as exc:
+            self.send(400, {"error": str(exc)})
+        except (OSError, sqlite3.Error):
+            if headers_sent:
+                self.close_connection = True
+            else:
+                self.send(409, {"error": "下载生成失败；采集保持原状态"})
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path).lstrip("/")
@@ -204,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(401, {"error": "节点 API 需要有效 Bearer 令牌" if self.server.api_only else "请先登录控制台"})
             try:
                 query = parse_qs(parsed.query, keep_blank_values=True)
+                if path == "api/download/posts":
+                    return self.download_posts(query)
                 if self.fleet_route("GET", path, query=query) or self.export_route(path, query):
                     return
                 if path in {"api/requests", "api/events"} and "paged" in query:

@@ -38,7 +38,7 @@
         <div class="node-selector"><label for="selected-node">当前控制实例</label><select id="selected-node"><option value="local">本机采集实例</option></select><span id="selected-node-note" class="field-note">下方任务、控制与运行记录均属于本机。</span></div>
         <p id="fleet-error" class="page-error" role="status" hidden></p>
         <div id="fleet-nodes" class="fleet-nodes"><div class="empty-state">正在读取本机与已登记实例…</div></div>
-        <div class="merge-panel"><div class="merge-heading"><div><strong>中央合并数据</strong><p id="merge-sync-note" class="field-note">等待同步配置。同步只传输数据和证据，不请求股吧。</p></div><button id="sync-fleet" type="button" class="button secondary small">立即同步全部</button></div><div class="merge-metrics"><div><span>已采集帖子</span><strong id="merge-posts">—</strong></div><div><span>其中已补详情</span><strong id="merge-bodies">—</strong></div><div><span>保留的冲突</span><strong id="merge-conflicts">—</strong></div></div><p id="merge-status" class="field-note">等待合并状态。</p><p id="merge-path" class="storage-path"></p><p id="merge-error" class="page-error" role="status" hidden></p><p class="small-note">同源帖子按源 ID 合并并保留实例出处。标题与详情属于同一条帖子，已补详情是帖子总数的子集。缺失详情不会覆盖已取得详情，冲突会保留；合并数量不能证明历史覆盖完整。</p></div>
+        <div class="merge-panel"><div class="merge-heading"><div><strong>中央合并数据</strong><p id="merge-sync-note" class="field-note">等待同步配置。同步只传输数据和证据，不请求股吧。</p></div><button id="sync-fleet" type="button" class="button secondary small">立即同步全部</button></div><div class="merge-metrics"><div><span>已采集帖子</span><strong id="merge-posts">—</strong></div><div><span>其中已补详情</span><strong id="merge-bodies">—</strong></div><div><span>保留的冲突</span><strong id="merge-conflicts">—</strong></div></div><p id="merge-status" class="field-note">等待合并状态。</p><p id="merge-path" class="storage-path"></p><p id="merge-error" class="page-error" role="status" hidden></p><div class="download-actions"><a id="download-fleet-csv" class="button secondary small" href="api/download/posts?scope=fleet&amp;format=csv" download>导出合并帖子 CSV</a><a id="download-fleet-jsonl" class="button secondary small" href="api/download/posts?scope=fleet&amp;format=jsonl" download>导出合并帖子 JSONL</a></div><p class="field-note">下载主控中央合并库中的帖子。远端新记录可先“立即同步全部”，再下载；下载不会请求股吧。</p><p class="small-note">同源帖子按源 ID 合并并保留实例出处。标题与详情属于同一条帖子，已补详情是帖子总数的子集。缺失详情不会覆盖已取得详情，冲突会保留；合并数量不能证明历史覆盖完整。</p></div>
       </section>
 
       <section class="run-card" aria-labelledby="run-title">
@@ -52,6 +52,7 @@
           <div><span class="datum-label">最近一次源成功</span><strong id="last-success">—</strong><small id="observed-rate">实际请求速率尚无观测</small></div>
         </div>
         <div class="run-actions"><button id="start" type="button" class="button primary" disabled>开始采集</button><button id="pause" type="button" class="button secondary" disabled>暂停</button><button id="retry" type="button" class="button secondary" disabled>单次探测重试</button><span id="action-note" class="action-note">保存配置不会发起源请求。</span></div>
+        <div class="recovery-panel rate-panel" aria-labelledby="rate-title"><div class="recovery-heading"><strong id="rate-title">实际源请求间隔审计</strong><span id="rate-state" class="tag">未可核验</span></div><p id="rate-scope" class="field-note">所选实例尚未返回网络请求审计。</p><div id="rate-facts" class="coverage-counts"></div><p id="rate-uncertainty" class="field-note"></p><p class="small-note">帖子数与源请求数不同，一次列表响应可取得多条帖子。此处只审计已标明的近期台账范围；旧版未返回字段时不能核验。全历史可在该采集机使用只读审计 CLI 核对，不会启动采集。</p></div>
         <div id="recovery-panel" class="recovery-panel" hidden>
           <div class="recovery-heading"><strong>分页恢复校准</strong><span id="recovery-phase" class="tag">等待校准</span></div>
           <div id="recovery-facts" class="coverage-counts"></div>
@@ -77,6 +78,7 @@
         </div>
         <div class="data-boundary"><span aria-hidden="true">◈</span><p><strong>一条帖子对应一条记录；标题和正文是同一记录的字段，补详情不另计帖子数。</strong>默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情。未触发补详情的帖子已保留列表记录与标题，这不代表已取得完整详情。局部产出不代表日期窗口完整覆盖。</p></div>
         <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>采集数据库</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p id="storage-note" class="small-note">等待该实例返回存储布局。</p></div>
+        <div class="download-actions"><a id="download-local-csv" class="button secondary small" href="api/download/posts?scope=local&amp;format=csv" download>导出本机帖子 CSV</a><a id="download-local-jsonl" class="button secondary small" href="api/download/posts?scope=local&amp;format=jsonl" download>导出本机帖子 JSONL</a></div><p class="field-note">这里始终下载主控本机的全部已采集帖子，与当前查看的远端实例无关。若下载返回 401，请重新登录；返回 404 时请检查主控是否已更新。</p>
       </section>
 
       <div class="workspace-grid">

@@ -1,5 +1,28 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-01 inspect actual source pacing and provide usable exports
+
+The user requests concrete data merging/export instructions and confirmation
+of a collector showing 5,274 posts against a configured 60-second interval.
+Posts and HTTP attempts are different quantities: a source list response may
+contain many posts. Audit actual network-attempt rows, their start/end times,
+configured interval and uncertain/incomplete rows; do not infer source pacing
+from post counts. Provide a standalone read-only audit of the existing database
+without starting a worker and expose a clearly scoped recent audit in H5.
+Preserve original-source requests, redirect/probe pacing and all existing data.
+Remote server pacing is unverified until its actual ledger is examined.
+
+Retain online hub incremental merge and explain its output files and cursors.
+Provide operator-usable manual evidence export/import packages for disconnected
+nodes, using one consistent database snapshot, immutable export sequences and
+hash-verified raw evidence. Exclude credentials and unrelated runtime tables,
+reject unsafe/damaged archives, and import through existing MergeStore identity,
+cursor/body/conflict rules. Export never fetches Guba or promotes model eligibility.
+Provide authenticated download of local-node and merged compatible posts with
+fixed snapshot semantics and without dumping private operational databases.
+Verify duplicates/enrichment, raw integrity, idempotent imports, invalid exports,
+pacing gaps/unknowns and zero source traffic using offline fixtures.
+
 ## 2026-10-01 collector startup without per-node configuration
 
 The user rejects manually configuring deployment switches on every collector.

@@ -31,6 +31,7 @@
   let removingNode = null;
   let pendingSelection = null;
   let retryNodeEpoch = null;
+  const downloadBusy = new Set();
 
   function first(object, keys, fallback = null) {
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) return object[key];
@@ -168,6 +169,8 @@
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", counts.body_complete], ["待补详情", counts.pending], ["未触发补详情", counts.list_only]]) subsets.append(el("span", "", `${label} ${number(value)}`));
       summary.append(subsets); card.append(summary, el("p", "node-sync", `源请求尝试 ${number(counts.attempts)} · 标题与详情属于同一条帖子`));
+      const audit = objectValue(state.rate_audit);
+      card.append(el("p", "node-sync", audit.confirmed_requests == null ? "源请求间隔审计：未可核验，需该实例实际台账。" : `近期网络尝试 ${number(audit.confirmed_requests)} · 已知间隔违规 ${number(audit.violations?.count)} · 仅此审计样本，帖子数不代表请求数`));
       const config = state.job?.config || state.config;
       if (config) card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
       if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复采集数据库写入。" : "保留来源阻断，需在该实例明确安排一次探测。"));
@@ -222,6 +225,7 @@
     for (const field of ["metric-attempts", "metric-pages", "metric-posts", "metric-list-only", "metric-bodies", "metric-pending", "run-duration", "current-target", "last-success"]) display(field, "—");
     for (const field of ["metric-failures", "metric-calibration", "metric-list-total", "metric-removed", "metric-body-breakdown", "observed-rate", "next-request", "next-request-time"]) display(field, "等待所选实例状态");
     $("block-panel").hidden = true; $("storage-panel").hidden = true; display("recovery-reason", "等待所选实例的校准状态。"); display("recovery-phase", "等待状态"); $("recovery-facts").replaceChildren();
+    renderRateAudit({});
     display("run-title", `正在读取 ${nodeName()} 的状态`); display("run-reason", "切换实例不会发出任何来源请求或采集控制命令。"); display("job-window", "等待配置"); display("run-start", "等待状态"); display("state-label", "等待状态");
     notice(""); setConnection(false); display("updated-at", "—");
     if (fleetData) renderFleet(fleetData); else $("selected-node").value = id;
@@ -319,6 +323,7 @@
     $("add-node").disabled = busy || !authenticated;
     $("sync-fleet").disabled = busy || !authenticated || !fleetData;
     $("save-node").disabled = busy;
+    for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) $(`download-${scope}-${format}`).setAttribute("aria-disabled", String(!authenticated || downloadBusy.has(`${scope}-${format}`)));
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
@@ -431,13 +436,6 @@
     } else display("current-target", target || (config ? "等待下一项" : "—"));
     const success = first(data, ["last_success_at", "last_success", "last_source_success"]);
     display("last-success", success ? time(success) : "—");
-    const rate = first(data, ["observed_requests_per_minute", "requests_per_minute", "observed_rate_per_minute"]);
-    if (rate != null && Number.isFinite(Number(rate))) display("observed-rate", `实际 ${Number(rate).toFixed(2)} 次 / 分钟 · 间隔 ${config ? config.interval_seconds || 60 : "—"} 秒`);
-    else {
-      const times = latestRequestItems.map((item) => epoch(first(item, ["started_at", "requested_at", "at", "timestamp"]))).filter((value) => value != null).sort((a, b) => a - b);
-      const rateObserved = times.length > 1 && times[times.length - 1] > times[0] ? (times.length - 1) * 60000 / (times[times.length - 1] - times[0]) : null;
-      display("observed-rate", rateObserved == null ? "实际请求速率尚无观测" : `最近 ${times.length} 次：${rateObserved.toFixed(2)} 次 / 分钟`);
-    }
     display("metric-attempts", number(counter("attempts", ["requests", "request_count"])));
     display("metric-pages", number(counter("list_pages", ["list_pages_success", "pages"])));
     const forwardPages = counter("list_pages", ["list_pages_success", "pages"]);
@@ -455,8 +453,64 @@
     renderCoverage(data, config);
     renderRecovery(data);
     renderStorage(data);
+    renderRateAudit(data);
     renderTiming();
     controls();
+  }
+  function renderRateAudit(data) {
+    const audit = objectValue(data.rate_audit), scope = objectValue(audit.scope), unknown = objectValue(audit.unknown);
+    const facts = $("rate-facts"); facts.replaceChildren();
+    if (audit.confirmed_requests == null || !audit.scope) {
+      display("rate-state", "未可核验"); $("rate-state").className = "tag";
+      display("rate-scope", "该实例未返回实际网络请求审计；仅凭帖子数量或配置不能判断间隔是否遵守。");
+      display("rate-uncertainty", "需升级节点或对该实例的真实台账执行只读审计。");
+      display("observed-rate", "网络尝试速率未可核验，不能由帖子数推算");
+      return;
+    }
+    const violations = audit.violations?.count, checked = audit.checked_pairs;
+    const unknownKeys = ["attempt_rows", "timing_rows", "unfinished_rows", "pairs", "overlaps", "clock_anomalies"];
+    const fullAudit = ["fail", "unknown", "pass"].includes(audit.verdict) && unknownKeys.every((key) => Number.isInteger(unknown[key]) && unknown[key] >= 0);
+    const knownTimings = fullAudit && unknownKeys.every((key) => unknown[key] === 0);
+    const failed = audit.verdict === "fail" || Number(violations) > 0;
+    const passed = audit.verdict === "pass" && knownTimings && violations === 0 && Number(checked) > 0;
+    display("rate-state", failed ? "发现已知违规" : !fullAudit ? "未可核验" : passed ? `所示样本未观察到 <${number(audit.interval_seconds)} 秒` : "存在未知 / 样本不足，尚不能确认");
+    $("rate-state").className = `tag${failed ? " warning" : ""}`;
+    display("rate-scope", `${scope.mode === "all" ? "全量台账" : "近期台账"} · 请求 ID ${number(scope.first_request_id)} 至 ${number(scope.last_request_id)}${scope.limit != null ? " · 最多 " + number(scope.limit) + " 行" : ""}${scope.truncated === true ? " · 有更早记录未纳入" : ""} · 网络尝试开始 ${time(audit.first_started_at)} 至 ${time(audit.last_started_at)}`);
+    const config = data.job?.config || data.config;
+    const begin = epoch(audit.first_started_at), end = epoch(audit.last_started_at);
+    display("observed-rate", passed && Number(audit.confirmed_requests) > 1 && begin != null && end > begin ? `已确认网络尝试样本平均 ${((Number(audit.confirmed_requests) - 1) * 60000 / (end - begin)).toFixed(2)} 次 / 分钟 · 仅限所示样本` : `仅确认网络尝试 ${number(audit.confirmed_requests)} 次 · 未知项不能计为总速率`);
+    const seconds = (value) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value).toFixed(2)} 秒`;
+    const policy = objectValue(audit.config_policy);
+    for (const [label, value] of [["当前配置间隔", config?.interval_seconds == null ? "—" : `${number(config.interval_seconds)} 秒`], ["审计下限", audit.interval_seconds == null ? "—" : `${number(audit.interval_seconds)} 秒`], ["确认网络尝试", number(audit.confirmed_requests)], ["可核对相邻请求", number(checked)], ["最小完成→下次开始", seconds(audit.min_finish_to_start_seconds)], ["已知低于下限", number(violations)], ["历史配置策略违规", number(policy.violations?.count)]]) facts.append(el("span", "", `${label} ${value}`));
+    display("rate-uncertainty", `网络尝试标记未知 ${number(unknown.attempt_rows)} 行 · 时间未知 ${number(unknown.timing_rows)} 行 · 未完成 ${number(unknown.unfinished_rows)} 行 · 间隔未知 ${number(unknown.pairs)} 对 · 重叠 ${number(unknown.overlaps)} 对 · 时钟异常 ${number(unknown.clock_anomalies)} 项。以上未知项不能视为遵守间隔。历史配置策略未知 ${number(policy.unknown_pairs)} 对${policy.history_truncated ? "，配置历史也有未纳入部分" : ""}；当前配置与 60 秒审计下限分别列出。`);
+  }
+  async function downloadPosts(scope, format) {
+    const key = `${scope}-${format}`;
+    if (downloadBusy.has(key)) return;
+    if (!authenticated) { showAuth("导出需要有效的中央控制台会话，请重新登录。"); return; }
+    downloadBusy.add(key); controls();
+    const label = scope === "fleet" ? "中央合并" : "主控本机";
+    notice(`正在生成${label}帖子导出文件，不会开始或暂停采集。`);
+    try {
+      const response = await fetch(new URL(`api/download/posts?scope=${scope}&format=${format}`, document.baseURI), { credentials: "same-origin", cache: "no-store", headers: { Accept: format === "csv" ? "text/csv" : "application/x-ndjson" } });
+      if (!response.ok) {
+        let message = `导出失败，HTTP ${response.status}。`;
+        if ((response.headers.get("content-type") || "").includes("application/json")) { const data = await response.json(); if (data?.error) message = textValue(data.error); }
+        if (response.status === 404) message += " 请检查主控是否已更新到支持帖子导出的版本。";
+        if (response.status === 401) showAuth("中央控制台会话已过期，请重新登录后导出。");
+        throw new Error(message);
+      }
+      const disposition = response.headers.get("content-disposition") || "";
+      if (!/^attachment(?:;|$)/i.test(disposition)) throw new Error("导出接口未返回文件附件，未保存错误响应。请检查服务或代理配置。");
+      let filename = disposition.match(/filename="([^"]+)"/i)?.[1] || `collector-${scope}-posts.${format}`;
+      filename = filename.split(/[\\/]/).at(-1).replace(/[\u0000-\u001f]/g, "_");
+      const blob = await response.blob(), objectURL = URL.createObjectURL(blob), link = document.createElement("a");
+      link.href = objectURL; link.download = filename; document.body.append(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+      const count = response.headers.get("x-collector-post-count"), snapshot = response.headers.get("x-export-snapshot-at");
+      notice(`${label}帖子文件已交给浏览器下载${count == null ? "" : " · " + number(count) + " 条"}${snapshot ? " · 快照 " + time(snapshot) : ""}。文件只包含已采记录，不代表覆盖完整。`);
+    } catch (error) { if (authenticated) notice(`未下载文件：${error.message}`, true); else authMessage("会话已过期，请重新登录后导出。", true); }
+    finally { downloadBusy.delete(key); controls(); }
   }
   function renderBlock(data) {
     const firstBlock = first(data, ["first_block_evidence", "first_block"]);
@@ -920,6 +974,11 @@
     if (removed && id === selectedNode) await switchNode("local");
   });
   $("sync-fleet").addEventListener("click", () => { void fleetMutation("fleet/sync", { node_id: "all" }, "POST", "已安排后台增量同步。同步只传输已经采集的记录与证据，不请求来源。"); });
+  for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) {
+    const link = $(`download-${scope}-${format}`);
+    link.setAttribute("href", new URL(`api/download/posts?scope=${scope}&format=${format}`, document.baseURI).href);
+    link.addEventListener("click", (event) => { event.preventDefault(); void downloadPosts(scope, format); });
+  }
   $("refresh").addEventListener("click", () => { void poll(); });
   for (const kind of ["requests", "events"]) for (const action of ["prev", "next", "latest"]) $(`${kind}-${action}`).addEventListener("click", () => { void loadActivity(kind, action); });
   function switchTab(requests) {

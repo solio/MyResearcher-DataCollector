@@ -33,6 +33,7 @@ from myresearcher_collector.sources.eastmoney_guba.content_rules import (
     detail_body_metadata, detail_enrichment_trigger, list_title_metadata,
 )
 from lifecycle import LifecycleMixin
+from rate_audit import tail_audit
 from compatible_store import CompatibleDataStore, _utc
 from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_store_adapter
 
@@ -1171,6 +1172,7 @@ class Engine(LifecycleMixin):
                       "content_policy": self._get("content_policy"),
                       "data_storage": self._get("data_storage"), "storage_halt": self._get("storage_halt"),
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
+            result["rate_audit"] = tail_audit(self)
             result["observed_work_complete"] = bool(coverage) and all(c["date_boundary_reached"] and c["details_complete"] and not c["gaps"] for c in coverage)
             result["recovery"] = [c["recovery"] for c in coverage if c["recovery"]]
             result["reconciliation_complete"] = bool(coverage) and all(c["reconciliation_complete"] for c in coverage)

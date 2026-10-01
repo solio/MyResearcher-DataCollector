@@ -17,3 +17,4 @@
 @media(max-width:1000px){.post-metric{grid-column:1 / -1}}
 @media(max-width:720px){.metric.post-metric{grid-column:1 / -1}.post-subsets{gap:10px}.post-subsets span{font-size:9px}.post-metric .post-subsets strong{font-size:22px}}
 .node-port-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}.node-port-grid>div{min-width:0}
+.download-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.download-actions .button{text-decoration:none}.download-actions [aria-disabled="true"]{opacity:.44;cursor:not-allowed}.rate-panel .field-note{overflow-wrap:anywhere}

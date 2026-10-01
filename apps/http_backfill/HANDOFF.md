@@ -2,6 +2,69 @@
 
 Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest extension: actual pacing audit and usable data exports
+
+The user requests a concrete merge/export path and challenges a collector's
+5,274-post count against a 60-second interval. That server's ledger has not been
+provided or read here. A list request may return many posts; no server-compliance
+claim is inferred from its count or from offline tests.
+
+- `rate_audit.py` is standalone stdlib and runs read-only against a fixed SQLite
+  snapshot via `python - --db ... --interval 60 < rate_audit.py`, including inside
+  an already running old container. It does not construct Engine, read tokens,
+  take worker.lock or request the source. Full history streams by request ID.
+  Confirmed attempts, kind/purpose/probe/redirect counts, previous-finish to next-
+  start gaps, bounded violation details and unknown/in-flight/clock facts remain
+  distinct. Fixed lower-limit verdicts do not assert historical configuration
+  compliance; recorded revision policies and uncertainties are separate.
+  Old compatible-only collector.db may fall back explicitly to a real sibling
+  experiment.sqlite3 ledger; actual db_path is returned. Exit 0/1/2/3 means scoped
+  pass / known short gap / insufficient evidence / read or input error.
+- Engine.status includes a last-1,000-row audit, cached for at most 15 seconds
+  and invalidated by ledger completion or connection writes/config changes.
+  H5 shows selected-node scope and unknowns, never treats missing/unknown audit
+  facts as a pass, and only calculates a clearly scoped confirmed-request rate.
+  No source scheduler, transport, cooldown, restart or CAPTCHA behavior changed.
+- `data_export.py` streams one compatible posts snapshot to CSV or JSONL, keeping
+  the original 15 fields and NULL versus acquired empty-body distinctions.
+  Download API authenticates before export, prepares a private temporary file
+  before attachment headers and excludes private operational data. H5 local/fleet
+  exports always target the hub's local or merged store independent of the
+  currently selected remote node. Invalid/auth/error responses are not saved as
+  data files. CLI refuses output overwrite and can also be fed to an old container
+  without stopping collection.
+- `transfer.py` exports/imports ZIP post-evidence sequences for disconnected
+  nodes, not the full failure/challenge/probe ledger. Read-only exports use one
+  committed journal snapshot and retain linked raw/hash evidence. Source-post,
+  export-post and unexported counts are explicit. Complete archive/hash/source
+  preflight precedes destination creation. Replay uses existing MergeStore rules,
+  retains body/conflicts and is idempotent; unsafe/corrupt packages are rejected.
+  The import holds destination worker.lock and refuses an active hub to prevent
+  cross-process fleet writes. Prefer existing live hub synchronization, or import
+  into a separate offline root; stopping the hub is required only for CLI import
+  into its already active root. No root production writes or promotion occurred.
+
+Validation: 235 offline app tests PASS with ResourceWarning errors; 34 new
+export/download/rate/transfer tests also PASS inside cached Linux amd64 Python
+3.12 with external networking disabled. Source calls are injected fixtures.
+Checks include same-post enrichment/dedup, genuine empty bodies, WAL snapshot
+consistency, repeated/conflicting imports, corrupted late raw/payload, archive
+paths/limits, old ledgers, unknown timing, short gaps, configuration revisions,
+stdin execution, authenticated real HTTP downloads and actual app.js rendering.
+JavaScript syntax and diff whitespace checks PASS. Dockerfile/apt layer unchanged.
+
+Actual browser verification shows old-node audit absence as unverifiable and
+new scoped 60-second fixture facts; selected remote views preserve hub download
+scope. At 390x844 the document width is 390. Mobile screenshots remain ignored
+under runtime/screenshots/http-backfill-export-mobile-20261001.jpg and
+http-backfill-rate-export-mobile-20261001.jpg. HTTP file contents were independently
+verified by tests; the in-app browser displayed the download handoff message but
+its download-event API timed out, so an OS-saved browser file is not claimed.
+Temporary demonstration servers are closed and viewport overrides reset.
+No real source requests, remote deployment, running pilot restart or migration
+was required. README supplies exact online merge, direct download, isolated ZIP
+merge and current-container audit commands for the operator.
+
 ## Latest correction: node deployment has ready-made defaults
 
 The user rejects needing to configure four environment switches per collector.

@@ -80,6 +80,135 @@ v5 中央服务支持 v4/v5 采集实例逐台升级；先升级中央服务，�
 
 本版集中管理各实例自己的任务，股票/日期窗口由你在对应实例中配置。某机验证码阻断后保留该机的停机状态，不自动把失败请求交给另一 IP；远程控制指令超时会提示结果未确认，不自动重复提交。
 
+## 实际怎样合并和导出
+
+能从主控连到的采集节点，按以下顺序操作：
+
+1. 在主控网页登记节点的 IP、端口和令牌。已运行节点的数据和断点保留。
+2. 点击“立即同步全部”。主控读取各节点已有的增量导出记录和原始响应，
+   校验哈希后合并，不请求股吧。后台自动同步也执行同一过程。
+3. 查看各节点同步状态；连接错误或哈希失败会显示错误，失败批次不会推进
+   游标，此前已验证并合并的批次保留。
+   “已同步”只说明该次已拥有记录传输完成，不代表历史日期窗口完整。
+4. 在“中央合并数据”下载合并结果 CSV 或 JSONL。文件交给手机/浏览器下载，
+   保存位置由浏览器决定；服务器上的合并库是主控 `apps/http_backfill/data/fleet/collector.db`，
+   不是任意某台节点的原库。
+
+相同 `(source,source_item_id)` 只保留一行帖子，标题和正文是这一行的字段。
+先取得列表、后来取得正文，会补充原帖子；另一个节点只有列表时不会清空正文。
+每节点观察和 raw 出处仍保存在 `fleet/merge.sqlite3` / `fleet/raw/`。同步游标是
+不可变版本的序号，不是帖子数，一个帖子补详情后可以产生新版本。
+
+网页还可下载**主控所在本机**的全部留存帖子。这个按钮不会随选中的远端
+实例改变含义；导出某个远端的帖子可先同步到主控，或直接在该节点执行下面
+的只读命令。CSV/JSONL 导出来自一个固定数据库快照，涵盖已留存的所有任务，
+不是仅当前任务；它只包含兼容 `posts` 字段和缺正文/研究状态标记，不包含
+令牌、注册表或任务控制数据。JSONL 保留 NULL 与真实空正文的区别；CSV 使用
+`content_missing` 标记区别。帖子文件是当前数据投影，不是完整证据包，不能
+用它重建同步游标和 raw 追溯。
+
+在需要导出的服务器 `apps/http_backfill` 目录运行：
+
+```bash
+docker compose exec -T collector-console python - \
+  --db /data/collector.db --format jsonl \
+  --output /data/exports/posts.jsonl < data_export.py
+```
+
+文件会出现在宿主机 `./data/exports/posts.jsonl`。换成 `--format csv` 和
+`--output /data/exports/posts.csv` 可得到 CSV；主控合并结果将 `--db` 换成
+`/data/fleet/collector.db`。同名目标已存在时拒绝覆盖，请另取文件名。该命令
+将当前 checkout 的独立脚本送入现有容器执行，无需为了导出重启采集器。
+
+### 节点断网时用证据包合并
+
+节点暂时不能被主控访问时，可在节点运行离线导出：
+
+```bash
+docker compose exec -T collector-console python apps/http_backfill/transfer.py \
+  export --data-dir /data --output /data/exports/node-evidence.zip
+```
+
+得到宿主机 `./data/exports/node-evidence.zip`。将该文件复制到主控的
+`./data/imports/node-evidence.zip` 后，可以先导入独立汇总目录，不打断正在
+运行的主控或采集器。在主控 `apps/http_backfill` 目录运行：
+
+```bash
+docker compose exec -T collector-console python apps/http_backfill/transfer.py \
+  merge --bundle /data/imports/node-evidence.zip --data-dir /data/offline-merge
+```
+
+独立结果是宿主机 `./data/offline-merge/fleet/collector.db`。不同节点的包都
+导入同一目录便会合并；包名可以不同。若要直接进入现有主控的合并库，先
+暂停主控进程，再用一次性容器导入，最后恢复主控：
+
+```bash
+docker compose stop collector-console
+docker compose run --rm --no-deps collector-console \
+  python apps/http_backfill/transfer.py \
+  merge --bundle /data/imports/node-evidence.zip --data-dir /data
+docker compose up -d
+```
+
+这会中断主控本机采集与面板服务，其他采集节点可继续运行。导入命令失败时
+先查看错误；不要继续执行恢复命令。在线主控同时管理同步写入，离线 CLI
+因此拒绝导入一个正在使用的目录。平时直接在面板点“立即同步全部”即可，
+不需要停主控、导出包或手动搬数据库。
+
+帖子证据包包含该节点固定导出序列快照、帖子关联的原始响应与哈希清单；不包含登录令牌、
+注册表或整个运行数据库。导入使用同一套源 ID/实例/版本/正文合并规则，
+校验失败会报错，重复导入幂等。合并目标仍是主控 `fleet/collector.db`。
+不要用复制覆盖 SQLite 文件来合并实例，不要把包导入项目根目录的生产 `data/`。
+这些新工具需要新版镜像；普通更新后即可使用。导出包完整仅表示已拥有证据
+保存完整，所有日期覆盖和模型可用性仍需另外核实。未关联已采帖子的一些
+失败、验证码、探测请求不会进入这个包；核验全部源请求间隔应使用下面的
+全量台账审计，不能用包内的关联请求替代。包报告同时列出原库帖子数
+`source_posts_at_snapshot`、有可导出证据的唯一帖子数 `counts.unique_posts`
+和 `unexported_source_posts`；孤立且没有完整关联证据的投影不会被编造来源
+或补入包内。单纯查看所有现有帖子，可使用前面的 CSV/JSONL 导出。
+
+## 核验一分钟一次的实际速率
+
+请求间隔针对每台实例的**源 HTTP 请求**，不是帖子数。一页列表可能带回约
+80 条记录，因此 5,274 帖子可能来自几十次列表请求；详情请求、分页校准、
+重定向、失败和手动探测也占同一来源请求额度。主控网页刷新与实例数据同步
+不会请求股吧，不计入来源采集速率。
+
+H5 显示选中实例的近期请求间隔审计及其样本范围。确认整段运行，应该在
+该实例上执行全量只读审计。在 `apps/http_backfill` 目录更新 checkout 后，
+以下命令把脚本传入**当前正在运行的容器**，不用重建或重启 worker：
+
+```bash
+git pull
+docker compose exec -T collector-console python - \
+  --db /data/collector.db --interval 60 < rate_audit.py
+```
+
+输出重点：
+
+| 字段 | 核对内容 |
+| --- | --- |
+| `db_path`、`legacy_fallback` | 实际读取哪份请求台账；旧布局回退会明确显示 |
+| `confirmed_requests`、`by_kind`、`classification` | 确认过的来源请求总数及列表、详情、回扫、重定向、探测口径 |
+| `min_finish_to_start_seconds` | 前次完成到下次开始的最小实际秒数 |
+| `violations.count`、`violations.items` | 低于 60 秒的次数，以及请求 ID、时间和间隔明细 |
+| `unknown` | 未确认网络尝试、未完成、时间缺失、重叠、时钟异常；不能当作正常 |
+| `config_policy`、`config_history` | 有记录支持的历史配置审计，与固定 60 秒下限分开 |
+| `verdict` | `pass` 仅表示所读快照内的确认请求未发现低于审计下限；`fail` 已发现过快间隔；`unknown` 证据不足 |
+
+退出码分别是 0 / 1 / 2；读取或输入错误是 3。`fail` / `unknown` 输出仍是
+有效审计报告，不是容器启动失败。若刚好有进行中的请求，会记录为未完成，
+可在响应结束后重跑只读命令。报告时间为带时区的 UTC，不要直接与手机的
+上海时间字符串比较。
+
+检查相邻来源请求的“前一次响应结束 → 下一次请求开始”间隔、短于 60 秒的
+明细，以及未完成、缺少时间或网络状态未知的记录。时间/状态未知不能记为
+合规；按自然分钟分桶只能辅助查看，跨分钟的两次请求也可能只相隔一秒，
+应比较真实秒数。审计注明
+历史任务配置，不能把配置变更之前的记录冒充当前配置的持续表现。
+若仍是 v1–v4 双库布局，将 `--db` 改为 `/data/experiment.sqlite3`，不要对只有
+兼容帖子表的旧 `collector.db` 做请求审计。审计不发起任何来源请求。
+
 ## 运行记录翻页
 
 “源请求”和“控制事件”各有上一页、下一页、回到最新记录的控制。最新页可每 5 秒刷新；浏览历史页时只更新采集状态，不覆盖历史记录。每次只渲染一页，数据增长不会把全部记录塞进手机页面。
