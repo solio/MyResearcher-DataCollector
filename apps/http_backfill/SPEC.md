@@ -1,6 +1,35 @@
 # Low-frequency HTTP backfill console — experimental contract
 
-Status: v4 MULTI-INSTANCE CONTROL AND MERGE IMPLEMENTED; LOCAL VERIFICATION PASS;
+## 2026-10-01 authorized v5 single-database migration
+
+The user explicitly requests one migration command and deletion of the live
+`experiment.sqlite3` after successful migration. This supersedes the earlier
+separate local ledger/projection design; the root production database remains
+outside this app's scope.
+
+- `collector.db` becomes the app's sole local runtime database. Keep the original
+  SimplePostStore `posts` columns and read interface; add app-owned ledger tables.
+  Current verified body text lives in `posts` only. App post state retains list
+  metadata and detail metadata without another current body copy; immutable
+  federation versions and retained raw responses remain evidence.
+- Preserve all ledger IDs, task queues, jobs, observations, coverage, recoveries,
+  cooldowns, source halt reasons, instance UUID and immutable export sequences.
+  Existing fleet files, tokens and raw response paths are retained unchanged.
+- A stopped-worker-only offline migration uses SQLite backups (including WAL),
+  validates integrity, complete ledger equality and retained raw hashes, publishes
+  the unified database atomically, then removes `experiment.sqlite3` and its
+  sidecars. Durable backups and a migration receipt make interruption and reruns
+  recoverable. Failed validation never deletes the old database.
+- Runtime rejects an unmigrated legacy directory with an actionable command;
+  fresh directories create only `collector.db`. Migration never requests Guba.
+  Startup stays paused or preserves a source halt, using existing restart rules.
+- A single Docker wrapper builds the new image, stops the worker, migrates the
+  mounted `/data`, and starts the service only after migration succeeds. Offline
+  regression covers existing v1/v4 data, failures, interruption, idempotence,
+  continued acquisition, export/merge and original posts-reader compatibility.
+
+
+Status: v5 SINGLE-DATABASE MIGRATION IMPLEMENTED; LOCAL VERIFICATION PASS;
 USER HAS DEPLOYED AN EARLIER RELEASE; REMOTE UPGRADE NOT EXECUTED HERE.
 Date: 2026-10-01, Asia/Shanghai. Role: Developer.
 

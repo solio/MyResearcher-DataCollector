@@ -23,6 +23,7 @@ from urllib.parse import urlencode, urlparse, urlunparse
 from activity import activity_page, activity_query
 
 VERSION = "http-backfill.v4"
+SUPPORTED_NODE_VERSIONS = {VERSION, "http-backfill.v5"}
 MAX_NODES = 16
 MAX_JSON = 32 * 1024 * 1024
 
@@ -210,8 +211,8 @@ class FleetManager:
 
     @staticmethod
     def _identity(status):
-        if not isinstance(status, dict) or status.get("version") != VERSION:
-            raise FleetError(409, "节点须升级到 http-backfill.v4，旧版没有可验证增量导出接口")
+        if not isinstance(status, dict) or status.get("version") not in SUPPORTED_NODE_VERSIONS:
+            raise FleetError(409, "节点须升级到 http-backfill.v4/v5，旧版没有可验证增量导出接口")
         value = status.get("instance_id")
         try:
             if not isinstance(value, str) or str(uuid.UUID(value)) != value:

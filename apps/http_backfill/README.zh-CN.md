@@ -1,6 +1,6 @@
 # 闲时 HTTP 回补控制台
 
-这是独立的研究采集应用：不依赖 GUI，以每分钟最多一次来源请求起步，手机网页查看状态、暂停与手动探测。采集数据沿用浏览器原来的 `SimplePostStore`，保存在本应用 `data/collector.db`；任务与请求台账另存在 `experiment.sqlite3`，raw 响应继续留存。不写根目录的生产 `data/collector.db`，也不自动送入训练。当前阶段不承诺来源长期放行，更不承诺拥有二十年历史。
+这是独立的研究采集应用：不依赖 GUI，以每分钟最多一次来源请求起步，手机网页查看状态、暂停与手动探测。本机采集数据、任务、请求与恢复台账统一保存在本应用 `data/collector.db`；原有 `posts` 查询结构沿用浏览器的 `SimplePostStore`，raw 响应继续留存。不写根目录的生产 `data/collector.db`，也不自动送入训练。当前阶段不承诺来源长期放行，更不承诺拥有二十年历史。
 
 ## 本地启动
 
@@ -39,9 +39,9 @@ python3 -B apps/http_backfill/server.py --host 127.0.0.1 --port 8790
 
 用户指定历史日期边界后，应用显示列表覆盖与正文完成度；来源已到尽头但还没达到日期边界，会显示覆盖不足。两轮局部观察一致只证明该次锚点区间核对结果，不能证明整段历史完整，更无法发现从未观察到且已永久删除的帖子。`coverage_complete` 和 `model_database_eligible` 始终为 false；这批数据继续留在独立研究库。
 
-`data/` 包含兼容采集库 `collector.db`、任务台账 `experiment.sqlite3`、请求对应的 `raw/` 响应和控制台令牌 `console.token`。兼容库直接复用原 `SimplePostStore` 的表结构和写入实现，原来的 `posts` SQL、源 ID、股票代码、发布时间和 enrich 候选规则可以沿用。未取得详情的 `posts.content` 是 NULL；已取得的真实空正文是空字符串。正文来源、跨股票关联、原始响应和范围缺口保留在台账/API 中，兼容库不会凭局部数据写入完整回补覆盖。
+`data/` 包含本机唯一运行数据库 `collector.db`、请求对应的 `raw/` 响应和控制台令牌 `console.token`。`collector.db` 的 `posts` 保持原 `SimplePostStore` 字段，其他表保存任务、请求、恢复、来源与导出版本；当前核实正文只写 `posts.content`，工作状态不另存一份正文。原来的 `posts` SQL、源 ID、股票代码、发布时间和 enrich 候选规则可以沿用。未取得详情的 `posts.content` 是 NULL；已取得的真实空正文是空字符串。正文来源、跨股票关联和范围缺口保留在同一库的台账/API 中，不会凭局部数据写入完整回补覆盖。raw 和不可变导出版本保留历史证据，因此历史正文版本仍可能出现于证据中。
 
-首次升级会从现有台账幂等生成兼容库，随后按新增或变化记录更新，不重新请求来源，也不重复复制 raw。迁移前停服务并整体备份此目录，不只复制 SQLite 主文件。`api/posts` 是带原始来源/范围状态的研究查询，不是向生产库晋升数据的接口。实例拥有持久化 `instance_id`，状态、请求和帖子查询携带该 ID，供后续汇总追踪来源使用。
+旧版升级必须执行下方的一次性迁移命令，完整校验后自动删除运行目录中的 `experiment.sqlite3` 及其 WAL/SHM。迁移保留断点与来源阻断，自动生成旧库备份，不请求来源、不移动 raw；重复执行安全。`api/posts` 是带原始来源/范围状态的研究查询，不是向生产库晋升数据的接口。实例拥有持久化 `instance_id`，状态、请求和帖子查询携带该 ID，供后续汇总追踪来源使用。
 
 本版支持一个中央控制台管理本机和多台远程实例，并在后台增量合并数据。每台实例保留自己的 SQLite、队列、请求间隔和阻断记录；中央服务通过鉴权 API 控制任务和同步证据，不直接拼接数据库文件。各实例的股票和时间窗口在同一控制台分别配置。
 
@@ -49,7 +49,7 @@ python3 -B apps/http_backfill/server.py --host 127.0.0.1 --port 8790
 
 现有服务器可以同时作为采集实例和中央服务，无需迁移原任务。打开 `/collector/` 的“采集实例”区域，登记其他服务器的实例 ID、名称、服务地址和访问密钥；当前支持本机加最多 16 台远程实例。服务地址是中央服务器能够访问的采集服务根地址，例如已有 HTTPS 入口的 `https://<采集机域名>/collector/`，或者明确配置的内网地址 `http://<采集机内网IP>:8790/`。
 
-远程实例也必须更新到 v4。登记时中央服务先验证版本和持久化 UUID，同一个实例不能重复登记；复制原 `data/` 会复制实例身份，不能当作新的独立采集机。登记已有独立运行实例可保留它的数据与任务；全新采集机使用自己的空 `data/`。修改登记时访问密钥留空会保留旧密钥；更换密钥后重新验证连接。密钥只存中央服务的私有 `data/fleet/registry.json`（0600），不返回浏览器、不写浏览器本地存储。
+v5 中央服务支持 v4/v5 采集实例逐台升级；先升级中央服务，再升级其他节点。要删除某节点的旧任务库，在该节点执行迁移命令。登记时中央服务先验证版本和持久化 UUID，同一个实例不能重复登记；复制原 `data/` 会复制实例身份，不能当作新的独立采集机。登记已有独立运行实例可保留它的数据与任务；全新采集机使用自己的空 `data/`。修改登记时访问密钥留空会保留旧密钥；更换密钥后重新验证连接。密钥只存中央服务的私有 `data/fleet/registry.json`（0600），不返回浏览器、不写浏览器本地存储。
 
 选择实例后，原来的任务配置、暂停、继续、单次探测、股票删除、任务归档和运行记录都作用于选中的实例。卡片显示各机状态、阻断原因、最近连接时间和同步进度；断联保留上次状态并显示连接错误。远端鉴权失败不会退出中央网页登录。移除登记停止后续控制和同步，已合并数据保留，远端正在执行的任务不会因移除登记被自动停止。
 
@@ -59,8 +59,9 @@ python3 -B apps/http_backfill/server.py --host 127.0.0.1 --port 8790
 
 | 文件 | 用途 |
 | --- | --- |
-| `data/collector.db` | 本机采集数据，保留原任务的独立存储 |
-| `data/experiment.sqlite3`、`data/raw/` | 本机任务、请求、不可变导出台账及原始响应 |
+| `data/collector.db` | 本机采集、任务、请求、恢复、来源与不可变导出台账 |
+| `data/raw/` | 本机原始响应，路径与哈希在迁移后保留 |
+| `data/migration-backups/` | 迁移前旧库的离线备份和迁移凭据；运行时不读写旧库 |
 | `data/fleet/collector.db` | 多实例汇总后的兼容采集库，沿用原 `SimplePostStore` 表结构 |
 | `data/fleet/merge.sqlite3` | 每实例版本、原请求、同步游标、选中记录、范围快照与冲突 |
 | `data/fleet/raw/` | 校验过的原始响应，按 SHA-256 保存，相同字节只存一份 |
@@ -90,11 +91,11 @@ docker compose ps
 curl -fsS http://127.0.0.1:8790/healthz
 ```
 
-若服务器已有 Collector checkout，进入 `MyResearcher-DataCollector/apps/http_backfill` 执行 `git pull && docker compose up -d --build` 即可，与 labeler 的更新方式一致。`compose.yml` 是自动识别的文件名，无需 `-f`；命令要在这个应用目录执行。健康检查返回 `{"ok": true}`。首启处于暂停状态，不会因健康检查或网页刷新请求股吧。
+若服务器已有旧版数据，进入 `MyResearcher-DataCollector/apps/http_backfill` 执行 `git pull && bash migrate-storage.sh`；这次会切换到单库。以后普通更新再使用 `git pull && docker compose up -d --build`。`compose.yml` 是自动识别的文件名，无需 `-f`；命令要在这个应用目录执行。健康检查返回 `{"ok": true}`。首启处于暂停状态，不会因健康检查或网页刷新请求股吧。
 
 基础镜像默认复用 labelapp 使用的 `fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim`。应用镜像直接在服务器构建，不需要推送镜像仓库；已有私有仓库登录和基础镜像缓存可以沿用。首次应用构建仍需访问 Debian 软件包源安装 curl 和 CA 证书。其他环境可设置 `BACKFILL_BASE_IMAGE=python:3.12-slim` 后运行 Compose。应用没有额外 pip 依赖。
 
-容器内绑定 0.0.0.0，宿主仅发布 `127.0.0.1:8790`；应用目录的 `./data` 挂载为容器 `/data`，`collector.db`、`experiment.sqlite3`、raw 响应、队列和登录令牌都保存在这里。配置使用 `/collector/` cookie path，网页登录通过 nginx 入口进行。直接本机启动不设置此前缀，使用根路径即可。Dockerfile 的专属 ignore 只发送源码和本应用，不发送生产数据、历史 raw、凭据或 Git 目录。
+容器内绑定 0.0.0.0，宿主仅发布 `127.0.0.1:8790`；应用目录的 `./data` 挂载为容器 `/data`，`collector.db`、raw 响应、队列和登录令牌都保存在这里。配置使用 `/collector/` cookie path，网页登录通过 nginx 入口进行。直接本机启动不设置此前缀，使用根路径即可。Dockerfile 的专属 ignore 只发送源码和本应用，不发送生产数据、历史 raw、凭据或 Git 目录。
 
 在现有 `server_name testapi.zuzurent.com.cn` 的 **HTTPS server 块内部**加入以下两个 location（同一块中的 `/labeler/` 保持原配置）：
 
@@ -125,19 +126,23 @@ docker compose exec -T collector-console cat /data/console.token
 
 登录后创建股票和日期范围明确的任务，客户端选 curl、间隔选 60 秒，再点击“开始”。关闭手机或 SSH 不影响后台采集。列表和详情共用每分钟一次额度；遇到验证码、限流或异常会暂停。手动“重试一次”只发一次探测，成功后仍需点击“开始”继续。
 
-本次 v4 升级增加多实例管理、不可变导出序列和兼容汇总库，启动时自动升级旧台账并建立已有数据的导出基线。先在控制台暂停，等当前请求结束，再在 `apps/http_backfill` 目录停止服务、整体备份并更新。以下备份示例按当前服务器 root 用户执行；备份留在构建目录外，并设为仅当前用户可读：
+从 v1–v4 升级为单库 v5，在当前 `http_backfill` 目录只执行这一条：
 
 ```bash
-docker compose stop collector-console
-umask 077
-mkdir -p /var/backups/myresearcher-collector
-tar -czf "/var/backups/myresearcher-collector/data-$(date +%Y%m%d-%H%M%S).tar.gz" data && \
-git pull && docker compose up -d --build
-docker compose logs --tail=30 collector-console
-curl -fsS http://127.0.0.1:8790/healthz
+git pull && bash migrate-storage.sh
 ```
 
-重建容器保留宿主机 `data/`、原任务、台账、raw 和令牌；进程重启后任务安全暂停。刷新手机页面，用原令牌登录，确认配置后点击“开始”，旧页位置会先校准。若有未确认的中断请求，会显示错误并要求单次探测。回退到旧代码前应停服务并恢复对应的整份备份，避免旧程序误读已升级结构。
+脚本先构建新镜像，再停止旧 worker；在挂载的 `/data` 上离线迁移，保存 SQLite 一致性备份（包括 WAL 中已提交的数据），校验旧台账、帖子与全部已记录 raw 哈希后发布 `collector.db`，删除原 `experiment.sqlite3` 及其 sidecar，再启动服务并检查健康状态。无需手动删文件，也无需改 nginx。校验失败不会删除旧库，服务保持停止，修复后重新执行同一命令。断电中断可依据迁移凭据续办；成功后重复运行不重复搬运数据。
+
+任务、股票配置、历史请求、验证码阻断、冷却时间、实例 UUID 和既有导出同步序号保留。迁移过程不自动运行任务；重启后保持来源阻断或安全暂停，在手机控制台确认后继续，原页位置会按现有规则校准。登录令牌、raw 与 `fleet/` 保留。备份文件位于 `data/migration-backups/`，程序不再使用其中的旧库；不要把备份当成新的采集实例。
+
+如果不用 Docker，先停止自己的服务，然后在仓库根目录运行：
+
+```bash
+python3 -B apps/http_backfill/migrate_storage.py --data-dir apps/http_backfill/data
+```
+
+迁移工具拒绝正在使用的 worker 目录、未确认归属的现有库、越界路径及损坏证据。迁移成功后再启动新版服务。回退旧代码需要先停服务并恢复迁移前的两份对应数据库，不能让旧代码读取单库布局。
 
 本版保留了原基础镜像与安装 curl 的 apt 指令，没有新增 apt/pip 依赖；已成功构建的服务器通常会复用这一层。构建日志应显示该 `RUN apt-get ...` 步骤 `CACHED`。Docker 默认构建网络仍是隔离网络；缓存是否复用取决于基础镜像和前面的构建指令是否改变。新增根目录 `.dockerignore` 作为兼容后备，避免旧构建器发送采集数据。
 

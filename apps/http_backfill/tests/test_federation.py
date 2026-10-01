@@ -22,6 +22,9 @@ from myresearcher_collector.sources.eastmoney_guba import parser as guba
 from test_compatible_store import Ledger
 from test_core import row
 
+NODE_A = "00000000-0000-4000-8000-000000000001"
+NODE_B = "00000000-0000-4000-8000-000000000002"
+
 
 class FederationTests(unittest.TestCase):
     def setUp(self):
@@ -40,8 +43,11 @@ class FederationTests(unittest.TestCase):
         directory.mkdir()
         node = Ledger(directory)
         with node.db:
-            node._set("instance_id", name)
-        node.writer = CompatibleDataStore(directory, name)
+            identity = name
+            node._set("instance_id", identity)
+            node._set("compatible_storage_instance", identity)
+        node.instance_id = identity
+        node.writer = CompatibleDataStore(directory, identity)
         node.writer.sync(node)
         self.nodes.append(node)
         return node
@@ -70,7 +76,7 @@ class FederationTests(unittest.TestCase):
         record["evidence_sha256"] = _hash(payload)
 
     def test_immutable_journal_baseline_and_incremental_snapshot(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         source = self.acquire(node)
         before = export_page(node)
         with node.db:
@@ -91,10 +97,10 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(export_page(node, after=1)["items"][0]["post"]["content"], "新取得正文")
 
     def test_raw_export_validates_path_hash_and_is_instance_namespaced(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         request = node.list([row()])
         raw = export_raw(node, request)
-        self.assertEqual(raw["instance_id"], "node-a")
+        self.assertEqual(raw["instance_id"], NODE_A)
         path = node.data_dir / node.db.execute("SELECT raw_ref FROM requests WHERE id=?", (request,)).fetchone()[0]
         path.write_bytes(path.read_bytes() + b"corruption")
         with self.assertRaisesRegex(FederationError, "SHA-256"):
@@ -105,7 +111,7 @@ class FederationTests(unittest.TestCase):
             export_raw(node, request)
 
     def test_overlap_enriches_one_compatible_post_and_retains_both_instances(self):
-        a, b = self.node("node-a"), self.node("node-b")
+        a, b = self.node(NODE_A), self.node(NODE_B)
         self.acquire(a)
         self.acquire(b, body="实际正文")
         self.merge(a)
@@ -122,7 +128,7 @@ class FederationTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM backfill_coverage").fetchone()[0], 0)
 
     def test_observed_empty_detail_survives_newer_missing_list(self):
-        a, b = self.node("node-a"), self.node("node-b")
+        a, b = self.node(NODE_A), self.node(NODE_B)
         self.acquire(a, body="")
         self.merge(a)
         b.clock.advance(1000)
@@ -132,7 +138,7 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(self.store.status()["body_complete"], 1)
 
     def test_identity_and_body_conflicts_keep_versions_and_deterministic_whole_winner(self):
-        a, b = self.node("node-a"), self.node("node-b")
+        a, b = self.node(NODE_A), self.node(NODE_B)
         self.acquire(a, row(user_nickname="甲作者"), "甲正文")
         self.acquire(b, row(user_nickname="乙作者"), "乙正文")
         self.merge(a)
@@ -147,23 +153,23 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(len(self.store.versions(guba.SOURCE, "1001")), 4)
 
     def test_incremental_replay_reuses_hash_raw_and_resumes_after_restart(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         self.acquire(node, body="真实正文")
         first = export_page(node, limit=1)
-        self.store.merge_page("node-a", first, lambda rid: export_raw(node, rid))
+        self.store.merge_page(NODE_A, first, lambda rid: export_raw(node, rid))
         def should_not_transfer(_):
             raise AssertionError("raw already exists")
-        self.store.merge_page("node-a", first, should_not_transfer)
+        self.store.merge_page(NODE_A, first, should_not_transfer)
         self.assertEqual(self.store.status()["observations"], 1)
         self.store = MergeStore(self.root / "hub")
-        after = self.store.cursor("node-a")
+        after = self.store.cursor(NODE_A)
         self.merge(node, after=after)
-        self.assertEqual(self.store.cursor("node-a"), 2)
+        self.assertEqual(self.store.cursor(NODE_A), 2)
         self.assertEqual(self.store.status()["observations"], 2)
         self.assertEqual(self.posts()["1001"]["content"], "真实正文")
 
     def test_corrupt_raw_whole_page_retains_previous_cursor_and_no_versions(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         self.acquire(node, body="真实正文")
         def corrupt(rid):
             raw = export_raw(node, rid)
@@ -171,15 +177,15 @@ class FederationTests(unittest.TestCase):
                 raw["body_base64"] = "Y29ycnVwdA=="
             return raw
         with self.assertRaisesRegex(FederationError, "SHA-256"):
-            self.store.merge_page("node-a", export_page(node), corrupt)
-        self.assertEqual(self.store.cursor("node-a"), 0)
+            self.store.merge_page(NODE_A, export_page(node), corrupt)
+        self.assertEqual(self.store.cursor(NODE_A), 0)
         self.assertEqual(self.store.status()["observations"], 0)
         self.assertEqual(self.posts(), {})
         self.merge(node)
-        self.assertEqual(self.store.cursor("node-a"), 2)
+        self.assertEqual(self.store.cursor(NODE_A), 2)
 
     def test_signed_but_false_post_title_body_and_time_fail_independent_raw_validation(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         self.acquire(node, body="真实正文")
         for field, value in (("title", "伪造标题"), ("content", "伪造正文"), ("created_at", "2020-01-01T00:00:00.000000Z")):
             with self.subTest(field=field):
@@ -187,18 +193,18 @@ class FederationTests(unittest.TestCase):
                 page["items"][-1]["post"][field] = value
                 self.resign(page["items"][-1])
                 with self.assertRaises(FederationError):
-                    self.store.merge_page("node-a", page, lambda rid: export_raw(node, rid))
-                self.assertEqual(self.store.cursor("node-a"), 0)
+                    self.store.merge_page(NODE_A, page, lambda rid: export_raw(node, rid))
+                self.assertEqual(self.store.cursor(NODE_A), 0)
                 self.assertEqual(self.store.status()["observations"], 0)
 
     def test_sequence_gaps_mutated_immutable_versions_and_wrong_instance_rejected(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         self.acquire(node)
         page = export_page(node)
         bad = copy.deepcopy(page)
         bad["items"][0]["seq"] = 2
         with self.assertRaisesRegex(FederationError, "序列"):
-            self.store.merge_page("node-a", bad, lambda rid: export_raw(node, rid))
+            self.store.merge_page(NODE_A, bad, lambda rid: export_raw(node, rid))
         with self.assertRaisesRegex(FederationError, "实例"):
             self.store.merge_page("wrong-node", page, lambda rid: export_raw(node, rid))
         self.merge(node)
@@ -206,25 +212,25 @@ class FederationTests(unittest.TestCase):
         mutated["items"][0]["coverage_complete"] = True
         self.resign(mutated["items"][0])
         with self.assertRaisesRegex(FederationError, "不同事实"):
-            self.store.merge_page("node-a", mutated, lambda rid: export_raw(node, rid))
-        self.assertEqual(self.store.cursor("node-a"), 1)
+            self.store.merge_page(NODE_A, mutated, lambda rid: export_raw(node, rid))
+        self.assertEqual(self.store.cursor(NODE_A), 1)
 
     def test_posts_commit_failure_leaves_cursor_then_restart_repairs_locally(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         self.acquire(node, body="真实正文")
         with patch.object(SimplePostStore, "upsert_post", side_effect=sqlite3.OperationalError("disk fixture")):
             with self.assertRaisesRegex(FederationError, "disk fixture"):
                 self.merge(node)
-        self.assertEqual(self.store.cursor("node-a"), 0)
-        self.assertEqual(self.store.status()["pending_instances"], ["node-a"])
+        self.assertEqual(self.store.cursor(NODE_A), 0)
+        self.assertEqual(self.store.status()["pending_instances"], [NODE_A])
         self.assertEqual(self.store.status()["observations"], 2)
         self.store = MergeStore(self.root / "hub")
-        self.assertEqual(self.store.cursor("node-a"), 2)
+        self.assertEqual(self.store.cursor(NODE_A), 2)
         self.assertEqual(self.store.status()["pending_instances"], [])
         self.assertEqual(self.posts()["1001"]["content"], "真实正文")
 
     def test_changed_source_updates_only_its_affected_post(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         for number in ("1001", "1002", "1003"):
             self.acquire(node, row(number))
         self.merge(node)
@@ -241,7 +247,7 @@ class FederationTests(unittest.TestCase):
         self.assertEqual(after["1002"]["content"], "只更新此帖")
 
     def test_corrupt_pending_raw_restart_serves_other_nodes_then_repairs_from_node_evidence(self):
-        a, b = self.node("node-a"), self.node("node-b")
+        a, b = self.node(NODE_A), self.node(NODE_B)
         self.acquire(a, body="待恢复正文")
         with patch.object(SimplePostStore, "upsert_post", side_effect=sqlite3.OperationalError("disk fixture")):
             with self.assertRaises(FederationError):
@@ -250,13 +256,13 @@ class FederationTests(unittest.TestCase):
         path = self.store.raw_dir / f"{raw['sha256']}.body"
         path.write_bytes(b"corrupt-local")
         self.store = MergeStore(self.root / "hub")
-        self.assertEqual(self.store.cursor("node-a"), 0)
-        self.assertIn("node-a", self.store.status()["recovery_errors"])
+        self.assertEqual(self.store.cursor(NODE_A), 0)
+        self.assertIn(NODE_A, self.store.status()["recovery_errors"])
         self.acquire(b, row("1002"))
         self.merge(b)
         self.assertEqual(set(self.posts()), {"1002"})
         self.merge(a)
-        self.assertEqual(self.store.cursor("node-a"), 2)
+        self.assertEqual(self.store.cursor(NODE_A), 2)
         self.assertEqual(self.store.status()["recovery_errors"], {})
         self.assertEqual(self.posts()["1001"]["content"], "待恢复正文")
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), raw["sha256"])
@@ -278,7 +284,7 @@ class FederationTests(unittest.TestCase):
             MergeStore(REPO / "data")
 
     def test_export_response_budget_truncates_large_body_pages_without_skipping(self):
-        node = self.node("node-a")
+        node = self.node(NODE_A)
         for number in ("1001", "1002"):
             self.acquire(node, row(number), "x" * (5 * 1024 * 1024))
         first = export_page(node, limit=100)

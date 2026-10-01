@@ -169,7 +169,7 @@
       card.append(metrics);
       const config = state.job?.config || state.config;
       if (config) card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
-      if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复兼容库。" : "保留来源阻断，需在该实例明确安排一次探测。"));
+      if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复采集数据库写入。" : "保留来源阻断，需在该实例明确安排一次探测。"));
       if (node.last_error) card.append(el("p", "node-error", `连接错误：${textValue(node.last_error)}。这不等于来源采集失败。`));
       const sync = objectValue(node.sync), labels = { idle: "等待同步", syncing: "正在同步", error: "同步异常", ready: "已同步" };
       card.append(el("p", "node-sync", `${labels[sync.state] || "同步状态尚未取得"} · 游标 ${number(first(sync, ["cursor", "last_cursor", "last_seq"], data.merge?.cursors?.[node.instance_id]))} · 最近状态 ${time(node.last_seen_at)}${sync.last_synced_at ? " · 最近同步 " + time(sync.last_synced_at) : ""}`));
@@ -268,7 +268,7 @@
     $("start").disabled = locked || !job || pending || status?.storage_halt || status?.active_halt || status?.request_inflight || !["paused", "idle"].includes(state);
     $("pause").disabled = locked || !(state === "running" || pending);
     $("retry").disabled = locked || pending || status?.request_inflight || (status?.storage_halt ? state === "running" : ((!job && !status?.active_halt) || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state)));
-    display("retry", status?.storage_halt ? "重试兼容库写入" : "单次探测重试");
+    display("retry", status?.storage_halt ? "重试数据库写入" : "单次探测重试");
     const awaitingStop = state === "running" || pending || status?.request_inflight;
     $("config-fields").disabled = locked || awaitingStop;
     $("save-config").disabled = $("config-fields").disabled || (!job && !!status?.active_halt);
@@ -290,7 +290,7 @@
     $("save-node").disabled = busy;
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
-    if (status?.storage_halt) display("action-note", "兼容库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
+    if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
     else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
     else if (["blocked", "error"].includes(state)) display("action-note", "已暂停后续请求。检查证据后，可手动安排一次探测。");
@@ -574,7 +574,8 @@
     const failed = !!data.storage_halt || storage.status === "error";
     display("storage-state", failed ? "写入异常 · 已暂停" : storage.status === "ready" ? "可用" : "等待状态");
     $("storage-state").className = `tag ${failed ? "warning" : "success"}`;
-    display("storage-path", storage.db_path || "兼容库路径尚未返回");
+    display("storage-path", storage.db_path || "采集数据库路径尚未返回");
+    display("storage-note", storage.single_runtime_database === true || /^unified\./.test(storage.storage_layout || "") ? "本实例使用一份 collector.db 保存现有 posts / backfill 格式、请求记录和任务状态。采集数据的覆盖仍需核实，不会自动进入生产模型。" : "该实例尚未返回单库布局标记。升级并迁移后可将帖子、请求记录和任务状态统一保存到 collector.db；现有采集数据的覆盖仍需核实，不会自动进入生产模型。");
     display("storage-sync", `最近本地同步 ${time(storage.last_synced_at)}${storage.storage_version ? " · 格式 " + textValue(storage.storage_version) : ""}`);
     const error = first(storage, ["last_error"], data.storage_halt);
     $("storage-error").hidden = !error;
@@ -843,7 +844,7 @@
   $("start").addEventListener("click", () => { void post("control", { action: "start" }, "已提交开始指令；源请求由服务端按全局间隔安排。"); });
   $("pause").addEventListener("click", () => { void post("control", { action: "pause" }, "已提交暂停指令，队列与响应证据会保留。"); });
   $("retry").addEventListener("click", () => {
-    if (status?.storage_halt) { void post("control", { action: "retry" }, "已提交兼容库写入重试，仅处理本地记录。检查状态后，仍需手动开始源采集。"); return; }
+    if (status?.storage_halt) { void post("control", { action: "retry" }, "已提交采集数据库写入重试，仅处理本地记录。检查状态后，仍需手动开始源采集。"); return; }
     retryNodeEpoch = nodeEpoch; renderTiming(); $("retry-dialog").showModal();
   });
   $("retry-dialog").addEventListener("close", () => { if ($("retry-dialog").returnValue === "confirm" && retryNodeEpoch === nodeEpoch) void post("control", { action: "retry" }, "已安排一次探测。发送时间遵守间隔与冷却期，成功后仍暂停。"); });

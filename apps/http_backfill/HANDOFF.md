@@ -1,16 +1,61 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v4.
+Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v5.
 
-The user has deployed v1 on one server and explicitly authorized fixing stock
-configuration editing/deletion and improving pause/recovery, challenge handling
-and continuous list/detail work. The user subsequently requested activity paging,
-reuse of the original collector.db structure and original detail trigger. This
-release implements those corrections. The user's next correction explicitly
-requires the previously omitted multi-instance management and data merge. v4 now
-implements a hub on the existing collector, authenticated remote controls and
-incremental evidence merge. Remote addresses are registered by the user rather
-than guessed; remote installation is not executed in this local task.
+The user explicitly requests one migration command and deletion of the live
+experiment.sqlite3 afterward. v5 now uses collector.db as the sole local runtime
+database, preserving the original posts table's fields and adding app ledger
+state in the same database. The previous v4 fleet management and verified merge
+remain enabled. Root production data and source semantics remain outside scope.
+Remote server migration has not been executed from this local workspace.
+
+## v5 migration and validation
+
+- `git pull && bash migrate-storage.sh` from apps/http_backfill builds before
+  downtime, stops the worker, runs migrate_storage.py --data-dir /data in a
+  disposable container, and starts/checks the new service only after success.
+- The migrator uses worker.lock and SQLite backups including committed WAL;
+  verifies integrity, complete old ledger rows/IDs, post/body/metadata facts,
+  raw lengths/hashes, UUID, source halt/cooldown and existing immutable exports.
+  It atomically publishes collector.db and records a durable receipt before
+  deleting experiment.sqlite3 and its WAL/SHM. Backups are private under
+  data/migration-backups/. Interrupted publication/cleanup is resumable;
+  failures keep evidence and prevent automatic service start.
+- Current body text lives only in original posts.content. http_post_state stores
+  source metadata without another content column or duplicate post_content;
+  http_posts is a read view. Full detail payload API responses reconstruct from
+  freshly verified raw. Immutable export versions remain historical evidence.
+- Node projection/provenance/export use one borrowed SQLite connection and one
+  transaction; fleet retains its standalone original-schema store adapter.
+  New directories create only collector.db. Old or incomplete migrations must
+  finish the CLI before v5 startup. Runtime rejects unowned/schema-mismatched
+  or symlinked databases. Migration streams rows rather than loading all bodies.
+- v5 hubs accept v4/v5 node export contracts, allowing hub-first upgrades.
+  Stable instance UUIDs and existing export sequences keep pinned registrations
+  and synchronization cursors valid. Fleet data/registry/raw and tokens remain.
+- Independent real-data clone verification passed for both the original v1
+  pilot and a v4-upgraded clone: 179 requests, 229 posts, 240 observations,
+  3 page observations, 176 bodies and all 179 raw hashes preserved. Original
+  enrich query still finds 9 long-title candidates; 44 old short pending items
+  become list_only at normal startup. All 229 preexisting v4 export rows remain
+  byte-for-byte unchanged, ending at sequence 229; v1 acquires its first baseline
+  and subsequent policy versions. Both clones merge successfully and reopen /
+  rerun idempotently without recreating experiment.sqlite3. Zero source requests.
+- Original content_rules/SimplePostStore/detail_enrichment tests: 20 PASS.
+  H5 actual-app.js fleet tests: 8 PASS. Shell wrapper tests: 3 PASS, covering
+  build failure, migration failure and success ordering. Full migration/runtime
+  suite: 181 PASS with ResourceWarning treated as errors (21.524 seconds),
+  including 9 migration cases and 3 atomic detail/raw cases. JavaScript syntax,
+  Compose configuration and git diff whitespace checks pass.
+- Linux amd64 image rebuild reused the cached curl/CA installation. A real v1
+  clone migrated inside the network-disabled container, then the new server
+  returned authenticated v5/paused/ready with 179 requests, 229 posts, 176
+  bodies, 44 list_only and collector.db as its runtime path. No experiment file
+  was recreated, source requests stayed zero, and a concurrent migration was
+  refused by the worker lock. Disposable server container was removed.
+  Linux regression uses a read-only sanitized-fixture mount (fixtures are not
+  part of the production Docker context): migration 9, authenticated three-server
+  HTTP 4 and atomic detail/raw 3 tests all PASS (16 total, 7.268 seconds).
 
 Implementation is confined to this app; the existing root Docker context
 allowlist is retained.
@@ -49,24 +94,18 @@ contract is changed, and no automatic model promotion is implemented.
   records with list_title provenance. Existing genuine bodies are retained,
   including short and empty bodies. Old pending short details become skipped;
   a halted short-detail target retains its cooldown and one probe-only action.
-- App-local data/collector.db reuses SimplePostStore and its existing schema,
-  including original posts queries and detail-enrichment candidate semantics.
-  No private columns or ledger tables are added to that compatible database.
-  Missing body is NULL and observed empty body is an empty string. Removed or
-  unavailable detail evidence reuses the original local enrich skip ledger.
-- experiment.sqlite3 retains request/task/recovery/provenance and projection
-  bookkeeping. Startup replays committed evidence idempotently; subsequent
-  source responses project only affected posts. Raw hashes, source identities,
-  publication and original acquisition timestamps are independently verified.
-  Raw/request commits precede compatible writes. A local storage failure stops
-  acquisition; start/retry repair locally and retain source halt/cooldown.
+- App-local collector.db contains original SimplePostStore posts plus task,
+  request, recovery and provenance tables. Missing body is NULL and observed
+  empty body is an empty string. Source-unavailable skip facts are in the same
+  database. Source commits and raw remain durable before local replay; a local
+  storage failure stops acquisition, and repair retains source halt/cooldown.
 - Authenticated requests/events pagination uses independent descending ID
   cursors and fixed snapshot membership. H5 shows 30 requests or 20 events per
   page with previous/next/latest controls. History remains visible while status
   polls. The old default array API is retained; paged=1 opts into a page object.
   Indexed keyset reads and a bounded total cache avoid growing page DOM and
   repeated whole-ledger counts on routine polling.
-- FleetManager registers up to 16 remote v4 services with stable pinned UUIDs,
+- FleetManager registers up to 16 remote v4/v5 services with stable pinned UUIDs,
   validated explicit URLs and write-only private tokens. Same-instance and clone
   registrations are rejected. Token omission on edit preserves the secret;
   public responses/errors never echo it. registry.json is 0600 in a 0700 folder.
@@ -104,7 +143,7 @@ contract is changed, and no automatic model promotion is implemented.
   switching; dirty drafts require explicit discard. Tokens clear after save,
   failure or cancellation. Removal retains central data and remote task state.
 
-## Validation
+## Previous v4 validation
 
 165 offline app tests pass with ResourceWarning treated as errors. Coverage
 includes existing Engine/recovery/lifecycle/HTTP behavior plus >=40 boundaries,
@@ -149,10 +188,9 @@ removed after validation; the browser viewport override was reset.
 
 ## Deployment and evidence limits
 
-The user confirmed their earlier server build/deployment. v4 remote upgrade is not
+The user confirmed their earlier server build/deployment. v5 remote migration is not
 executed here: no remote access credentials or verified checkout path were
-provided. README.zh-CN.md supplies pause, stop, whole-data backup, git pull and
-docker compose up -d --build commands. Existing /collector/ nginx, loopback
+provided. README.zh-CN.md supplies the one-command migration wrapper and standalone CLI. Existing /collector/ nginx, loopback
 port 8790, bind-mounted data and token remain compatible. Startup is paused;
 the user continues after inspecting the upgraded task.
 Other servers deploy the same app, expose their verified HTTPS nginx endpoint or

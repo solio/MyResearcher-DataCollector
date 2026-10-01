@@ -1,6 +1,7 @@
 """Primary commit precedes local projection; repairing storage never hits source."""
 from pathlib import Path
 import tempfile
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -105,15 +106,11 @@ class StorageHookTests(unittest.TestCase):
             path = Path(foreign) / "collector.db"
             payload = b"foreign collector bytes: never overwrite"
             path.write_bytes(payload)
-            e = Engine(foreign, transport=Wire(), clock=self.clock)
-            try:
-                self.assertEqual(e.status()["data_storage"]["status"], "error")
-                self.assertEqual(path.read_bytes(), payload)
-                with self.assertRaises(RuntimeError):
-                    e.create_job(CONFIG)
-                self.assertFalse(e.tick()["attempted"])
-            finally:
-                e.close()
+            with self.assertRaises((ValueError, RuntimeError, sqlite3.DatabaseError)):
+                Engine(foreign, transport=Wire(), clock=self.clock)
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertFalse((Path(foreign) / "experiment.sqlite3").exists())
+
 
 
 if __name__ == "__main__":

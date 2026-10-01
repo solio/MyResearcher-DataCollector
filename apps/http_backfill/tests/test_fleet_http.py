@@ -121,7 +121,7 @@ class FleetHTTPTests(unittest.TestCase):
         code, status = self.request("/api/nodes/a/status")
         self.assertEqual(code, 200)
         self.assertEqual(status["instance_id"], self.a.status()["instance_id"])
-        self.assertEqual(status["version"], "http-backfill.v4")
+        self.assertEqual(status["version"], "http-backfill.v5")
         code, edited = self.request("/api/nodes/a/jobs/current", {**CONFIG, "interval_seconds": 90}, "PATCH")
         self.assertEqual(code, 200, edited)
         self.assertEqual(edited["config"]["interval_seconds"], 90)

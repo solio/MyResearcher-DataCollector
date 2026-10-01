@@ -1,8 +1,7 @@
-"""Project HTTP evidence into the existing browser posts storage contract.
+"""Validate HTTP evidence and journal the original posts in one collector.db.
 
-collector.db is an isolated SimplePostStore, not a production promotion. The
-experiment ledger owns queue/provenance and the recoverable projection cursor.
-No new coverage/checkpoints are inferred and no raw bytes are copied.
+The app's state/provenance and original SimplePostStore rows share one owned
+connection. No new historical coverage is inferred and no raw bytes are copied.
 """
 from __future__ import annotations
 
@@ -19,14 +18,15 @@ import sqlite3
 from urllib.parse import urlparse
 
 from myresearcher_collector.models import SourceItem
-from myresearcher_collector.detail_enrichment import _SkipLedger, _skip_ledger_path, SKIP_REASON_NOT_FOUND
+from myresearcher_collector.detail_enrichment import SKIP_REASON_NOT_FOUND
 from myresearcher_collector.simple_store import SCHEMA as SIMPLE_SCHEMA, SimplePostStore
 from myresearcher_collector.sources.eastmoney_guba import parser as guba
 from myresearcher_collector.sources.eastmoney_guba.content_rules import (
     detail_body_metadata, detail_enrichment_trigger, list_title_metadata,
 )
+from unified_store import LAYOUT, simple_store_adapter, validate_layout
 
-VERSION = "http-backfill.simple-posts.v1"
+VERSION = "http-backfill.unified-posts.v1"
 _NAVIGATION_ERRORS = {
     "无法建立非置顶来源行锚点，不能猜测下一历史页",
     "校准无法定位锚点：来源空页/无可用发布时间；已暂停",
@@ -78,8 +78,7 @@ class CompatibleDataStore:
     @staticmethod
     @contextmanager
     def _store(path):
-        # The existing SQLite store is opened on the calling thread and closed
-        # even if its initializer encounters a filesystem/SQLite error.
+        # Standalone original-store adapter retained for isolated fleet merge.
         store = SimplePostStore.__new__(SimplePostStore)
         try:
             store.__init__(path)
@@ -88,31 +87,24 @@ class CompatibleDataStore:
             if getattr(store, "conn", None) is not None:
                 store.close()
 
+    @staticmethod
+    @contextmanager
+    def _borrowed_store(engine, path):
+        # A borrowed adapter must neither open/close another connection nor
+        # commit before the enclosing unified ledger transaction.
+        yield simple_store_adapter(engine.db, path)
+
     def _prepare(self, engine):
         if Path(engine.data_dir).resolve() != self.data_dir:
             raise CompatibleStorageError("兼容数据目录与实验台账目录不一致")
         if engine._get("instance_id") != self.instance_id:
             raise CompatibleStorageError("兼容存储实例 ID 不一致")
-        owner = engine._get("compatible_storage_instance")
-        if owner is not None and owner != self.instance_id:
-            raise CompatibleStorageError("兼容数据库属于另一个实例")
         if self.db_path.is_symlink():
             raise CompatibleStorageError("兼容数据库不能使用指向其他目录的符号链接")
-        if self.db_path.exists() and owner != self.instance_id:
-            raise CompatibleStorageError("现有 collector.db 未标记为该实验实例所有，拒绝写入")
-        if self.db_path.exists():
-            if not self.db_path.is_file():
-                raise CompatibleStorageError("collector.db 必须是文件")
-            with closing(sqlite3.connect(f"{self.db_path.as_uri()}?mode=ro", uri=True)) as db:
-                tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-                expected = {"posts", "backfill_resume", "backfill_coverage", "backfill_page_anchors"}
-                if tables != expected:
-                    raise CompatibleStorageError("collector.db 不是原 SimplePostStore 数据结构")
-                for table, columns in _expected_schema().items():
-                    if db.execute(f"PRAGMA table_info({table})").fetchall() != columns:
-                        raise CompatibleStorageError("collector.db 字段或主键与原 SimplePostStore 不一致")
-        # Owner is committed before publication so a crash after creating the
-        # file does not leave an unowned database that cannot be resumed.
+        actual_path = engine.db.execute("PRAGMA database_list").fetchone()[2]
+        if Path(actual_path).resolve() != self.db_path.resolve():
+            raise CompatibleStorageError("兼容存储必须复用同一 collector.db 连接")
+        validate_layout(engine.db, self.instance_id)
         with engine.db:
             engine.db.execute("""CREATE TABLE IF NOT EXISTS compatible_posts(
                 post_id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,
@@ -122,7 +114,6 @@ class CompatibleDataStore:
                 updated_at TEXT NOT NULL)""")
             engine.db.execute("CREATE INDEX IF NOT EXISTS idx_compatible_observations_request ON observations(request_id,post_id)")
             engine.db.execute("CREATE INDEX IF NOT EXISTS idx_compatible_observations_post ON observations(post_id,id DESC)")
-            engine._set("compatible_storage_instance", self.instance_id)
             engine._set("compatible_storage_version", VERSION)
             from federation import init_export_schema
             init_export_schema(engine)
@@ -283,11 +274,9 @@ class CompatibleDataStore:
             detail_request, missing_html = self._raw_request(engine, post["detail_request"], allowed=("detail_unavailable",))
             if detail_request["http_status"] not in {200, 404} or not guba.is_not_found_page(missing_html):
                 raise CompatibleStorageError("缺正文状态没有来源明确不存在/不可访问页面支持")
-            skips = _SkipLedger(_skip_ledger_path(self.db_path))
-            if post["post_id"] not in skips.skipped_ids(guba.SOURCE):
-                skips.record(source=guba.SOURCE, source_item_id=post["post_id"],
-                             stock_code=observed_request["stock"], reason=SKIP_REASON_NOT_FOUND,
-                             observed_at=_time(detail_request["finished"]))
+            engine.db.execute("INSERT OR IGNORE INTO detail_enrichment_skips(source,source_item_id,stock_code,reason,first_seen_at,last_seen_at,attempts) VALUES(?,?,?,?,?,?,1)",
+                              (guba.SOURCE, post["post_id"], observed_request["stock"], SKIP_REASON_NOT_FOUND,
+                               _utc(detail_request["finished"]), _utc(detail_request["finished"])))
         provenance = {"content_source": "detail_body" if content is not None else "list_title",
                       "detail_required": detail_enrichment_trigger(item.title) is not None,
                       "detail_enrichment_trigger": detail_enrichment_trigger(item.title),
@@ -301,13 +290,23 @@ class CompatibleDataStore:
                  "list_request": observed_request["id"], "detail_request": detail_request["id"] if detail_request else None}
         fingerprint = hashlib.sha256(_json(facts).encode()).hexdigest()
         prior = engine.db.execute("SELECT fingerprint FROM compatible_posts WHERE post_id=?", (post["post_id"],)).fetchone()
-        existing = store.conn.execute("SELECT content FROM posts WHERE source=? AND source_item_id=?", (guba.SOURCE, post["post_id"])).fetchone()
+        existing = store.conn.execute("SELECT * FROM posts WHERE source=? AND source_item_id=?", (guba.SOURCE, post["post_id"])).fetchone()
+        existing_content = existing["content"] if isinstance(existing, sqlite3.Row) else existing[4] if existing is not None else None
         if prior and prior[0] == fingerprint and existing is not None:
+            expected = {"source": item.source, "source_item_id": item.source_item_id, "stock_code": observed_request["stock"],
+                        "title": item.title, "content": content, "author_id": item.author_id, "author_name": item.author_name,
+                        "published_at": item.published_at.isoformat().replace("+00:00", "Z"), "url": item.url,
+                        "read_count": item.read_count, "reply_count": item.reply_count, "like_count": item.like_count,
+                        "forward_count": item.forward_count, "updated_at": _utc(updated)}
+            names = [r[1] for r in store.conn.execute("PRAGMA table_info(posts)")]
+            current = dict(existing) if isinstance(existing, sqlite3.Row) else dict(zip(names, existing))
+            if any(current[k] != value for k, value in expected.items()):
+                raise CompatibleStorageError("已有 posts 投影与留存原始响应不一致，不能用旧 fingerprint 跳过验证")
             from federation import journal_projection
             journal_projection(engine, store, post["post_id"], fingerprint, observed_request,
                                detail_request, provenance, initial_request=initial_request)
             return False
-        if content is None and existing is not None and existing[0] is not None:
+        if content is None and existing is not None and existing_content is not None:
             raise CompatibleStorageError("兼容库已有正文但实验台账没有对应详情证据，拒绝覆盖来源标记")
         # Rebuilds of already enriched posts retain the original list acquisition
         # as created_at. Subsequent detail/list snapshots only update updated_at.
@@ -345,7 +344,7 @@ class CompatibleDataStore:
             self._raw_cache.clear()
             self._list_cache.clear()
             if request_id is None:
-                query, args = "SELECT * FROM posts ORDER BY rowid", ()
+                query, args = "SELECT * FROM http_posts ORDER BY rowid", ()
             else:
                 if isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 1:
                     raise ValueError("request_id 必须为正整数")
@@ -353,22 +352,23 @@ class CompatibleDataStore:
                 if request is None:
                     raise ValueError("请求记录不存在")
                 if request["kind"] == "detail":
-                    query, args = "SELECT * FROM posts WHERE post_id=?", (request["post_id"],)
+                    query, args = "SELECT * FROM http_posts WHERE post_id=?", (request["post_id"],)
                 else:
-                    query = """SELECT p.* FROM posts p JOIN (SELECT DISTINCT post_id FROM observations WHERE request_id=?) o
+                    query = """SELECT p.* FROM http_posts p JOIN (SELECT DISTINCT post_id FROM observations WHERE request_id=?) o
                                ON o.post_id=p.post_id"""
                     args = (request_id,)
             processed, projected = 0, 0
             try:
-                # If the cache commit fails, the compatible write already exists
-                # and can be safely replayed. A cursor must never lead its data.
-                with self._store(self.db_path) as store, engine.db, store.transaction():
+                # Shared connection commits original posts, provenance and
+                # immutable export sequence as one transaction.
+                with self._borrowed_store(engine, self.db_path) as store, engine.db, store.transaction():
                     for post in engine.db.execute(query, args):
                         processed += 1
                         projected += int(self._project_post(engine, store, post, request_id))
                 return {"storage_version": VERSION, "db_path": str(self.db_path),
                         "processed": processed, "projected": projected,
-                        "body_provenance_table": "experiment.sqlite3:compatible_posts",
+                        "body_provenance_table": "collector.db:compatible_posts", "storage_layout": LAYOUT,
+                        "single_runtime_database": True,
                         "research_only": True, "model_database_eligible": False}
             except CompatibleStorageError:
                 raise

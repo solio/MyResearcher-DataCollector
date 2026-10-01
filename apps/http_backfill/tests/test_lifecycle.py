@@ -396,7 +396,7 @@ class LifecycleTests(unittest.TestCase):
         cutoff, raw = engine._get("effective_to_epoch"), self.raw_hashes(engine)
         engine.close()
         # Construct the pre-lifecycle version of this temporary offline DB.
-        with closing(sqlite3.connect(Path(self.tmp.name) / "experiment.sqlite3")) as db:
+        with closing(sqlite3.connect(Path(self.tmp.name) / "collector.db")) as db:
             with db:
                 db.execute("DROP TABLE job_revisions")
                 db.execute("DROP TABLE job_lifecycle")

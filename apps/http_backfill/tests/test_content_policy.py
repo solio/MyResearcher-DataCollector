@@ -52,11 +52,11 @@ class PolicyTests(unittest.TestCase):
         e = self.started(Wire(ok(list_html([source])), *extra_responses))
         e.tick()
         e.pause()
-        post = e.db.execute("SELECT * FROM posts WHERE post_id=?", (source["post_id"],)).fetchone()
+        post = e.db.execute("SELECT * FROM http_posts WHERE post_id=?", (source["post_id"],)).fetchone()
         data = json.loads(post["item"])
         data["source_metadata"].pop("content_source", None)
         with e.db:
-            e.db.execute("UPDATE posts SET status='pending',item=?,content=NULL,content_source=NULL WHERE post_id=?", (json.dumps(data), source["post_id"]))
+            e.db.execute("UPDATE http_post_state SET status='pending',item=?,content_source=NULL WHERE post_id=?", (json.dumps(data), source["post_id"]))
             tid = e.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,1,?,?,?)",
                                (e._get("job_id"), source["stockbar_code"], source["post_id"], data["url"], data["url"])).lastrowid
             e._set("content_policy_version", 2)

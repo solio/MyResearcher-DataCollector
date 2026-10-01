@@ -256,6 +256,16 @@ class FleetTests(unittest.TestCase):
         with self.assertRaises(FleetError):
             manager.proxy("missing", "GET", "api/status")
 
+    def test_v4_and_v5_node_identity_supports_rolling_storage_migration(self):
+        remote, manager = self.remote(), self.manager()
+        manager.register({"id": "node-a", "base_url": remote.url, "token": TOKEN})
+        remote.version = "http-backfill.v5"
+        status = manager.proxy("node-a", "GET", "api/status")
+        self.assertEqual(status["instance_id"], REMOTE_ID)
+        self.assertEqual(status["version"], "http-backfill.v5")
+        manager.register({"id": "node-a", "name": "迁移后的原节点"})
+        self.assertEqual(manager.list_nodes()[1]["version"], "http-backfill.v5")
+
     def test_auth_redirect_never_reaches_second_server_and_errors_redact_tokens(self):
         remote, other, manager = self.remote(), self.remote(), self.manager()
         manager.register({"id": "node-a", "base_url": remote.url, "token": TOKEN})

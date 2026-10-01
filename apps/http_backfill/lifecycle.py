@@ -194,7 +194,7 @@ class LifecycleMixin:
                             (job, observation["stock"], observation["post_id"], int(eligible), observation["request_id"]))
             if not eligible:
                 continue
-            post = self.db.execute("SELECT * FROM posts WHERE post_id=?", (observation["post_id"],)).fetchone()
+            post = self.db.execute("SELECT * FROM http_posts WHERE post_id=?", (observation["post_id"],)).fetchone()
             if post is None:
                 item = self._observed_item(observation, cache)
                 status = self._store_list_post(item, observation["source_row"], observation["request_id"])

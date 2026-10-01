@@ -58,8 +58,8 @@ def init_export_schema(engine):
 def journal_projection(engine, store, post_id, fingerprint, list_request, detail_request, provenance, initial_request=None):
     """Called within the compatibility ledger transaction; cursor follows data.
 
-    The original compatible store commits before the enclosing ledger transaction
-    publishes this record. Baselines for v3 rows use the same idempotent path.
+    The node's post projection and this export record share one collector.db
+    transaction. Baselines for older rows use the same idempotent path.
     """
     if engine.db.execute("SELECT 1 FROM export_journal WHERE post_id=? AND fingerprint=?", (post_id, fingerprint)).fetchone():
         return

@@ -13,7 +13,7 @@
   <a class="skip-link" href="#main">跳转到控制台</a>
   <header class="topbar">
     <a class="brand" href="./" aria-label="回补控制台首页"><span class="brand-mark" aria-hidden="true">↳</span><span>DataCollector <small>低频回补</small></span></a>
-    <div class="topbar-meta"><span class="isolation-tag">独立实验库</span><button id="logout" type="button" class="button quiet small" hidden>退出</button></div>
+    <div class="topbar-meta"><span class="isolation-tag">采集数据 · 覆盖待核实</span><button id="logout" type="button" class="button quiet small" hidden>退出</button></div>
   </header>
 
   <main id="main" class="shell">
@@ -79,7 +79,7 @@
           <article class="metric"><span>待取正文</span><strong id="metric-pending">—</strong><small id="metric-removed">详情不可访问 —</small></article>
         </div>
         <div class="data-boundary"><span aria-hidden="true">◈</span><p>全部列表行保留。默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情；短标题保留为列表文本，<strong>不当作已核实正文或漏正文</strong>。局部产出不代表日期窗口完整覆盖。</p></div>
-        <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>独立兼容库写入</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p class="small-note">兼容现有 posts / backfill 格式，仍属于独立实验数据，不会自动进入生产模型。</p></div>
+        <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>采集数据库</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p id="storage-note" class="small-note">等待该实例返回存储布局。</p></div>
       </section>
 
       <div class="workspace-grid">
@@ -121,7 +121,7 @@
         <div id="events-panel" role="tabpanel" aria-labelledby="events-tab" hidden><div id="event-list" class="activity-list"><div class="empty-state">尚无控制事件。</div></div><nav class="activity-pager" aria-label="控制事件分页"><p id="events-page-info" class="page-info">正在读取记录…</p><div class="pager-actions"><button id="events-prev" type="button" class="button secondary small" disabled>上一页</button><button id="events-next" type="button" class="button secondary small" disabled>下一页</button><button id="events-latest" type="button" class="button quiet small" disabled>回到最新</button></div><p id="events-page-error" class="page-error" role="status" hidden></p></nav></div>
         <p class="small-note activity-note">每 5 秒读取本地状态与最新页。历史页固定在同一记录快照，采集新增记录不会挤动正在看的页；回到最新后恢复刷新。页面刷新不会请求股吧。</p>
       </section>
-      <footer class="footer"><span>DataCollector / HTTP backfill</span><span>独立实验 · 完整覆盖需逐项核实</span></footer>
+      <footer class="footer"><span>DataCollector / HTTP backfill</span><span>采集数据 · 完整覆盖需逐项核实</span></footer>
     </div>
   </main>
 
