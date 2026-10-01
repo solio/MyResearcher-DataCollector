@@ -1,0 +1,2365 @@
+{
+  "source": "eastmoney_guba",
+  "stocks": [
+    "601012",
+    "002463",
+    "601888",
+    "300666",
+    "300054",
+    "603039",
+    "002648",
+    "002028",
+    "603179",
+    "605020",
+    "600312",
+    "002891",
+    "603806",
+    "688676",
+    "300487",
+    "603997"
+  ],
+  "stock_count": 16,
+  "stock_selection_provenance": {
+    "path": "scripts/ops/backfill_all_stocks.sh",
+    "sha256": "2a04b6b7b05302c9633985568859e86a72aa60eed0ac04336b730749a94b4683",
+    "line": 111,
+    "declaration": "all_stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997)",
+    "selection": "exact deployed all_stocks; config stock universe unused"
+  },
+  "window": {
+    "from_inclusive": {
+      "utc": "2026-05-03T16:00:00+00:00",
+      "asia_shanghai": "2026-05-04T00:00:00+08:00"
+    },
+    "to_inclusive": {
+      "utc": "2026-09-30T09:22:58+00:00",
+      "asia_shanghai": "2026-09-30T17:22:58+08:00"
+    },
+    "from_date": "2026-05-04",
+    "from_provenance": {
+      "path": "runtime/logs/backfill-B2-asc-20260927T182840Z.log",
+      "sha256": "139530ea38480c53cce56bc27d8ba188e715634ae4e1bcd67d32e8338302c21a",
+      "line": 2,
+      "line_text": "RUN_START 2026-09-27T18:28:41Z days=14 from=2026-05-04 to=2026-09-28 tag=20260927 list_click_paging=0",
+      "operation_started": {
+        "utc": "2026-09-27T18:28:41+00:00",
+        "asia_shanghai": "2026-09-28T02:28:41+08:00"
+      },
+      "from_value": "2026-05-04",
+      "selection": "latest parseable real RUN_START with explicit from= date",
+      "matching_run_start_count": 7
+    },
+    "cutoff_provenance": "fixed timestamp first read after the new authorization, supplied by coordinating agent; not original platform message timestamp; not inventory execution timestamp"
+  },
+  "database_read": {
+    "uri": "file:///Users/mac/Documents/trae_projects/MyResearcher/MyResearcher-DataCollector/data/collector.db?mode=ro",
+    "mode": "ro",
+    "query_only": true,
+    "transaction": "single explicit read transaction",
+    "started": {
+      "utc": "2026-09-30T09:36:55.251552+00:00",
+      "asia_shanghai": "2026-09-30T17:36:55.251552+08:00"
+    },
+    "snapshot_established_after_first_read": {
+      "utc": "2026-09-30T09:36:55.487739+00:00",
+      "asia_shanghai": "2026-09-30T17:36:55.487739+08:00"
+    },
+    "finished": {
+      "utc": "2026-09-30T09:37:03.261748+00:00",
+      "asia_shanghai": "2026-09-30T17:37:03.261748+08:00"
+    },
+    "snapshot_id": "2c1d858b34802e3cf4d9e1162c93c7e9c15f7e015cc93a51be1d67c5e5c3eb81",
+    "total_rows": 214094,
+    "source_counts": {
+      "eastmoney_guba": 214094
+    },
+    "source_primary_key_columns": [
+      "source",
+      "source_item_id"
+    ],
+    "duplicate_source_primary_keys": [],
+    "file_before": {
+      "bytes": 116543488,
+      "mtime_ns": 1790605552688605170
+    },
+    "file_after": {
+      "bytes": 116543488,
+      "mtime_ns": 1790605552688605170
+    },
+    "file_metadata_is_not_snapshot_content_hash": true
+  },
+  "schema": {
+    "posts": [
+      {
+        "cid": 0,
+        "name": "source",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 1
+      },
+      {
+        "cid": 1,
+        "name": "source_item_id",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 2
+      },
+      {
+        "cid": 2,
+        "name": "stock_code",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 3,
+        "name": "title",
+        "type": "TEXT",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 4,
+        "name": "content",
+        "type": "TEXT",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 5,
+        "name": "author_id",
+        "type": "TEXT",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 6,
+        "name": "author_name",
+        "type": "TEXT",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 7,
+        "name": "published_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 8,
+        "name": "url",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 9,
+        "name": "read_count",
+        "type": "INTEGER",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 10,
+        "name": "reply_count",
+        "type": "INTEGER",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 11,
+        "name": "like_count",
+        "type": "INTEGER",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 12,
+        "name": "forward_count",
+        "type": "INTEGER",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 13,
+        "name": "created_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 14,
+        "name": "updated_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      }
+    ],
+    "backfill_coverage": [
+      {
+        "cid": 0,
+        "name": "source",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 1
+      },
+      {
+        "cid": 1,
+        "name": "stock_code",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 2
+      },
+      {
+        "cid": 2,
+        "name": "covered_from",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 3
+      },
+      {
+        "cid": 3,
+        "name": "covered_to",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      }
+    ],
+    "backfill_page_anchors": [
+      {
+        "cid": 0,
+        "name": "source",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 1
+      },
+      {
+        "cid": 1,
+        "name": "stock_code",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 2
+      },
+      {
+        "cid": 2,
+        "name": "observed_at",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 3
+      },
+      {
+        "cid": 3,
+        "name": "page_no",
+        "type": "INTEGER",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 4
+      },
+      {
+        "cid": 4,
+        "name": "page_min_time",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 5,
+        "name": "page_max_time",
+        "type": "TEXT",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 6,
+        "name": "source_count",
+        "type": "INTEGER",
+        "notnull": 0,
+        "dflt_value": null,
+        "pk": 0
+      },
+      {
+        "cid": 7,
+        "name": "page_size",
+        "type": "INTEGER",
+        "notnull": 1,
+        "dflt_value": null,
+        "pk": 0
+      }
+    ]
+  },
+  "per_stock": [
+    {
+      "stock_code": "601012",
+      "all_rows": 45696,
+      "all_content_states": {
+        "nonempty": 4098,
+        "empty_string": 0,
+        "null": 41598
+      },
+      "window_rows": 45696,
+      "window_content_states": {
+        "nonempty": 4098,
+        "empty_string": 0,
+        "null": 41598
+      },
+      "pending_revalidation_rows": 41598,
+      "pending_null_content_rows": 41598,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 14,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 14,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 14,
+      "window_url_invalid_rows": 277,
+      "pending_url_invalid_rows": 186,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T19:32:54+00:00",
+          "asia_shanghai": "2026-05-04T03:32:54+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:59:44+00:00",
+          "asia_shanghai": "2026-09-28T21:59:44+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T03:32:54+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:59:44+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T19:32:54+00:00",
+          "asia_shanghai": "2026-05-04T03:32:54+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:59:44+00:00",
+          "asia_shanghai": "2026-09-28T21:59:44+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T03:32:54+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:59:44+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "601012",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:55:02.878212Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "601012",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:07:29.167928Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:55:02.878212+00:00",
+              "asia_shanghai": "2026-09-24T12:55:02.878212+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:07:29.167928+00:00",
+              "asia_shanghai": "2026-09-28T22:07:29.167928+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:55:02.878212+00:00",
+              "asia_shanghai": "2026-09-24T12:55:02.878212+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:07:29.167928+00:00",
+              "asia_shanghai": "2026-09-28T22:07:29.167928+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 617,
+          "minimum_page": 1,
+          "maximum_page": 588,
+          "earliest_observed_at_raw": "2026-09-02T08:58:51.745230Z",
+          "latest_observed_at_raw": "2026-09-28T14:08:21.326326Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "002463",
+      "all_rows": 34650,
+      "all_content_states": {
+        "nonempty": 2872,
+        "empty_string": 0,
+        "null": 31778
+      },
+      "window_rows": 34650,
+      "window_content_states": {
+        "nonempty": 2872,
+        "empty_string": 0,
+        "null": 31778
+      },
+      "pending_revalidation_rows": 31778,
+      "pending_null_content_rows": 31778,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 16,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 16,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 16,
+      "window_url_invalid_rows": 554,
+      "pending_url_invalid_rows": 355,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T23:01:26+00:00",
+          "asia_shanghai": "2026-05-04T07:01:26+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:34:05+00:00",
+          "asia_shanghai": "2026-09-28T21:34:05+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T07:01:26+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:34:05+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T23:01:26+00:00",
+          "asia_shanghai": "2026-05-04T07:01:26+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:34:05+00:00",
+          "asia_shanghai": "2026-09-28T21:34:05+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T07:01:26+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:34:05+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002463",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:55:28.458697Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002463",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:08:22.089284Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:55:28.458697+00:00",
+              "asia_shanghai": "2026-09-24T12:55:28.458697+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:08:22.089284+00:00",
+              "asia_shanghai": "2026-09-28T22:08:22.089284+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:55:28.458697+00:00",
+              "asia_shanghai": "2026-09-24T12:55:28.458697+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:08:22.089284+00:00",
+              "asia_shanghai": "2026-09-28T22:08:22.089284+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 486,
+          "minimum_page": 1,
+          "maximum_page": 466,
+          "earliest_observed_at_raw": "2026-09-02T09:30:31.915894Z",
+          "latest_observed_at_raw": "2026-09-28T14:08:47.115188Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "601888",
+      "all_rows": 34415,
+      "all_content_states": {
+        "nonempty": 3571,
+        "empty_string": 0,
+        "null": 30844
+      },
+      "window_rows": 34415,
+      "window_content_states": {
+        "nonempty": 3571,
+        "empty_string": 0,
+        "null": 30844
+      },
+      "pending_revalidation_rows": 30844,
+      "pending_null_content_rows": 30844,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 10,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 10,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 10,
+      "window_url_invalid_rows": 221,
+      "pending_url_invalid_rows": 93,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T17:52:28+00:00",
+          "asia_shanghai": "2026-05-04T01:52:28+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:58:22+00:00",
+          "asia_shanghai": "2026-09-28T21:58:22+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T01:52:28+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:58:22+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T17:52:28+00:00",
+          "asia_shanghai": "2026-05-04T01:52:28+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:58:22+00:00",
+          "asia_shanghai": "2026-09-28T21:58:22+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T01:52:28+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:58:22+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "601888",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:55:39.371608Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "601888",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:08:47.858416Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:55:39.371608+00:00",
+              "asia_shanghai": "2026-09-24T12:55:39.371608+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:08:47.858416+00:00",
+              "asia_shanghai": "2026-09-28T22:08:47.858416+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:55:39.371608+00:00",
+              "asia_shanghai": "2026-09-24T12:55:39.371608+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:08:47.858416+00:00",
+              "asia_shanghai": "2026-09-28T22:08:47.858416+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 465,
+          "minimum_page": 1,
+          "maximum_page": 443,
+          "earliest_observed_at_raw": "2026-09-03T08:33:42.777711Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:06.222938Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "300666",
+      "all_rows": 16725,
+      "all_content_states": {
+        "nonempty": 1464,
+        "empty_string": 0,
+        "null": 15261
+      },
+      "window_rows": 16725,
+      "window_content_states": {
+        "nonempty": 1464,
+        "empty_string": 0,
+        "null": 15261
+      },
+      "pending_revalidation_rows": 15261,
+      "pending_null_content_rows": 15261,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 0,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 0,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 0,
+      "window_url_invalid_rows": 267,
+      "pending_url_invalid_rows": 156,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T01:52:24+00:00",
+          "asia_shanghai": "2026-05-04T09:52:24+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:22:05+00:00",
+          "asia_shanghai": "2026-09-28T21:22:05+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T09:52:24+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:22:05+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T01:52:24+00:00",
+          "asia_shanghai": "2026-05-04T09:52:24+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:22:05+00:00",
+          "asia_shanghai": "2026-09-28T21:22:05+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T09:52:24+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:22:05+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "300666",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:55:43.858793Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "300666",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:06.924958Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:55:43.858793+00:00",
+              "asia_shanghai": "2026-09-24T12:55:43.858793+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:06.924958+00:00",
+              "asia_shanghai": "2026-09-28T22:09:06.924958+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:55:43.858793+00:00",
+              "asia_shanghai": "2026-09-24T12:55:43.858793+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:06.924958+00:00",
+              "asia_shanghai": "2026-09-28T22:09:06.924958+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 183,
+          "minimum_page": 1,
+          "maximum_page": 229,
+          "earliest_observed_at_raw": "2026-09-03T08:39:28.519846Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:11.046077Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "300054",
+      "all_rows": 16021,
+      "all_content_states": {
+        "nonempty": 1450,
+        "empty_string": 0,
+        "null": 14571
+      },
+      "window_rows": 16021,
+      "window_content_states": {
+        "nonempty": 1450,
+        "empty_string": 0,
+        "null": 14571
+      },
+      "pending_revalidation_rows": 14571,
+      "pending_null_content_rows": 14571,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 1,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 1,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 1,
+      "window_url_invalid_rows": 123,
+      "pending_url_invalid_rows": 52,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T22:40:32+00:00",
+          "asia_shanghai": "2026-05-04T06:40:32+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:18:38+00:00",
+          "asia_shanghai": "2026-09-28T20:18:38+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T06:40:32+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:18:38+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T22:40:32+00:00",
+          "asia_shanghai": "2026-05-04T06:40:32+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:18:38+00:00",
+          "asia_shanghai": "2026-09-28T20:18:38+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T06:40:32+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:18:38+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "300054",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:55:55.012272Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "300054",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:11.615720Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:55:55.012272+00:00",
+              "asia_shanghai": "2026-09-24T12:55:55.012272+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:11.615720+00:00",
+              "asia_shanghai": "2026-09-28T22:09:11.615720+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:55:55.012272+00:00",
+              "asia_shanghai": "2026-09-24T12:55:55.012272+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:11.615720+00:00",
+              "asia_shanghai": "2026-09-28T22:09:11.615720+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 233,
+          "minimum_page": 1,
+          "maximum_page": 214,
+          "earliest_observed_at_raw": "2026-09-03T08:41:30.819897Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:16.612220Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "603039",
+      "all_rows": 9748,
+      "all_content_states": {
+        "nonempty": 823,
+        "empty_string": 0,
+        "null": 8925
+      },
+      "window_rows": 9748,
+      "window_content_states": {
+        "nonempty": 823,
+        "empty_string": 0,
+        "null": 8925
+      },
+      "pending_revalidation_rows": 8925,
+      "pending_null_content_rows": 8925,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 3,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 3,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 3,
+      "window_url_invalid_rows": 66,
+      "pending_url_invalid_rows": 32,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T14:01:44+00:00",
+          "asia_shanghai": "2026-05-04T22:01:44+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T10:18:54+00:00",
+          "asia_shanghai": "2026-09-28T18:18:54+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T22:01:44+08:00",
+        "maximum_source_stored_raw": "2026-09-28T18:18:54+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T14:01:44+00:00",
+          "asia_shanghai": "2026-05-04T22:01:44+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T10:18:54+00:00",
+          "asia_shanghai": "2026-09-28T18:18:54+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T22:01:44+08:00",
+        "maximum_source_stored_raw": "2026-09-28T18:18:54+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603039",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:00.365485Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603039",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:17.142551Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:00.365485+00:00",
+              "asia_shanghai": "2026-09-24T12:56:00.365485+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:17.142551+00:00",
+              "asia_shanghai": "2026-09-28T22:09:17.142551+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:00.365485+00:00",
+              "asia_shanghai": "2026-09-24T12:56:00.365485+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:17.142551+00:00",
+              "asia_shanghai": "2026-09-28T22:09:17.142551+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 107,
+          "minimum_page": 1,
+          "maximum_page": 131,
+          "earliest_observed_at_raw": "2026-09-03T08:43:36.996848Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:23.904618Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "002648",
+      "all_rows": 11009,
+      "all_content_states": {
+        "nonempty": 1233,
+        "empty_string": 0,
+        "null": 9776
+      },
+      "window_rows": 11009,
+      "window_content_states": {
+        "nonempty": 1233,
+        "empty_string": 0,
+        "null": 9776
+      },
+      "pending_revalidation_rows": 9776,
+      "pending_null_content_rows": 9776,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 2,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 2,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 2,
+      "window_url_invalid_rows": 320,
+      "pending_url_invalid_rows": 161,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T16:59:50+00:00",
+          "asia_shanghai": "2026-05-04T00:59:50+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T11:32:17+00:00",
+          "asia_shanghai": "2026-09-28T19:32:17+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T00:59:50+08:00",
+        "maximum_source_stored_raw": "2026-09-28T19:32:17+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T16:59:50+00:00",
+          "asia_shanghai": "2026-05-04T00:59:50+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T11:32:17+00:00",
+          "asia_shanghai": "2026-09-28T19:32:17+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T00:59:50+08:00",
+        "maximum_source_stored_raw": "2026-09-28T19:32:17+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002648",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:09.648216Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002648",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:24.513519Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:09.648216+00:00",
+              "asia_shanghai": "2026-09-24T12:56:09.648216+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:24.513519+00:00",
+              "asia_shanghai": "2026-09-28T22:09:24.513519+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:09.648216+00:00",
+              "asia_shanghai": "2026-09-24T12:56:09.648216+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:24.513519+00:00",
+              "asia_shanghai": "2026-09-28T22:09:24.513519+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 168,
+          "minimum_page": 1,
+          "maximum_page": 148,
+          "earliest_observed_at_raw": "2026-08-15T15:58:35.704892Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:34.695958Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "002028",
+      "all_rows": 8269,
+      "all_content_states": {
+        "nonempty": 640,
+        "empty_string": 0,
+        "null": 7629
+      },
+      "window_rows": 8269,
+      "window_content_states": {
+        "nonempty": 640,
+        "empty_string": 0,
+        "null": 7629
+      },
+      "pending_revalidation_rows": 7629,
+      "pending_null_content_rows": 7629,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 5,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 5,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 5,
+      "window_url_invalid_rows": 48,
+      "pending_url_invalid_rows": 40,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T13:50:13+00:00",
+          "asia_shanghai": "2026-05-04T21:50:13+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T11:32:31+00:00",
+          "asia_shanghai": "2026-09-28T19:32:31+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T21:50:13+08:00",
+        "maximum_source_stored_raw": "2026-09-28T19:32:31+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T13:50:13+00:00",
+          "asia_shanghai": "2026-05-04T21:50:13+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T11:32:31+00:00",
+          "asia_shanghai": "2026-09-28T19:32:31+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T21:50:13+08:00",
+        "maximum_source_stored_raw": "2026-09-28T19:32:31+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002028",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:14.947147Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002028",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:35.354143Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:14.947147+00:00",
+              "asia_shanghai": "2026-09-24T12:56:14.947147+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:35.354143+00:00",
+              "asia_shanghai": "2026-09-28T22:09:35.354143+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:14.947147+00:00",
+              "asia_shanghai": "2026-09-24T12:56:14.947147+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:35.354143+00:00",
+              "asia_shanghai": "2026-09-28T22:09:35.354143+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 133,
+          "minimum_page": 1,
+          "maximum_page": 112,
+          "earliest_observed_at_raw": "2026-09-03T08:50:28.426106Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:49.402715Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "603179",
+      "all_rows": 5495,
+      "all_content_states": {
+        "nonempty": 284,
+        "empty_string": 0,
+        "null": 5211
+      },
+      "window_rows": 5495,
+      "window_content_states": {
+        "nonempty": 284,
+        "empty_string": 0,
+        "null": 5211
+      },
+      "pending_revalidation_rows": 5211,
+      "pending_null_content_rows": 5211,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 0,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 0,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 0,
+      "window_url_invalid_rows": 44,
+      "pending_url_invalid_rows": 23,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T21:07:50+00:00",
+          "asia_shanghai": "2026-05-04T05:07:50+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T09:15:13+00:00",
+          "asia_shanghai": "2026-09-28T17:15:13+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T05:07:50+08:00",
+        "maximum_source_stored_raw": "2026-09-28T17:15:13+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-03T21:07:50+00:00",
+          "asia_shanghai": "2026-05-04T05:07:50+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T09:15:13+00:00",
+          "asia_shanghai": "2026-09-28T17:15:13+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T05:07:50+08:00",
+        "maximum_source_stored_raw": "2026-09-28T17:15:13+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603179",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:24.714702Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603179",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:50.111230Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:24.714702+00:00",
+              "asia_shanghai": "2026-09-24T12:56:24.714702+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:50.111230+00:00",
+              "asia_shanghai": "2026-09-28T22:09:50.111230+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:24.714702+00:00",
+              "asia_shanghai": "2026-09-24T12:56:24.714702+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:50.111230+00:00",
+              "asia_shanghai": "2026-09-28T22:09:50.111230+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 75,
+          "minimum_page": 1,
+          "maximum_page": 73,
+          "earliest_observed_at_raw": "2026-09-03T08:52:46.536614Z",
+          "latest_observed_at_raw": "2026-09-28T14:09:58.716384Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "605020",
+      "all_rows": 8461,
+      "all_content_states": {
+        "nonempty": 1386,
+        "empty_string": 0,
+        "null": 7075
+      },
+      "window_rows": 8461,
+      "window_content_states": {
+        "nonempty": 1386,
+        "empty_string": 0,
+        "null": 7075
+      },
+      "pending_revalidation_rows": 7075,
+      "pending_null_content_rows": 7075,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 3,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 3,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 3,
+      "window_url_invalid_rows": 65,
+      "pending_url_invalid_rows": 27,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-05T09:21:05+00:00",
+          "asia_shanghai": "2026-05-05T17:21:05+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:53:32+00:00",
+          "asia_shanghai": "2026-09-28T20:53:32+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-05T17:21:05+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:53:32+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-05T09:21:05+00:00",
+          "asia_shanghai": "2026-05-05T17:21:05+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:53:32+00:00",
+          "asia_shanghai": "2026-09-28T20:53:32+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-05T17:21:05+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:53:32+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "605020",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:32.755673Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "605020",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:09:59.294393Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:32.755673+00:00",
+              "asia_shanghai": "2026-09-24T12:56:32.755673+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:09:59.294393+00:00",
+              "asia_shanghai": "2026-09-28T22:09:59.294393+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:32.755673+00:00",
+              "asia_shanghai": "2026-09-24T12:56:32.755673+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:09:59.294393+00:00",
+              "asia_shanghai": "2026-09-28T22:09:59.294393+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 135,
+          "minimum_page": 1,
+          "maximum_page": 116,
+          "earliest_observed_at_raw": "2026-08-15T15:57:07.307972Z",
+          "latest_observed_at_raw": "2026-09-28T14:10:09.711971Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "600312",
+      "all_rows": 5582,
+      "all_content_states": {
+        "nonempty": 639,
+        "empty_string": 0,
+        "null": 4943
+      },
+      "window_rows": 5582,
+      "window_content_states": {
+        "nonempty": 639,
+        "empty_string": 0,
+        "null": 4943
+      },
+      "pending_revalidation_rows": 4943,
+      "pending_null_content_rows": 4943,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 1,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 1,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 1,
+      "window_url_invalid_rows": 37,
+      "pending_url_invalid_rows": 27,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T01:12:27+00:00",
+          "asia_shanghai": "2026-05-04T09:12:27+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:39:11+00:00",
+          "asia_shanghai": "2026-09-28T20:39:11+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T09:12:27+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:39:11+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T01:12:27+00:00",
+          "asia_shanghai": "2026-05-04T09:12:27+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:39:11+00:00",
+          "asia_shanghai": "2026-09-28T20:39:11+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T09:12:27+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:39:11+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "600312",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:38.907745Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "600312",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:10:10.337212Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:38.907745+00:00",
+              "asia_shanghai": "2026-09-24T12:56:38.907745+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:10:10.337212+00:00",
+              "asia_shanghai": "2026-09-28T22:10:10.337212+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:38.907745+00:00",
+              "asia_shanghai": "2026-09-24T12:56:38.907745+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:10:10.337212+00:00",
+              "asia_shanghai": "2026-09-28T22:10:10.337212+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 73,
+          "minimum_page": 1,
+          "maximum_page": 76,
+          "earliest_observed_at_raw": "2026-09-03T08:47:05.975968Z",
+          "latest_observed_at_raw": "2026-09-28T14:10:27.788490Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "002891",
+      "all_rows": 4432,
+      "all_content_states": {
+        "nonempty": 292,
+        "empty_string": 0,
+        "null": 4140
+      },
+      "window_rows": 4432,
+      "window_content_states": {
+        "nonempty": 292,
+        "empty_string": 0,
+        "null": 4140
+      },
+      "pending_revalidation_rows": 4140,
+      "pending_null_content_rows": 4140,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 0,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 0,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 0,
+      "window_url_invalid_rows": 34,
+      "pending_url_invalid_rows": 28,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-05T07:40:42+00:00",
+          "asia_shanghai": "2026-05-05T15:40:42+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T06:59:33+00:00",
+          "asia_shanghai": "2026-09-28T14:59:33+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-05T15:40:42+08:00",
+        "maximum_source_stored_raw": "2026-09-28T14:59:33+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-05T07:40:42+00:00",
+          "asia_shanghai": "2026-05-05T15:40:42+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T06:59:33+00:00",
+          "asia_shanghai": "2026-09-28T14:59:33+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-05T15:40:42+08:00",
+        "maximum_source_stored_raw": "2026-09-28T14:59:33+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002891",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:49.181434Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "002891",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:10:28.518692Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:49.181434+00:00",
+              "asia_shanghai": "2026-09-24T12:56:49.181434+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:10:28.518692+00:00",
+              "asia_shanghai": "2026-09-28T22:10:28.518692+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:49.181434+00:00",
+              "asia_shanghai": "2026-09-24T12:56:49.181434+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:10:28.518692+00:00",
+              "asia_shanghai": "2026-09-28T22:10:28.518692+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 64,
+          "minimum_page": 1,
+          "maximum_page": 63,
+          "earliest_observed_at_raw": "2026-09-03T08:48:48.018707Z",
+          "latest_observed_at_raw": "2026-09-28T14:10:35.942807Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "603806",
+      "all_rows": 5144,
+      "all_content_states": {
+        "nonempty": 369,
+        "empty_string": 0,
+        "null": 4775
+      },
+      "window_rows": 5144,
+      "window_content_states": {
+        "nonempty": 369,
+        "empty_string": 0,
+        "null": 4775
+      },
+      "pending_revalidation_rows": 4775,
+      "pending_null_content_rows": 4775,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 3,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 3,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 3,
+      "window_url_invalid_rows": 14,
+      "pending_url_invalid_rows": 9,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T04:39:38+00:00",
+          "asia_shanghai": "2026-05-04T12:39:38+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:26:50+00:00",
+          "asia_shanghai": "2026-09-28T21:26:50+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T12:39:38+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:26:50+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-04T04:39:38+00:00",
+          "asia_shanghai": "2026-05-04T12:39:38+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T13:26:50+00:00",
+          "asia_shanghai": "2026-09-28T21:26:50+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-04T12:39:38+08:00",
+        "maximum_source_stored_raw": "2026-09-28T21:26:50+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603806",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:56:54.810763Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603806",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:10:36.546570Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:56:54.810763+00:00",
+              "asia_shanghai": "2026-09-24T12:56:54.810763+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:10:36.546570+00:00",
+              "asia_shanghai": "2026-09-28T22:10:36.546570+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:56:54.810763+00:00",
+              "asia_shanghai": "2026-09-24T12:56:54.810763+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:10:36.546570+00:00",
+              "asia_shanghai": "2026-09-28T22:10:36.546570+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 71,
+          "minimum_page": 1,
+          "maximum_page": 69,
+          "earliest_observed_at_raw": "2026-09-03T08:56:58.519316Z",
+          "latest_observed_at_raw": "2026-09-28T14:10:43.290854Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "688676",
+      "all_rows": 3728,
+      "all_content_states": {
+        "nonempty": 333,
+        "empty_string": 0,
+        "null": 3395
+      },
+      "window_rows": 3728,
+      "window_content_states": {
+        "nonempty": 333,
+        "empty_string": 0,
+        "null": 3395
+      },
+      "pending_revalidation_rows": 3395,
+      "pending_null_content_rows": 3395,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 1,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 1,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 1,
+      "window_url_invalid_rows": 20,
+      "pending_url_invalid_rows": 8,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-05T10:08:56+00:00",
+          "asia_shanghai": "2026-05-05T18:08:56+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:26:15+00:00",
+          "asia_shanghai": "2026-09-28T20:26:15+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-05T18:08:56+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:26:15+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-05T10:08:56+00:00",
+          "asia_shanghai": "2026-05-05T18:08:56+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T12:26:15+00:00",
+          "asia_shanghai": "2026-09-28T20:26:15+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-05T18:08:56+08:00",
+        "maximum_source_stored_raw": "2026-09-28T20:26:15+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "688676",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:57:00.958278Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "688676",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:10:43.815062Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:57:00.958278+00:00",
+              "asia_shanghai": "2026-09-24T12:57:00.958278+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:10:43.815062+00:00",
+              "asia_shanghai": "2026-09-28T22:10:43.815062+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:57:00.958278+00:00",
+              "asia_shanghai": "2026-09-24T12:57:00.958278+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:10:43.815062+00:00",
+              "asia_shanghai": "2026-09-28T22:10:43.815062+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 62,
+          "minimum_page": 1,
+          "maximum_page": 55,
+          "earliest_observed_at_raw": "2026-09-03T08:59:02.342650Z",
+          "latest_observed_at_raw": "2026-09-28T14:10:50.302734Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "300487",
+      "all_rows": 2888,
+      "all_content_states": {
+        "nonempty": 255,
+        "empty_string": 0,
+        "null": 2633
+      },
+      "window_rows": 2888,
+      "window_content_states": {
+        "nonempty": 255,
+        "empty_string": 0,
+        "null": 2633
+      },
+      "pending_revalidation_rows": 2633,
+      "pending_null_content_rows": 2633,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 1,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 1,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 1,
+      "window_url_invalid_rows": 47,
+      "pending_url_invalid_rows": 26,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-06T01:41:24+00:00",
+          "asia_shanghai": "2026-05-06T09:41:24+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T06:04:36+00:00",
+          "asia_shanghai": "2026-09-28T14:04:36+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-06T09:41:24+08:00",
+        "maximum_source_stored_raw": "2026-09-28T14:04:36+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-06T01:41:24+00:00",
+          "asia_shanghai": "2026-05-06T09:41:24+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T06:04:36+00:00",
+          "asia_shanghai": "2026-09-28T14:04:36+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-06T09:41:24+08:00",
+        "maximum_source_stored_raw": "2026-09-28T14:04:36+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "300487",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:57:10.273121Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "300487",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:10:50.818762Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:57:10.273121+00:00",
+              "asia_shanghai": "2026-09-24T12:57:10.273121+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:10:50.818762+00:00",
+              "asia_shanghai": "2026-09-28T22:10:50.818762+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:57:10.273121+00:00",
+              "asia_shanghai": "2026-09-24T12:57:10.273121+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:10:50.818762+00:00",
+              "asia_shanghai": "2026-09-28T22:10:50.818762+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 50,
+          "minimum_page": 1,
+          "maximum_page": 42,
+          "earliest_observed_at_raw": "2026-09-03T08:58:05.869759Z",
+          "latest_observed_at_raw": "2026-09-28T14:11:00.072361Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    },
+    {
+      "stock_code": "603997",
+      "all_rows": 1831,
+      "all_content_states": {
+        "nonempty": 123,
+        "empty_string": 0,
+        "null": 1708
+      },
+      "window_rows": 1831,
+      "window_content_states": {
+        "nonempty": 123,
+        "empty_string": 0,
+        "null": 1708
+      },
+      "pending_revalidation_rows": 1708,
+      "pending_null_content_rows": 1708,
+      "pending_empty_string_rows": 0,
+      "legacy_enrich_all_null_title_eligible_before_skips": 0,
+      "legacy_enrich_all_pending_after_skips": 0,
+      "legacy_enrich_window_null_title_eligible_before_skips": 0,
+      "legacy_enrich_window_pending_after_skips": 0,
+      "legacy_enrich_window_skip_excluded": 0,
+      "window_url_invalid_rows": 11,
+      "pending_url_invalid_rows": 8,
+      "timestamp_errors": 0,
+      "all_time_span": {
+        "minimum": {
+          "utc": "2026-05-06T01:34:30+00:00",
+          "asia_shanghai": "2026-05-06T09:34:30+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T04:01:16+00:00",
+          "asia_shanghai": "2026-09-28T12:01:16+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-06T09:34:30+08:00",
+        "maximum_source_stored_raw": "2026-09-28T12:01:16+08:00"
+      },
+      "window_time_span": {
+        "minimum": {
+          "utc": "2026-05-06T01:34:30+00:00",
+          "asia_shanghai": "2026-05-06T09:34:30+08:00"
+        },
+        "maximum": {
+          "utc": "2026-09-28T04:01:16+00:00",
+          "asia_shanghai": "2026-09-28T12:01:16+08:00"
+        },
+        "minimum_source_stored_raw": "2026-05-06T09:34:30+08:00",
+        "maximum_source_stored_raw": "2026-09-28T12:01:16+08:00"
+      },
+      "coverage": {
+        "stored_rows": [
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603997",
+            "covered_from": "2026-05-03T16:00:00Z",
+            "covered_to": "2026-09-24T04:57:20.312208Z"
+          },
+          {
+            "source": "eastmoney_guba",
+            "stock_code": "603997",
+            "covered_from": "2026-09-24T16:00:00Z",
+            "covered_to": "2026-09-28T14:11:00.664049Z"
+          }
+        ],
+        "claims_intersecting_window": [
+          {
+            "from": {
+              "utc": "2026-05-03T16:00:00+00:00",
+              "asia_shanghai": "2026-05-04T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T04:57:20.312208+00:00",
+              "asia_shanghai": "2026-09-24T12:57:20.312208+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            },
+            "to": {
+              "utc": "2026-09-28T14:11:00.664049+00:00",
+              "asia_shanghai": "2026-09-28T22:11:00.664049+08:00"
+            }
+          }
+        ],
+        "ledger_boundary_gaps": [
+          {
+            "from": {
+              "utc": "2026-09-24T04:57:20.312208+00:00",
+              "asia_shanghai": "2026-09-24T12:57:20.312208+08:00"
+            },
+            "to": {
+              "utc": "2026-09-24T16:00:00+00:00",
+              "asia_shanghai": "2026-09-25T00:00:00+08:00"
+            }
+          },
+          {
+            "from": {
+              "utc": "2026-09-28T14:11:00.664049+00:00",
+              "asia_shanghai": "2026-09-28T22:11:00.664049+08:00"
+            },
+            "to": {
+              "utc": "2026-09-30T09:22:58+00:00",
+              "asia_shanghai": "2026-09-30T17:22:58+08:00"
+            }
+          }
+        ],
+        "parse_errors": [],
+        "meaning": "existing coverage ledger claims only; not independent proof of complete lists or bodies; adjacent gap endpoints are ledger boundaries"
+      },
+      "page_anchors": {
+        "table": "backfill_page_anchors",
+        "table_present": true,
+        "summary": {
+          "rows": 55,
+          "minimum_page": 1,
+          "maximum_page": 28,
+          "earliest_observed_at_raw": "2026-09-03T09:00:43.367097Z",
+          "latest_observed_at_raw": "2026-09-28T14:11:09.818194Z"
+        },
+        "meaning": "optional historical paging observations; not coverage proof or source body facts"
+      }
+    }
+  ],
+  "legacy_enrich_comparison_provenance": {
+    "script": {
+      "path": "scripts/ops/enrich_plan.py",
+      "sha256": "06d28dc4dd6d30ee7434031a803bbbccc397e6bcd3965c3f34ba834d2486e629",
+      "line": 81
+    },
+    "predicate": "content IS NULL AND LENGTH(TRIM(COALESCE(title,''))) >= 40, excluding source IDs in skip ledger",
+    "skip_ledger": {
+      "path": "data/collector.detail_enrichment_skips.db",
+      "mode": "ro",
+      "query_only": true,
+      "exists": true,
+      "filter": "source_item_id NOT IN source='eastmoney_guba' skip ledger",
+      "started": {
+        "utc": "2026-09-30T09:36:55.250817+00:00",
+        "asia_shanghai": "2026-09-30T17:36:55.250817+08:00"
+      },
+      "finished": {
+        "utc": "2026-09-30T09:36:55.251393+00:00",
+        "asia_shanghai": "2026-09-30T17:36:55.251393+08:00"
+      },
+      "source_id_count": 60
+    },
+    "used_to_filter_new_full_queue": false,
+    "meaning": "comparison with existing production policy only; full research pending queue retains all NULL/empty DB content"
+  },
+  "totals": {
+    "selected_all_rows": 214094,
+    "known_window_source_pk_count": 214094,
+    "existing_nonempty_window_rows": 19832,
+    "pending_distinct_source_pk_count": 194262,
+    "pending_distinct_source_item_id_count": 194262,
+    "pending_null_content_rows": 194262,
+    "pending_empty_string_rows": 0,
+    "legacy_enrich_window_null_title_eligible_before_skips": 60,
+    "legacy_enrich_window_skip_excluded": 60,
+    "legacy_enrich_window_pending_after_filters": 0,
+    "pending_url_invalid_rows": 1231,
+    "pending_url_inferred_request_eligible_rows": 193031,
+    "window_url_invalid_rows": 2148,
+    "timestamp_errors": 0,
+    "new_source_posts_collected_by_inventory": 0
+  },
+  "timestamp_errors": [],
+  "script_sha256": "b37fd466593862111eb6fe68cf69ab7cb696562c9d17fb02e0a5633bae40a587",
+  "outputs": {
+    "known-db.jsonl": {
+      "path": "runs/guba-http-research-20260930/backfill/known-db.jsonl",
+      "bytes": 170086564,
+      "sha256": "5f39ddc717e14a1cb0d1707fa9d8df811a254fd97768691104a96ca82ae45d58"
+    },
+    "pending-db.jsonl": {
+      "path": "runs/guba-http-research-20260930/backfill/pending-db.jsonl",
+      "bytes": 361279486,
+      "sha256": "2c46596ffb0b817e2064eb0e7cb2ee3a1d6a99b4e7e796df3ae63b7dcf686ac7"
+    }
+  },
+  "limits": [
+    "existing DB state is inventory, not new source acquisition",
+    "NULL and empty content are pending revalidation categories, not proven missing source bodies",
+    "no original list raw or post_type in posts schema; standard post route is URL inference only",
+    "coverage rows are historical ledger claims; inventory cannot prove complete source coverage",
+    "no network requests or DB writes"
+  ]
+}

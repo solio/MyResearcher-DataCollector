@@ -1,0 +1,104 @@
+[
+  {
+    "left_sequence": 2,
+    "right_sequence": 4,
+    "left_url": "https://guba.eastmoney.com/list,601012,f.html",
+    "right_url": "https://guba.eastmoney.com/list,601012,f_2.html",
+    "left_rows": 81,
+    "right_rows": 80,
+    "overlap_ids": [
+      "1779209980",
+      "1779251312",
+      "1779252450"
+    ],
+    "new_ids_on_right": 77,
+    "same_ordered_signature": false,
+    "pagination_progress": true,
+    "left_min_publish": "2026-09-30 13:05:20",
+    "right_min_publish": "2026-09-30 10:29:26",
+    "left_type0_min_publish": "2026-09-30 13:43:08",
+    "left_type0_max_publish": "2026-09-30 15:38:17",
+    "right_type0_min_publish": "2026-09-30 10:29:26",
+    "right_type0_max_publish": "2026-09-30 13:44:16"
+  },
+  {
+    "left_sequence": 4,
+    "right_sequence": 18,
+    "left_url": "https://guba.eastmoney.com/list,601012,f_2.html",
+    "right_url": "https://guba.eastmoney.com/list,601012,f_3.html",
+    "left_rows": 80,
+    "right_rows": 80,
+    "overlap_ids": [
+      "1779101790",
+      "1779116032"
+    ],
+    "new_ids_on_right": 78,
+    "same_ordered_signature": false,
+    "pagination_progress": true,
+    "left_min_publish": "2026-09-30 10:29:26",
+    "right_min_publish": "2026-09-29 18:01:09",
+    "left_type0_min_publish": "2026-09-30 10:29:26",
+    "left_type0_max_publish": "2026-09-30 13:44:16",
+    "right_type0_min_publish": "2026-09-29 18:01:09",
+    "right_type0_max_publish": "2026-09-30 10:37:14"
+  },
+  {
+    "left_sequence": 5,
+    "right_sequence": 10,
+    "left_url": "https://guba.eastmoney.com/list,600519,f.html",
+    "right_url": "https://guba.eastmoney.com/list,600519,f_2.html",
+    "left_rows": 84,
+    "right_rows": 80,
+    "overlap_ids": [
+      "1779255429",
+      "1779255487"
+    ],
+    "new_ids_on_right": 78,
+    "same_ordered_signature": false,
+    "pagination_progress": true,
+    "left_min_publish": "2026-09-22 22:51:25",
+    "right_min_publish": "2026-09-30 10:27:38",
+    "left_type0_min_publish": "2026-09-30 13:47:09",
+    "left_type0_max_publish": "2026-09-30 15:51:26",
+    "right_type0_min_publish": "2026-09-30 10:27:38",
+    "right_type0_max_publish": "2026-09-30 13:47:12"
+  },
+  {
+    "left_sequence": 11,
+    "right_sequence": 13,
+    "left_url": "https://guba.eastmoney.com/list,601012,f.html",
+    "right_url": "https://guba.eastmoney.com/list,601012,f_2.html",
+    "left_rows": 81,
+    "right_rows": 80,
+    "overlap_ids": [
+      "1779209980"
+    ],
+    "new_ids_on_right": 79,
+    "same_ordered_signature": false,
+    "pagination_progress": true,
+    "left_min_publish": "2026-09-30 13:05:20",
+    "right_min_publish": "2026-09-30 10:37:14",
+    "left_type0_min_publish": "2026-09-30 13:45:01",
+    "left_type0_max_publish": "2026-09-30 16:05:05",
+    "right_type0_min_publish": "2026-09-30 10:37:14",
+    "right_type0_max_publish": "2026-09-30 13:44:47"
+  },
+  {
+    "left_sequence": 14,
+    "right_sequence": 16,
+    "left_url": "https://guba.eastmoney.com/list,600519,f.html",
+    "right_url": "https://guba.eastmoney.com/list,600519,f_2.html",
+    "left_rows": 84,
+    "right_rows": 80,
+    "overlap_ids": [],
+    "new_ids_on_right": 80,
+    "same_ordered_signature": false,
+    "pagination_progress": true,
+    "left_min_publish": "2026-09-22 22:51:25",
+    "right_min_publish": "2026-09-30 10:27:38",
+    "left_type0_min_publish": "2026-09-30 13:47:13",
+    "left_type0_max_publish": "2026-09-30 15:51:26",
+    "right_type0_min_publish": "2026-09-30 10:27:38",
+    "right_type0_max_publish": "2026-09-30 13:47:12"
+  }
+]

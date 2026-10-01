@@ -1,0 +1,78 @@
+{
+  "status": "HALTED: explicit_raw_challenge",
+  "time": {
+    "utc": "2026-09-30T09:12:09.207955+00:00",
+    "asia_shanghai": "2026-09-30T17:12:09.207955+08:00"
+  },
+  "http_attempts": 78,
+  "budget": 500,
+  "source_http_200": 78,
+  "main_list_attempted": 78,
+  "main_list_valid": 77,
+  "continuous_pages": {
+    "601012": 30,
+    "600519": 30,
+    "300750": 17
+  },
+  "main_detail_target": 300,
+  "main_detail_attempted": 0,
+  "main_detail_valid_observations": 0,
+  "unique_complete_source_posts": 0,
+  "unique_nonempty_source_posts": 0,
+  "source_empty_posts": 0,
+  "strict_list_detail_matches": 0,
+  "detail_failures": 0,
+  "detail_by_stock": {
+    "601012": {
+      "attempted": 0,
+      "valid": 0
+    },
+    "600519": {
+      "attempted": 0,
+      "valid": 0
+    },
+    "300750": {
+      "attempted": 0,
+      "valid": 0
+    }
+  },
+  "valid_by_stock_stratum": {},
+  "list_observation_rows": 6170,
+  "unique_list_ids": 6157,
+  "source_response_bytes": 10984258,
+  "wall_seconds": 277.179154,
+  "minimum_gap_end_to_start_seconds": 3.100776,
+  "raw_explicit_challenges": 1,
+  "dynamic_challenges": "unobserved: no JS rendering",
+  "http_403": 0,
+  "http_429": 0,
+  "redirect_hops": 0,
+  "environment_errors": 0,
+  "first_source_time": {
+    "utc": "2026-09-30T09:07:31.840836+00:00",
+    "asia_shanghai": "2026-09-30T17:07:31.840836+08:00"
+  },
+  "last_source_time": {
+    "utc": "2026-09-30T09:12:09.019990+00:00",
+    "asia_shanghai": "2026-09-30T17:12:09.019990+08:00"
+  },
+  "halt": {
+    "reason": "explicit_raw_challenge",
+    "request_sequence": 78,
+    "request_url": "https://guba.eastmoney.com/list,300750,f_18.html",
+    "http_status": 200,
+    "time": {
+      "utc": "2026-09-30T09:12:09.022860+00:00",
+      "asia_shanghai": "2026-09-30T17:12:09.022860+08:00"
+    },
+    "context": {
+      "phase": "lists",
+      "requested_bar": "300750",
+      "page": 18
+    },
+    "raw_ref": "raw/078-list-300750-p18-hop0.body",
+    "raw_sha256": "d9bc3154679106ea3fe92b69042d743009a13a75813d660405fc2868a6174f5a",
+    "elapsed_from_first_request_seconds": 277.179154
+  },
+  "main_detail_terminal_jobs": 0
+}

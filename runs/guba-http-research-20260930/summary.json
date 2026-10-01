@@ -1,0 +1,133 @@
+{
+  "attempts_including_environment_failure": 24,
+  "source_requests_reached": 23,
+  "source_http_200": 23,
+  "environment_failures": [
+    {
+      "sequence": 1,
+      "error": "curl: (6) Could not resolve host: guba.eastmoney.com"
+    }
+  ],
+  "by_kind": {
+    "list": 11,
+    "detail": 9,
+    "script": 2,
+    "json": 1
+  },
+  "by_client_kind": {
+    "curl": {
+      "list": {
+        "attempts": 6,
+        "data_success": 6
+      },
+      "detail": {
+        "attempts": 6,
+        "data_success": 6
+      },
+      "script": {
+        "attempts": 2,
+        "data_success": 0
+      },
+      "json": {
+        "attempts": 1,
+        "data_success": 0
+      }
+    },
+    "urllib": {
+      "list": {
+        "attempts": 5,
+        "data_success": 5
+      },
+      "detail": {
+        "attempts": 3,
+        "data_success": 3
+      },
+      "script": {
+        "attempts": 0,
+        "data_success": 0
+      },
+      "json": {
+        "attempts": 0,
+        "data_success": 0
+      }
+    }
+  },
+  "lists_success": 11,
+  "details_success": 9,
+  "raw_explicit_challenge_count": 0,
+  "dynamic_challenge": "unobserved: HTTP clients do not render/execute JS",
+  "api_candidate_success": 0,
+  "api_candidate_attempts": 1,
+  "api_failure": "unexpected_non_post_json: rc absent, re boolean, four security/star objects, no post_id",
+  "stocks": [
+    "601012",
+    "600519"
+  ],
+  "list_observation_rows": 892,
+  "distinct_list_ids": 403,
+  "distinct_type0_list_ids": 368,
+  "list_post_type_observations": {
+    "1": 11,
+    "0": 818,
+    "20": 60,
+    "3": 3
+  },
+  "detail_observation_rows": 9,
+  "distinct_detail_ids": 6,
+  "detail_unique_bodies": [
+    {
+      "post_id": "1779156897",
+      "chars": 347,
+      "content_equals_title": false
+    },
+    {
+      "post_id": "1779250198",
+      "chars": 29,
+      "content_equals_title": true
+    },
+    {
+      "post_id": "1779352981",
+      "chars": 15,
+      "content_equals_title": true
+    },
+    {
+      "post_id": "1779352996",
+      "chars": 8,
+      "content_equals_title": true
+    },
+    {
+      "post_id": "1779356899",
+      "chars": 328,
+      "content_equals_title": false
+    },
+    {
+      "post_id": "1779359910",
+      "chars": 315,
+      "content_equals_title": false
+    }
+  ],
+  "first_source_time": {
+    "utc": "2026-09-30T07:59:06.732723+00:00",
+    "asia_shanghai": "2026-09-30T15:59:06.732723+08:00"
+  },
+  "last_source_time": {
+    "utc": "2026-09-30T08:21:48.365796+00:00",
+    "asia_shanghai": "2026-09-30T16:21:48.365796+08:00"
+  },
+  "source_response_bytes_total": 3184050,
+  "minimum_gap_end_to_start_seconds": 3.10215,
+  "latency_seconds": {
+    "min": 0.139338,
+    "median": 0.24936,
+    "max": 0.422733
+  },
+  "anonymous_session": {
+    "requests": 6,
+    "wall_seconds": 17.142752,
+    "observed_requests_per_minute": 21.000128800789977,
+    "cookie_jar_end_count": 0
+  },
+  "forced_http2_sequence": 5,
+  "forced_http2_actual_protocol": "1.1",
+  "integrity_issues": []
+}

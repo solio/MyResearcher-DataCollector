@@ -1,0 +1,170 @@
+[
+  {
+    "sequence": 1,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": false,
+    "classification": "environment_or_transport_error"
+  },
+  {
+    "sequence": 2,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 3,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 4,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 5,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 6,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": false,
+    "classification": "response_without_validated_data"
+  },
+  {
+    "sequence": 7,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": false,
+    "classification": "response_without_validated_data"
+  },
+  {
+    "sequence": 8,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 9,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 10,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 11,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 12,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 13,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 14,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 15,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 16,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 17,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": false,
+    "classification": "unexpected_non_post_json"
+  },
+  {
+    "sequence": 18,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 19,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 20,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 21,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 22,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 23,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  },
+  {
+    "sequence": 24,
+    "final_detector_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+    "raw_challenge_evidence": false,
+    "data_ok": true,
+    "classification": "real_data"
+  }
+]

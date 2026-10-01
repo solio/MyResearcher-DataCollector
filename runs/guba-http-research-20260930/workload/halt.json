@@ -1,0 +1,17 @@
+{
+  "reason": "explicit_raw_challenge",
+  "request_sequence": 78,
+  "request_url": "https://guba.eastmoney.com/list,300750,f_18.html",
+  "http_status": 200,
+  "time": {
+    "utc": "2026-09-30T09:12:09.022860+00:00",
+    "asia_shanghai": "2026-09-30T17:12:09.022860+08:00"
+  },
+  "context": {
+    "phase": "lists",
+    "requested_bar": "300750",
+    "page": 18
+  },
+  "raw_ref": "raw/078-list-300750-p18-hop0.body",
+  "raw_sha256": "d9bc3154679106ea3fe92b69042d743009a13a75813d660405fc2868a6174f5a"
+}

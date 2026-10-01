@@ -1,0 +1,60 @@
+{
+  "audit_status": "PASS",
+  "audited_at_utc": "2026-09-30T09:32:10.588727+00:00",
+  "verify_sha256": "7824f5e05dafdc101d6fb0a82578d782475b1d73ea8814d04aa0612df8261b7e",
+  "scope": "Independent offline audit of retained workload evidence, including partial halted list phase; source failure is not an evidence contradiction",
+  "stats": {
+    "http_attempts": 78,
+    "source_http_200": 78,
+    "main_list_attempted": 78,
+    "main_list_valid": 77,
+    "continuous_pages": {
+      "601012": 30,
+      "600519": 30,
+      "300750": 17
+    },
+    "main_detail_attempted": 0,
+    "main_detail_terminal_jobs": 0,
+    "main_detail_valid_observations": 0,
+    "unique_complete_source_posts": 0,
+    "unique_nonempty_source_posts": 0,
+    "source_empty_posts": 0,
+    "list_observation_rows": 6170,
+    "unique_list_ids": 6157,
+    "source_response_bytes": 10984258,
+    "raw_explicit_challenges": 1,
+    "http_403": 0,
+    "http_429": 0,
+    "environment_errors": 0,
+    "redirect_hops": 0
+  },
+  "integrity": {
+    "response_bytes_verified": 78,
+    "response_sha256_verified": 78,
+    "strict_utf8_verified": 78,
+    "standalone_metadata_verified": 78,
+    "pagination_cycles": [],
+    "orphan_ledger_jobs_in_attempt_denominator": [
+      "list-300750-p18"
+    ],
+    "minimum_gap_end_to_start_seconds": 3.100776,
+    "requests_after_first_global_block": 0
+  },
+  "first_block": {
+    "sequence": 78,
+    "url": "https://guba.eastmoney.com/list,300750,f_18.html",
+    "http_status": 200,
+    "title": "身份核实",
+    "raw_ref": "raw/078-list-300750-p18-hop0.body",
+    "sha256": "d9bc3154679106ea3fe92b69042d743009a13a75813d660405fc2868a6174f5a",
+    "finished": {
+      "utc": "2026-09-30T09:12:09.019990+00:00",
+      "asia_shanghai": "2026-09-30T17:12:09.019990+08:00"
+    }
+  },
+  "detail_phase": "not attempted",
+  "independent_repeat": "not attempted",
+  "dynamic_challenges": "Unobserved: pure HTTP does not execute JavaScript; this audit only confirms the retained raw verification shell",
+  "errors": [],
+  "warnings": []
+}

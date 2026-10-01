@@ -1,0 +1,2582 @@
+{
+  "mode": "offline_only_no_browser_no_network_no_DB",
+  "probe_sha256": "b3027625adb654b2d011cd015cf3242a477300cad17f4a0f6fa1270e9c1a2880",
+  "calibration_sha256": "ac7f52a1584f63d925b3ba4c4969999eea13946ba2cc628a97fceeec9cd97027",
+  "summary": {
+    "required_controls": 31,
+    "required_passed": 31,
+    "required_failed": [],
+    "optional_failed": [],
+    "real_detail_files": 5,
+    "real_list_files": 112,
+    "real_lists_data_ok": 112,
+    "real_lists_raw_challenge_evidence": 0,
+    "corpus_error_count": 0
+  },
+  "controls": [
+    {
+      "name": "F1 normal template includes captcha asset",
+      "required": true,
+      "passed": true,
+      "body_bytes": 687,
+      "body_sha256": "2d9f2b2be49a97c8b10aeeb65ecd2cdbb30620f2940c1399974f21540ba5da0a",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "F2 identity verification shell",
+      "required": true,
+      "passed": true,
+      "body_bytes": 275,
+      "body_sha256": "5ef5192dd40e146262c93c43658d154949912596a84d1540fb53e3d86dafe634",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": true,
+      "errors": [],
+      "note": "Synthetic shell; not the lost 2834-byte historical body.",
+      "analysis": {
+        "title": "身份核实",
+        "challenge_assets": [
+          "em_capt.js",
+          "fd_guba_validate",
+          "validate.js",
+          "emcaptcha"
+        ],
+        "static_challenge_nodes": [
+          {
+            "tag": "div",
+            "id": "emcaptcha",
+            "class": null
+          }
+        ],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": true,
+        "challenge_reason": "title+asset verification shell",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_validate/work/assets/validate.js"
+        ],
+        "data_ok": false,
+        "parse_error": "assignment absent",
+        "classification": "access_block"
+      }
+    },
+    {
+      "name": "F3 genuine-shaped payload and explicit static challenge overlay",
+      "required": true,
+      "passed": true,
+      "body_bytes": 786,
+      "body_sha256": "139afaa8abc0a1a55292b51c1697936669459a5b87aab47d31b992a53a4b1b04",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": true,
+      "errors": [],
+      "note": "Static markup evidence only; no claim of CSS/JS-rendered visibility.",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js",
+          "emcaptcha"
+        ],
+        "static_challenge_nodes": [
+          {
+            "tag": "div",
+            "id": "emcaptcha",
+            "class": null
+          }
+        ],
+        "static_challenge_instructions": [
+          "拖动下方滑块完成拼图"
+        ],
+        "overlay_instructions": [
+          "拖动下方滑块完成拼图"
+        ],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": true,
+        "challenge_reason": "static overlay markup + challenge instruction",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [],
+        "classification": "access_block"
+      }
+    },
+    {
+      "name": "F4 normal headline contains 验证",
+      "required": true,
+      "passed": true,
+      "body_bytes": 714,
+      "body_sha256": "2c764d3b0ee7b5d6efabe8395af1ee20ddefbae8aba0b4df3b2ce3b95f7e93ab",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "今天验证了这个逻辑是否成立_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "F5 normal prose contains 拼图",
+      "required": true,
+      "passed": true,
+      "body_bytes": 720,
+      "body_sha256": "afc4c5f2bd25860d05f9caa876980cba0f1e8c2bec80ac9a1defbdde9520cad6",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "F6 static challenge instruction only in JSON/script is not rendered text",
+      "required": true,
+      "passed": true,
+      "body_bytes": 654,
+      "body_sha256": "36e43f75ea80030205c43db3b89b9ee384c0f85305753231dc044984f27ffbbb",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 10,
+        "post_content_sha256": "634a4caa87636879e90bfe7400755efe4ceae9208ea82bfd6c4e3d6053f8c0a9",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "F7 hidden template does not establish visible challenge",
+      "required": true,
+      "passed": true,
+      "body_bytes": 750,
+      "body_sha256": "656ce6d6810212f9fa1cc4dfa357ec33548e66e3290f5b194d42b04d97daac75",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js",
+          "emcaptcha"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "F8 ordinary article quotes a challenge instruction",
+      "required": false,
+      "passed": true,
+      "body_bytes": 762,
+      "body_sha256": "fc57b27d4826955c67f1fd8226bb13357b6e8cbbc0be1af79c0e86459fb22b60",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "Optional precision control: text alone can be prose; if blocked, report suspected raw evidence, not proved visible CAPTCHA.",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [
+          "拖动下方滑块完成拼图"
+        ],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": true,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "list success",
+      "required": true,
+      "passed": true,
+      "body_bytes": 548,
+      "body_sha256": "ce924a9da56b6abe2bbb28c3c23969dca512b4dd8a289dbc85cdb3c838ca9599",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 1,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345"
+        ],
+        "ordered_id_sha256": "8fe7e82ac002cacc7d1b0c848825c3c65545cff2d15211c8720e10418d3595c7",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "valid empty list",
+      "required": true,
+      "passed": true,
+      "body_bytes": 299,
+      "body_sha256": "44ea3c7add32b28e256ecffc60e8d0f94db5c6b38a33d5f6fcec333f14f3262a",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": true,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 0,
+        "unique_ids": 0,
+        "ordered_ids": [],
+        "ordered_id_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "post_types": {},
+        "publish_time_min": null,
+        "publish_time_max": null,
+        "row_errors": [],
+        "standard_detail_candidates": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "list non-success rc",
+      "required": true,
+      "passed": true,
+      "body_bytes": 548,
+      "body_sha256": "051aa285bd0daa9fcd2df3d7fbf6a23cffec7c973f50152b743cb2c0e19c186c",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": 0,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 1,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345"
+        ],
+        "ordered_id_sha256": "8fe7e82ac002cacc7d1b0c848825c3c65545cff2d15211c8720e10418d3595c7",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [
+          "rc != 1 or re not list"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "list malformed non-object row",
+      "required": true,
+      "passed": true,
+      "body_bytes": 565,
+      "body_sha256": "e2fa683572ecde6fdc70d282e843211544a51cccf6343541dff1f7108f06b3af",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 2,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345"
+        ],
+        "ordered_id_sha256": "8fe7e82ac002cacc7d1b0c848825c3c65545cff2d15211c8720e10418d3595c7",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [
+          "row 1 not object"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "list missing identity",
+      "required": true,
+      "passed": true,
+      "body_bytes": 545,
+      "body_sha256": "cf4a8ad186d6f204cb584ea3b0d6c22304d596c89c08f1fcd37d332978b57eeb",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 1,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "None"
+        ],
+        "ordered_id_sha256": "acd75c0c99e3de9988d9de46a026e05dcc7dc46cbb3baa8972c13da55c81df23",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [
+          "row 0 identity/type/publish_time invalid",
+          "row 0 no observed standard detail link"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "None",
+            "post_type": 0,
+            "url": null,
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "list invalid source publication time",
+      "required": true,
+      "passed": true,
+      "body_bytes": 540,
+      "body_sha256": "406a262090e3d0740ccbd4ec2e6a48874f993579663504e7255648f42c629406",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 1,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345"
+        ],
+        "ordered_id_sha256": "8fe7e82ac002cacc7d1b0c848825c3c65545cff2d15211c8720e10418d3595c7",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": null,
+        "publish_time_max": null,
+        "row_errors": [
+          "row 0 identity/type/publish_time invalid"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "09-30 10:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "list boolean rc is not integer success rc",
+      "required": true,
+      "passed": true,
+      "body_bytes": 551,
+      "body_sha256": "45cd4a105b62fd9935c98719111378f53e0b0aa9ff2053fe3772a2a04960afbd",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": true,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 1,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345"
+        ],
+        "ordered_id_sha256": "8fe7e82ac002cacc7d1b0c848825c3c65545cff2d15211c8720e10418d3595c7",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [
+          "rc != 1 or re not list"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "list duplicate IDs within one page",
+      "required": true,
+      "passed": true,
+      "body_bytes": 799,
+      "body_sha256": "a8f6f1fcb0e5d62b2710a78146649c887555eeab2af0ccb6078268a383250a4e",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 2,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345",
+          "12345"
+        ],
+        "ordered_id_sha256": "54e610ba681d42323c0cbe640dc7366db5edcada1d2c0091c239a0fa30167374",
+        "post_types": {
+          "0": 2
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [
+          "duplicate IDs within one list response"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          },
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": "https://guba.eastmoney.com/news,601012,12345.html",
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "list foreign-host standard-shaped link",
+      "required": true,
+      "passed": true,
+      "body_bytes": 545,
+      "body_sha256": "1f853fedf6374f11bd2461579777f1e57f5e51e858532f6030012deb9cb3fb4c",
+      "kind": "list",
+      "url": "https://guba.eastmoney.com/list,601012,f.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常股吧列表",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "rc": 1,
+        "source_count": null,
+        "source_time": null,
+        "row_count": 1,
+        "unique_ids": 1,
+        "ordered_ids": [
+          "12345"
+        ],
+        "ordered_id_sha256": "8fe7e82ac002cacc7d1b0c848825c3c65545cff2d15211c8720e10418d3595c7",
+        "post_types": {
+          "0": 1
+        },
+        "publish_time_min": "2026-09-30 10:00:00",
+        "publish_time_max": "2026-09-30 10:00:00",
+        "row_errors": [
+          "row 0 no observed standard detail link"
+        ],
+        "standard_detail_candidates": [
+          {
+            "post_id": "12345",
+            "post_type": 0,
+            "url": null,
+            "stockbar_code": "601012",
+            "post_title": "某个真实格式标题",
+            "post_publish_time": "2026-09-30 10:00:00",
+            "post_last_time": "2026-09-30 10:10:00",
+            "user_id": "test-author",
+            "user_nickname": "测试用户"
+          }
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail response ID mismatch",
+      "required": true,
+      "passed": true,
+      "body_bytes": 687,
+      "body_sha256": "60aad3582c45c4c6dd45a57c2d8b9e1a68b521ca581fbe5ebddd23f4f7c8c88b",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "98765",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "requested/final URL ID != response ID",
+          "list/detail mismatch: post_id"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail missing source body",
+      "required": true,
+      "passed": true,
+      "body_bytes": 604,
+      "body_sha256": "c458c8f40b63cc73cb2405896e893dd9601135cfdd06bebdd08099db1ca371fc",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": false,
+        "post_content_chars": null,
+        "post_content_sha256": null,
+        "detail_errors": [
+          "body/publish_time/type invalid"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail boolean post_type is not integer zero",
+      "required": true,
+      "passed": true,
+      "body_bytes": 691,
+      "body_sha256": "1f3b8b4332d007c353ab0974743a17319afb9dfab17e1f1ceab3dc09966cc33d",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": false,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "body/publish_time/type invalid"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail null post_guba with expected canonical code",
+      "required": true,
+      "passed": true,
+      "body_bytes": 628,
+      "body_sha256": "adad17ed4db876c75bf1bc5fb7143b135c14747dfa3ef8c5fafe9ec2ab2fd6ec",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": null,
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "post_guba/post_user not objects",
+          "list/detail mismatch: stockbar_code"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail null post_user with expected author",
+      "required": true,
+      "passed": true,
+      "body_bytes": 632,
+      "body_sha256": "60be51c4855477c5f030301ec01d66c8faf2a2365902389169879e70b3cfadd1",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "post_guba/post_user not objects",
+          "list/detail mismatch: user_id",
+          "list/detail mismatch: user_nickname"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail non-object post_guba",
+      "required": true,
+      "passed": true,
+      "body_bytes": 633,
+      "body_sha256": "b664572d080701cfed45b5f026ed503132246cf7d6381aae9ceb1a083de3be8b",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": null,
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "post_guba/post_user not objects",
+          "list/detail mismatch: stockbar_code"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail non-object post_user",
+      "required": true,
+      "passed": true,
+      "body_bytes": 637,
+      "body_sha256": "2722af6dc58613c2cfac12fb0951e91d8596f9746b6f0cc916b7a47040ca0e63",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "某个真实格式标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "post_guba/post_user not objects",
+          "list/detail mismatch: user_id",
+          "list/detail mismatch: user_nickname"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "detail list/title mismatch",
+      "required": true,
+      "passed": true,
+      "body_bytes": 675,
+      "body_sha256": "286a40b6a3f9d1ea02035d11781c7d34024b89ebd04131483f9bf91288b04145",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "正常帖子_隆基绿能股吧_东方财富网",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js"
+        ],
+        "data_ok": false,
+        "post_id": "12345",
+        "post_type": 0,
+        "post_title": "另一标题",
+        "post_publish_time": "2026-09-30 10:00:00",
+        "post_last_time": "2026-09-30 10:10:00",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 21,
+        "post_content_sha256": "b8a52af1da7a086f146095214117fe27491268d103ea51d25803b314d1bc51f8",
+        "detail_errors": [
+          "list/detail mismatch: post_title"
+        ],
+        "classification": "response_without_validated_data"
+      }
+    },
+    {
+      "name": "deleted post is distinct from verification",
+      "required": true,
+      "passed": true,
+      "body_bytes": 40,
+      "body_sha256": "99df1a21188e3d3a7816ba5e1d22b04bbc65542a6b945978bdef0e2eac8fd96f",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/error?type=2",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "",
+      "analysis": {
+        "title": "",
+        "challenge_assets": [],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [],
+        "data_ok": false,
+        "parse_error": "assignment absent",
+        "classification": "detail_not_found"
+      }
+    },
+    {
+      "name": "repository synthetic verification fixture",
+      "required": true,
+      "passed": true,
+      "body_bytes": 431,
+      "body_sha256": "a7bcecc4cf9752d656c4d03166ead733bbba5a3b00d0e5968c7b3be6845db78b",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,12345.html",
+      "expected_data_ok": false,
+      "expected_raw_challenge_evidence": true,
+      "errors": [],
+      "note": "tests/fixtures/eastmoney_guba/verification_page.html",
+      "analysis": {
+        "title": "身份核实",
+        "challenge_assets": [
+          "em_capt.js",
+          "fd_guba_validate",
+          "validate.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": true,
+        "challenge_reason": "title+asset verification shell",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_validate/work/assets/validate.js"
+        ],
+        "data_ok": false,
+        "parse_error": "assignment absent",
+        "classification": "access_block"
+      }
+    },
+    {
+      "name": "real detail 0b3cb7de28c4382cb39cd33af4310e7f4ad95c3b88b720215cc5ba623980ad1d.body",
+      "required": true,
+      "passed": true,
+      "body_bytes": 167321,
+      "body_sha256": "0b3cb7de28c4382cb39cd33af4310e7f4ad95c3b88b720215cc5ba623980ad1d",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,1740355068.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "Historical raw-byte control only; transport/time not inferred from body.",
+      "analysis": {
+        "title": "政策出大利好救市!慌什么?巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏_隆基绿能(601012)股吧_东方财富网股吧",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://gbfek.dfcfw.com/project/guba/modules/h5Adaptation.js?r=6",
+          "https://gboperation.eastmoney.com/js/operation/EffectiveWhiteList.js",
+          "https://emcharts.dftzj.com/quotedelaytip/quotedelaytip.js",
+          "https://gbfek.dfcfw.com/libs/react/combine17/react17_dom_jq.min.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/main.js?v=20200807",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_web2022/work/news.js",
+          "https://emres.dfcfw.com/common/emshare/js/share.js",
+          "https://yscres.dfcfw.com/stockorder/Complaywhitelink.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dftzj.com/miniquotechart/miniquotechart2023.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://push2.eastmoney.com/api/qt/stock/get?wbp2u=0%7C0%7C0%7C0%7Cgbfrt&ut=8dec03ba335b81bf4ebdf7b29ec27d15&dpt=gb.cblzjl&fltt=2&fields=f57,f107,f58,f86,f140,f143,f146,f149&secid=1.601012&cb=money_flow",
+          "https://datacenter.eastmoney.com/api/data/v1/get?reportName=RPT_STOCKCALENDAR&columns=SECUCODE,SECURITY_CODE,SECURITY_INNER_CODE,ORG_CODE,NOTICE_DATE,INFO_CODE,EVENT_TYPE,EVENT_TYPE_CODE,LEVEL1_CONTENT,CHANGE_RATE,CLOSE_PRICE&quoteColumns=&filter=(SECURITY_CODE=%22601012%22)(NOTICE_DATE%3E=%272026-08-12%27)&pageNumber=&pageSize=5&sortTypes=1&sortColumns=NOTICE_DATE%20&source=WEB&client=WEB&callback=ggrl_2026_08_12_17",
+          "https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&fields=f12,f13,f14,f3,f152,f4,f128,f140,f141&secid=1.601012&pi=0&po=1&np=1&pz=6&spt=3&fid=f3&wbp2u=6064356576167542%7C0%7C1%7C0%7Cweb&_=1684911166163&cb=block_info",
+          "https://gbcdn.dfcfw.com/gbapi/webarticlelist_api_HighQuality_Articlelist.js?ps=20&p=1&code=601012&callback=quality_content",
+          "https://gbcdn.dfcfw.com/gbapi/userinfo_api_PopUser_GetUserList.js?code=601012&ps=20&callback=PopUser_GetUserList",
+          "https://gbcdn.dfcfw.com/rank/follow/SH601012.js?v=2026-08-12-17&callback=rank_follow",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&ps=10&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dfcfw.com/usercollect/usercollect.min.js",
+          "https://emcharts.dfcfw.com/websitepoptg/websitepoptg.js",
+          "https://i.eastmoney.com/websitecaptcha/build/popwscpc.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/ewtsdk.prod.js?ver=20251128",
+          "https://bdstatics.eastmoney.com/web/prd/jump_tracker.js",
+          "https://bdstatics.eastmoney.com/web/prd/jump_staytime.js",
+          "https://emcharts.dfcfw.com/newsts/newsts.min.js",
+          "https://emres.dfcfw.com/public/js/websitecommand.js",
+          "https://bdstatics.eastmoney.com/web/prd/bigdata_tracker_20240920.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_94104",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_56231",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.688825,1.600667,1.600664,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491,0.002428,0.002792&fields=f1,f2,f3,f4,f12,f13,f14,f19,f152,f390,f394,f428&cb=qa_wap_jsonpCB1786526667975",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.000001,0.399001,1.000300,0.399005,0.399006,1.688825,0.002129,1.603259,0.300308,0.300274,0.000725,0.000858,1.600664,0.002459,1.600438,1.600667,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491&fields=f2,f3,f12,f13,f14&cb=qa_wap_jsonpCB1786526667389"
+        ],
+        "data_ok": true,
+        "post_id": "1740355068",
+        "post_type": 0,
+        "post_title": "政策出大利好救市!慌什么?巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏",
+        "post_publish_time": "2026-07-09 08:36:01",
+        "post_last_time": "2026-07-17 09:09:28",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 205,
+        "post_content_sha256": "7edbb01ae29594b37924a083b61a8b2d6dc1214ecd3f7b1fa5730f541bdaae8d",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "real detail 16bf5012078a4e314f51d812c89110ab42bc160569c115ef824d9f0e6129107f.body",
+      "required": true,
+      "passed": true,
+      "body_bytes": 162883,
+      "body_sha256": "16bf5012078a4e314f51d812c89110ab42bc160569c115ef824d9f0e6129107f",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,1740355704.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "Historical raw-byte control only; transport/time not inferred from body.",
+      "analysis": {
+        "title": "政策出大利好救市!巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏龙头股票_隆基绿能(601012)股吧_东方财富网股吧",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://gbfek.dfcfw.com/project/guba/modules/h5Adaptation.js?r=6",
+          "https://gboperation.eastmoney.com/js/operation/EffectiveWhiteList.js",
+          "https://emcharts.dftzj.com/quotedelaytip/quotedelaytip.js",
+          "https://gbfek.dfcfw.com/libs/react/combine17/react17_dom_jq.min.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/main.js?v=20200807",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_web2022/work/news.js",
+          "https://emres.dfcfw.com/common/emshare/js/share.js",
+          "https://yscres.dfcfw.com/stockorder/Complaywhitelink.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dftzj.com/miniquotechart/miniquotechart2023.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://push2.eastmoney.com/api/qt/stock/get?wbp2u=0%7C0%7C0%7C0%7Cgbfrt&ut=8dec03ba335b81bf4ebdf7b29ec27d15&dpt=gb.cblzjl&fltt=2&fields=f57,f107,f58,f86,f140,f143,f146,f149&secid=1.601012&cb=money_flow",
+          "https://datacenter.eastmoney.com/api/data/v1/get?reportName=RPT_STOCKCALENDAR&columns=SECUCODE,SECURITY_CODE,SECURITY_INNER_CODE,ORG_CODE,NOTICE_DATE,INFO_CODE,EVENT_TYPE,EVENT_TYPE_CODE,LEVEL1_CONTENT,CHANGE_RATE,CLOSE_PRICE&quoteColumns=&filter=(SECURITY_CODE=%22601012%22)(NOTICE_DATE%3E=%272026-08-12%27)&pageNumber=&pageSize=5&sortTypes=1&sortColumns=NOTICE_DATE%20&source=WEB&client=WEB&callback=ggrl_2026_08_12_17",
+          "https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&fields=f12,f13,f14,f3,f152,f4,f128,f140,f141&secid=1.601012&pi=0&po=1&np=1&pz=6&spt=3&fid=f3&wbp2u=6064356576167542%7C0%7C1%7C0%7Cweb&_=1684911166163&cb=block_info",
+          "https://gbcdn.dfcfw.com/gbapi/webarticlelist_api_HighQuality_Articlelist.js?ps=20&p=1&code=601012&callback=quality_content",
+          "https://gbcdn.dfcfw.com/gbapi/userinfo_api_PopUser_GetUserList.js?code=601012&ps=20&callback=PopUser_GetUserList",
+          "https://gbcdn.dfcfw.com/rank/follow/SH601012.js?v=2026-08-12-17&callback=rank_follow",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&ps=10&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dfcfw.com/usercollect/usercollect.min.js",
+          "https://emcharts.dfcfw.com/websitepoptg/websitepoptg.js",
+          "https://i.eastmoney.com/websitecaptcha/build/popwscpc.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/ewtsdk.prod.js?ver=20251128",
+          "https://bdstatics.eastmoney.com/web/prd/jump_tracker.js",
+          "https://bdstatics.eastmoney.com/web/prd/jump_staytime.js",
+          "https://emcharts.dfcfw.com/newsts/newsts.min.js",
+          "https://emres.dfcfw.com/public/js/websitecommand.js",
+          "https://bdstatics.eastmoney.com/web/prd/bigdata_tracker_20240920.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_42802",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_19178",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.688825,1.600667,1.600664,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491,0.002428,0.002792&fields=f1,f2,f3,f4,f12,f13,f14,f19,f152,f390,f394,f428&cb=qa_wap_jsonpCB1786526694597",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.000001,0.399001,1.000300,0.399005,0.399006,1.688825,1.600667,1.600664,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491,0.002129,1.603259,0.300308,0.300274,0.000725,0.000858,0.002459,1.600438&fields=f2,f3,f12,f13,f14&cb=qa_wap_jsonpCB1786526694561"
+        ],
+        "data_ok": true,
+        "post_id": "1740355704",
+        "post_type": 0,
+        "post_title": "政策出大利好救市!巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏龙头股票",
+        "post_publish_time": "2026-07-09 08:37:50",
+        "post_last_time": "2026-08-04 12:38:15",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 202,
+        "post_content_sha256": "b4004c4ba1aeba54446d91cd8947d6b58c91e119bb2c19ffebe15b37b81798ac",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "real detail 5ed65c66aa079477d618379ba02fbb51adfd4a68ab93e1a60bb5d861094843bb.body",
+      "required": true,
+      "passed": true,
+      "body_bytes": 161395,
+      "body_sha256": "5ed65c66aa079477d618379ba02fbb51adfd4a68ab93e1a60bb5d861094843bb",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,1740355613.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "Historical raw-byte control only; transport/time not inferred from body.",
+      "analysis": {
+        "title": "央行出大利好救市!巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏龙头的股_隆基绿能(601012)股吧_东方财富网股吧",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://gbfek.dfcfw.com/project/guba/modules/h5Adaptation.js?r=6",
+          "https://gboperation.eastmoney.com/js/operation/EffectiveWhiteList.js",
+          "https://emcharts.dftzj.com/quotedelaytip/quotedelaytip.js",
+          "https://gbfek.dfcfw.com/libs/react/combine17/react17_dom_jq.min.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/main.js?v=20200807",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_web2022/work/news.js",
+          "https://emres.dfcfw.com/common/emshare/js/share.js",
+          "https://yscres.dfcfw.com/stockorder/Complaywhitelink.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dftzj.com/miniquotechart/miniquotechart2023.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://push2.eastmoney.com/api/qt/stock/get?wbp2u=0%7C0%7C0%7C0%7Cgbfrt&ut=8dec03ba335b81bf4ebdf7b29ec27d15&dpt=gb.cblzjl&fltt=2&fields=f57,f107,f58,f86,f140,f143,f146,f149&secid=1.601012&cb=money_flow",
+          "https://datacenter.eastmoney.com/api/data/v1/get?reportName=RPT_STOCKCALENDAR&columns=SECUCODE,SECURITY_CODE,SECURITY_INNER_CODE,ORG_CODE,NOTICE_DATE,INFO_CODE,EVENT_TYPE,EVENT_TYPE_CODE,LEVEL1_CONTENT,CHANGE_RATE,CLOSE_PRICE&quoteColumns=&filter=(SECURITY_CODE=%22601012%22)(NOTICE_DATE%3E=%272026-08-12%27)&pageNumber=&pageSize=5&sortTypes=1&sortColumns=NOTICE_DATE%20&source=WEB&client=WEB&callback=ggrl_2026_08_12_17",
+          "https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&fields=f12,f13,f14,f3,f152,f4,f128,f140,f141&secid=1.601012&pi=0&po=1&np=1&pz=6&spt=3&fid=f3&wbp2u=6064356576167542%7C0%7C1%7C0%7Cweb&_=1684911166163&cb=block_info",
+          "https://gbcdn.dfcfw.com/gbapi/webarticlelist_api_HighQuality_Articlelist.js?ps=20&p=1&code=601012&callback=quality_content",
+          "https://gbcdn.dfcfw.com/gbapi/userinfo_api_PopUser_GetUserList.js?code=601012&ps=20&callback=PopUser_GetUserList",
+          "https://gbcdn.dfcfw.com/rank/follow/SH601012.js?v=2026-08-12-17&callback=rank_follow",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&ps=10&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dfcfw.com/usercollect/usercollect.min.js",
+          "https://emcharts.dfcfw.com/websitepoptg/websitepoptg.js",
+          "https://i.eastmoney.com/websitecaptcha/build/popwscpc.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/ewtsdk.prod.js?ver=20251128",
+          "https://bdstatics.eastmoney.com/web/prd/jump_tracker.js",
+          "https://bdstatics.eastmoney.com/web/prd/jump_staytime.js",
+          "https://emcharts.dfcfw.com/newsts/newsts.min.js",
+          "https://emres.dfcfw.com/public/js/websitecommand.js",
+          "https://bdstatics.eastmoney.com/web/prd/bigdata_tracker_20240920.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_36802",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_21372",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.688825,1.600667,1.600664,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491,0.002428,0.002792&fields=f1,f2,f3,f4,f12,f13,f14,f19,f152,f390,f394,f428&cb=qa_wap_jsonpCB1786526684020",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.000001,0.399001,1.000300,0.399005,0.399006,1.688825,0.002129,1.603259,0.300308,0.300274,0.000725,0.000858,1.600664,0.002459,1.600438,1.600667,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491&fields=f2,f3,f12,f13,f14&cb=qa_wap_jsonpCB1786526685109"
+        ],
+        "data_ok": true,
+        "post_id": "1740355613",
+        "post_type": 0,
+        "post_title": "央行出大利好救市!巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏龙头的股",
+        "post_publish_time": "2026-07-09 08:37:21",
+        "post_last_time": "2026-07-17 09:20:15",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 179,
+        "post_content_sha256": "24a0cb1498b05d1cd0ff882db3232c244f083b0e570dd3f99784c44ce448f6ee",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "real detail 5ff4471e60ceb16934ed693442abfab988e2b5090483ec2ef8d021f33dfaaee6.body",
+      "required": true,
+      "passed": true,
+      "body_bytes": 163906,
+      "body_sha256": "5ff4471e60ceb16934ed693442abfab988e2b5090483ec2ef8d021f33dfaaee6",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,1740321941.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "Historical raw-byte control only; transport/time not inferred from body.",
+      "analysis": {
+        "title": "亏的最惨的一只股，亏了我40w，上个月卖了。今天看了一下，距离我卖的时候又跌了1_隆基绿能(601012)股吧_东方财富网股吧",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://gbfek.dfcfw.com/project/guba/modules/h5Adaptation.js?r=6",
+          "https://gboperation.eastmoney.com/js/operation/EffectiveWhiteList.js",
+          "https://emcharts.dftzj.com/quotedelaytip/quotedelaytip.js",
+          "https://gbfek.dfcfw.com/libs/react/combine17/react17_dom_jq.min.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/main.js?v=20200807",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_web2022/work/news.js",
+          "https://emres.dfcfw.com/common/emshare/js/share.js",
+          "https://yscres.dfcfw.com/stockorder/Complaywhitelink.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dftzj.com/miniquotechart/miniquotechart2023.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://push2.eastmoney.com/api/qt/stock/get?wbp2u=0%7C0%7C0%7C0%7Cgbfrt&ut=8dec03ba335b81bf4ebdf7b29ec27d15&dpt=gb.cblzjl&fltt=2&fields=f57,f107,f58,f86,f140,f143,f146,f149&secid=1.601012&cb=money_flow",
+          "https://datacenter.eastmoney.com/api/data/v1/get?reportName=RPT_STOCKCALENDAR&columns=SECUCODE,SECURITY_CODE,SECURITY_INNER_CODE,ORG_CODE,NOTICE_DATE,INFO_CODE,EVENT_TYPE,EVENT_TYPE_CODE,LEVEL1_CONTENT,CHANGE_RATE,CLOSE_PRICE&quoteColumns=&filter=(SECURITY_CODE=%22601012%22)(NOTICE_DATE%3E=%272026-08-12%27)&pageNumber=&pageSize=5&sortTypes=1&sortColumns=NOTICE_DATE%20&source=WEB&client=WEB&callback=ggrl_2026_08_12_17",
+          "https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&fields=f12,f13,f14,f3,f152,f4,f128,f140,f141&secid=1.601012&pi=0&po=1&np=1&pz=6&spt=3&fid=f3&wbp2u=6064356576167542%7C0%7C1%7C0%7Cweb&_=1684911166163&cb=block_info",
+          "https://gbcdn.dfcfw.com/gbapi/webarticlelist_api_HighQuality_Articlelist.js?ps=20&p=1&code=601012&callback=quality_content",
+          "https://gbcdn.dfcfw.com/gbapi/userinfo_api_PopUser_GetUserList.js?code=601012&ps=20&callback=PopUser_GetUserList",
+          "https://gbcdn.dfcfw.com/rank/follow/SH601012.js?v=2026-08-12-17&callback=rank_follow",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&ps=10&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dfcfw.com/usercollect/usercollect.min.js",
+          "https://emcharts.dfcfw.com/websitepoptg/websitepoptg.js",
+          "https://i.eastmoney.com/websitecaptcha/build/popwscpc.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/ewtsdk.prod.js?ver=20251128",
+          "https://bdstatics.eastmoney.com/web/prd/jump_tracker.js",
+          "https://bdstatics.eastmoney.com/web/prd/jump_staytime.js",
+          "https://emcharts.dfcfw.com/newsts/newsts.min.js",
+          "https://emres.dfcfw.com/public/js/websitecommand.js",
+          "https://bdstatics.eastmoney.com/web/prd/bigdata_tracker_20240920.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_65422",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_86403",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.688825,1.600667,1.600664,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491,0.002428,0.002792&fields=f1,f2,f3,f4,f12,f13,f14,f19,f152,f390,f394,f428&cb=qa_wap_jsonpCB1786526659459",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.000001,0.399001,1.000300,0.399005,0.399006,1.688825,0.002129,1.603259,0.300308,0.300274,0.000725,0.000858,1.600664,0.002459,1.600438,1.600667,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491&fields=f2,f3,f12,f13,f14&cb=qa_wap_jsonpCB1786526659542"
+        ],
+        "data_ok": true,
+        "post_id": "1740321941",
+        "post_type": 0,
+        "post_title": "亏的最惨的一只股，亏了我40w，上个月卖了。今天看了一下，距离我卖的时候又跌了1",
+        "post_publish_time": "2026-07-09 00:30:01",
+        "post_last_time": "2026-07-11 08:50:20",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 331,
+        "post_content_sha256": "143b71fb3cb3cfe055e071b9551c7825252447c25cf6d04a76b99c63cfdf6f72",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    },
+    {
+      "name": "real detail 9caa2466a4bad7e00f8fcb1bc2bef676a85e347e89eceb8b383de51ce4bd4518.body",
+      "required": true,
+      "passed": true,
+      "body_bytes": 158518,
+      "body_sha256": "9caa2466a4bad7e00f8fcb1bc2bef676a85e347e89eceb8b383de51ce4bd4518",
+      "kind": "detail",
+      "url": "https://guba.eastmoney.com/news,601012,1740355242.html",
+      "expected_data_ok": true,
+      "expected_raw_challenge_evidence": false,
+      "errors": [],
+      "note": "Historical raw-byte control only; transport/time not inferred from body.",
+      "analysis": {
+        "title": "政策出大利好救市!巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏龙头的股_隆基绿能(601012)股吧_东方财富网股吧",
+        "challenge_assets": [
+          "em_capt.js"
+        ],
+        "static_challenge_nodes": [],
+        "static_challenge_instructions": [],
+        "overlay_instructions": [],
+        "suspected_challenge_text_only": false,
+        "raw_challenge_evidence": false,
+        "challenge_reason": "no explicit challenge evidence in raw response",
+        "dynamic_challenge": "unobserved: no JavaScript/CSS rendering",
+        "script_urls": [
+          "https://gbfek.dfcfw.com/project/guba/modules/h5Adaptation.js?r=6",
+          "https://gboperation.eastmoney.com/js/operation/EffectiveWhiteList.js",
+          "https://emcharts.dftzj.com/quotedelaytip/quotedelaytip.js",
+          "https://gbfek.dfcfw.com/libs/react/combine17/react17_dom_jq.min.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/em_capt.js",
+          "https://cfgpassport2.eastmoney.com/captcha/scripts/main.js?v=20200807",
+          "https://gbfek.dfcfw.com/deploy/fd_guba_web2022/work/news.js",
+          "https://emres.dfcfw.com/common/emshare/js/share.js",
+          "https://yscres.dfcfw.com/stockorder/Complaywhitelink.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dftzj.com/miniquotechart/miniquotechart2023.js",
+          "https://emcharts.eastmoney.com/suggest/stocksuggest2017.min.js",
+          "https://push2.eastmoney.com/api/qt/stock/get?wbp2u=0%7C0%7C0%7C0%7Cgbfrt&ut=8dec03ba335b81bf4ebdf7b29ec27d15&dpt=gb.cblzjl&fltt=2&fields=f57,f107,f58,f86,f140,f143,f146,f149&secid=1.601012&cb=money_flow",
+          "https://datacenter.eastmoney.com/api/data/v1/get?reportName=RPT_STOCKCALENDAR&columns=SECUCODE,SECURITY_CODE,SECURITY_INNER_CODE,ORG_CODE,NOTICE_DATE,INFO_CODE,EVENT_TYPE,EVENT_TYPE_CODE,LEVEL1_CONTENT,CHANGE_RATE,CLOSE_PRICE&quoteColumns=&filter=(SECURITY_CODE=%22601012%22)(NOTICE_DATE%3E=%272026-08-12%27)&pageNumber=&pageSize=5&sortTypes=1&sortColumns=NOTICE_DATE%20&source=WEB&client=WEB&callback=ggrl_2026_08_12_17",
+          "https://push2.eastmoney.com/api/qt/slist/get?fltt=2&invt=2&ut=fa5fd1943c7b386f172d6893dbfba10b&fields=f12,f13,f14,f3,f152,f4,f128,f140,f141&secid=1.601012&pi=0&po=1&np=1&pz=6&spt=3&fid=f3&wbp2u=6064356576167542%7C0%7C1%7C0%7Cweb&_=1684911166163&cb=block_info",
+          "https://gbcdn.dfcfw.com/gbapi/webarticlelist_api_HighQuality_Articlelist.js?ps=20&p=1&code=601012&callback=quality_content",
+          "https://gbcdn.dfcfw.com/gbapi/userinfo_api_PopUser_GetUserList.js?code=601012&ps=20&callback=PopUser_GetUserList",
+          "https://gbcdn.dfcfw.com/rank/follow/SH601012.js?v=2026-08-12-17&callback=rank_follow",
+          "https://gbcdn.dfcfw.com/rank/popularityList.js?type=0&sort=0&page=1&ps=10&v=2026-08-12-17-12&callback=popularityList",
+          "https://emcharts.dfcfw.com/usercollect/usercollect.min.js",
+          "https://emcharts.dfcfw.com/websitepoptg/websitepoptg.js",
+          "https://i.eastmoney.com/websitecaptcha/build/popwscpc.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/ewtsdk.prod.js?ver=20251128",
+          "https://bdstatics.eastmoney.com/web/prd/jump_tracker.js",
+          "https://bdstatics.eastmoney.com/web/prd/jump_staytime.js",
+          "https://emcharts.dfcfw.com/newsts/newsts.min.js",
+          "https://emres.dfcfw.com/public/js/websitecommand.js",
+          "https://bdstatics.eastmoney.com/web/prd/bigdata_tracker_20240920.js",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_89990",
+          "https://anonflow2.eastmoney.com/ewtsdk/version.jsonp?callback=ewtsdk_jsonp_49365",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.688825,1.600667,1.600664,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491,0.002428,0.002792&fields=f1,f2,f3,f4,f12,f13,f14,f19,f152,f390,f394,f428&cb=qa_wap_jsonpCB1786526675101",
+          "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&np=3&ut=8dec03ba335b81bf4ebdf7b29ec27d15&invt=2&secids=1.000001,0.399001,1.000300,0.399005,0.399006,1.688825,0.002129,1.603259,0.300308,0.300274,0.000725,0.000858,1.600664,0.002459,1.600438,1.600667,1.600105,1.600721,0.000636,0.002031,0.002585,0.002229,0.002491&fields=f2,f3,f12,f13,f14&cb=qa_wap_jsonpCB1786526676832"
+        ],
+        "data_ok": true,
+        "post_id": "1740355242",
+        "post_type": 0,
+        "post_title": "政策出大利好救市!巴菲特说:最大的利好就是股价便宜!别人恐惧我贪婪，光伏龙头的股",
+        "post_publish_time": "2026-07-09 08:36:22",
+        "post_last_time": "2026-07-15 15:05:47",
+        "post_guba_code": "601012",
+        "post_content_present": true,
+        "post_content_chars": 201,
+        "post_content_sha256": "c4bf4e3af0e6de565fadc82d62527837b1f726e80d5bca0170976c22b9120b37",
+        "detail_errors": [],
+        "classification": "real_data"
+      }
+    }
+  ],
+  "historical_list_scan": [
+    {
+      "path": "data/raw/eastmoney_guba/0500aef7b343ba922ecf8360c3bc8d5ee3914983b31323bec66683e8243f6d03.body",
+      "body_sha256": "0500aef7b343ba922ecf8360c3bc8d5ee3914983b31323bec66683e8243f6d03",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/0ac8a0408af20c86907a7e1ffe186942aa26993338e2370c524522ee57f145e0.body",
+      "body_sha256": "0ac8a0408af20c86907a7e1ffe186942aa26993338e2370c524522ee57f145e0",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/0dea33be831bc7e2c401010ae6847c29c3a9831ee743af3f50c6e6d82c84b0b2.body",
+      "body_sha256": "0dea33be831bc7e2c401010ae6847c29c3a9831ee743af3f50c6e6d82c84b0b2",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/0f73f44788dd0794ddff7eb460a5b60f331d826bebfb3ec3a92f4721f1cd72ba.body",
+      "body_sha256": "0f73f44788dd0794ddff7eb460a5b60f331d826bebfb3ec3a92f4721f1cd72ba",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/12d820a2f10059cedece71b8f0422a0782437c4fff6edaf06d53adf42c517541.body",
+      "body_sha256": "12d820a2f10059cedece71b8f0422a0782437c4fff6edaf06d53adf42c517541",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/13bc84f0cef548f1993b745afd5e32979e2d518d7590a3e0c9a65a3a322bac90.body",
+      "body_sha256": "13bc84f0cef548f1993b745afd5e32979e2d518d7590a3e0c9a65a3a322bac90",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/176064f90e3669db6ad5a84753517bd082edd3c6c42363c7b683c7b7cefc6198.body",
+      "body_sha256": "176064f90e3669db6ad5a84753517bd082edd3c6c42363c7b683c7b7cefc6198",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/1a95b24e57ec925808553340901024815ce04197b6035b329bec9207daeb6370.body",
+      "body_sha256": "1a95b24e57ec925808553340901024815ce04197b6035b329bec9207daeb6370",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/1b1b3cc3ed5e15d4c893de8849334815229b2a1e848accecf50bae9aa1dc7a83.body",
+      "body_sha256": "1b1b3cc3ed5e15d4c893de8849334815229b2a1e848accecf50bae9aa1dc7a83",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/1b724880026c4cb313351581321bbd0864d9c223e9be7b72b8c2a3145cb94e44.body",
+      "body_sha256": "1b724880026c4cb313351581321bbd0864d9c223e9be7b72b8c2a3145cb94e44",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/1d1ccd374fa36cd087dca5a41b0d4bd4a48d43b7530f1aa2f31d1103625c582e.body",
+      "body_sha256": "1d1ccd374fa36cd087dca5a41b0d4bd4a48d43b7530f1aa2f31d1103625c582e",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/1ed064fcacf5839301e14c85a2f1bb12b06551507ee07c8ca988fe4e12c0d970.body",
+      "body_sha256": "1ed064fcacf5839301e14c85a2f1bb12b06551507ee07c8ca988fe4e12c0d970",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/1f70fe09cb4ba3dc21772841dfb173aca469797a5ea9f189b05bed4e24c120aa.body",
+      "body_sha256": "1f70fe09cb4ba3dc21772841dfb173aca469797a5ea9f189b05bed4e24c120aa",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2006fb5fd47470c809b68c3418f03606c05d0278a56881d2d783433ce9d02ad7.body",
+      "body_sha256": "2006fb5fd47470c809b68c3418f03606c05d0278a56881d2d783433ce9d02ad7",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/20f051fd8d1baff3963ad382d1a3f2ac0e1eda4f806bd9966015d147f891a53e.body",
+      "body_sha256": "20f051fd8d1baff3963ad382d1a3f2ac0e1eda4f806bd9966015d147f891a53e",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2113734c51af90fcf331ac9731f999e985b4754c3384a9cf3f4aafb13f66a293.body",
+      "body_sha256": "2113734c51af90fcf331ac9731f999e985b4754c3384a9cf3f4aafb13f66a293",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/28ef181d4ac008d360e3adf1499062b3ba4cf178e6ea4a6638f7b5f5f8a167e2.body",
+      "body_sha256": "28ef181d4ac008d360e3adf1499062b3ba4cf178e6ea4a6638f7b5f5f8a167e2",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2a962600c1c4e500649cebcb880da6eb4499484b70b85844e89fc315c6dd0f19.body",
+      "body_sha256": "2a962600c1c4e500649cebcb880da6eb4499484b70b85844e89fc315c6dd0f19",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2aa080ce1d1dd3feee1932de6f91b8bf539899e20b1c0135b7af4d48df93a5d6.body",
+      "body_sha256": "2aa080ce1d1dd3feee1932de6f91b8bf539899e20b1c0135b7af4d48df93a5d6",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2c617c7e570abb6e18f87a94e440cf1f554ff608335e83eb939a94da4ff0d4da.body",
+      "body_sha256": "2c617c7e570abb6e18f87a94e440cf1f554ff608335e83eb939a94da4ff0d4da",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2da3c0b9859acebfa73e0e1a356b2787b18543784c05005ac8b94e1b922c1819.body",
+      "body_sha256": "2da3c0b9859acebfa73e0e1a356b2787b18543784c05005ac8b94e1b922c1819",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/2dfbae718a75df91daf8705ba32c48faf3cd45cdb7d4edda8e1c3038defd8351.body",
+      "body_sha256": "2dfbae718a75df91daf8705ba32c48faf3cd45cdb7d4edda8e1c3038defd8351",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/32a5753da5c3b4f47fe9daadb3c2c3df5d9e3978bcb3edb12e452771ff283868.body",
+      "body_sha256": "32a5753da5c3b4f47fe9daadb3c2c3df5d9e3978bcb3edb12e452771ff283868",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/3fb7d5e30a08aa631fb13a905bf7cf5b60dc70000ecfacbf39e01c349f605388.body",
+      "body_sha256": "3fb7d5e30a08aa631fb13a905bf7cf5b60dc70000ecfacbf39e01c349f605388",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/40fcc3c8c21ce41c5ee873d31d766115714202f117facbbeaed8d50a37a2aa61.body",
+      "body_sha256": "40fcc3c8c21ce41c5ee873d31d766115714202f117facbbeaed8d50a37a2aa61",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/41f68802bc04a5df0ed405c531c4d51cf2e4eee521c94fa7bfdfb2dac3403af2.body",
+      "body_sha256": "41f68802bc04a5df0ed405c531c4d51cf2e4eee521c94fa7bfdfb2dac3403af2",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/43307a49907f3c0c5b3de216953f859dc16f22597afcaa5b957b2000cee4aeac.body",
+      "body_sha256": "43307a49907f3c0c5b3de216953f859dc16f22597afcaa5b957b2000cee4aeac",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/43f98ead691dd6757465fa48778f692d3a3a9ced92d90ddac12d3206a6c9ae03.body",
+      "body_sha256": "43f98ead691dd6757465fa48778f692d3a3a9ced92d90ddac12d3206a6c9ae03",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/4452502a2cca297cfe85749773a28a65679bcb8308a7571fc0821410c569d126.body",
+      "body_sha256": "4452502a2cca297cfe85749773a28a65679bcb8308a7571fc0821410c569d126",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/451aa22e1f74243b643f87ff29870addddc741a1d01e3764b6ca18f4d218a858.body",
+      "body_sha256": "451aa22e1f74243b643f87ff29870addddc741a1d01e3764b6ca18f4d218a858",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/454b61b9710ca0b0a791470f0fbec6effa9dccd2dec0eb74f8adb55ea21db0aa.body",
+      "body_sha256": "454b61b9710ca0b0a791470f0fbec6effa9dccd2dec0eb74f8adb55ea21db0aa",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/497556dcb5634472375a38642e57160572204f1ec36114458aaeef0a4dcdb014.body",
+      "body_sha256": "497556dcb5634472375a38642e57160572204f1ec36114458aaeef0a4dcdb014",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/4abc82fe6a3bc8294a39da0d46151ec4529cafbe667e74989dde560ee255c163.body",
+      "body_sha256": "4abc82fe6a3bc8294a39da0d46151ec4529cafbe667e74989dde560ee255c163",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/4d0162705bbdd80be5e1e61d1361f91f675ad29a8a6b314c8a7b2e1570f91d15.body",
+      "body_sha256": "4d0162705bbdd80be5e1e61d1361f91f675ad29a8a6b314c8a7b2e1570f91d15",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/4d3a63a8115758eba515c7ea7255065c091caca4ec3568c2c5e6dce408961aa3.body",
+      "body_sha256": "4d3a63a8115758eba515c7ea7255065c091caca4ec3568c2c5e6dce408961aa3",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/5142db3c855b3a0090bf222e35abf74fce4022dc420f6bc6bc4c0c0cefe4f38b.body",
+      "body_sha256": "5142db3c855b3a0090bf222e35abf74fce4022dc420f6bc6bc4c0c0cefe4f38b",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/516ba9137037ef9d238b8124f4669bf67f79e59eb34f2810ac766380b3728a46.body",
+      "body_sha256": "516ba9137037ef9d238b8124f4669bf67f79e59eb34f2810ac766380b3728a46",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/573ddbb87e6655813bac431b5561e27d6193d05618c5bc537b2355e59e5d5250.body",
+      "body_sha256": "573ddbb87e6655813bac431b5561e27d6193d05618c5bc537b2355e59e5d5250",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/57471a723ddf6b11f02fc272392d56fc7aed00498ee9f9d32f94e5004805476b.body",
+      "body_sha256": "57471a723ddf6b11f02fc272392d56fc7aed00498ee9f9d32f94e5004805476b",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/5911ea062110e7d89f544c26b77e05ad90e0deb4ef99991b4304eda17ce71bb7.body",
+      "body_sha256": "5911ea062110e7d89f544c26b77e05ad90e0deb4ef99991b4304eda17ce71bb7",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/5beb3bef4d02615c700973a9c1a8dffe0fb37926979a9bbef75f98c8be67c94a.body",
+      "body_sha256": "5beb3bef4d02615c700973a9c1a8dffe0fb37926979a9bbef75f98c8be67c94a",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/603b9b659fcb0af77c594db5e6503460cb97c4edc78bc9c8a12d951f55750b95.body",
+      "body_sha256": "603b9b659fcb0af77c594db5e6503460cb97c4edc78bc9c8a12d951f55750b95",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/62a2459f0b3ed7331436bd41698b242c4070dc2b9756a0c17fdbc7cf2f766e71.body",
+      "body_sha256": "62a2459f0b3ed7331436bd41698b242c4070dc2b9756a0c17fdbc7cf2f766e71",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/64b8a2d6309e9b4529ddcb5cfa4a953867a3e374693360e88b743f84123e6060.body",
+      "body_sha256": "64b8a2d6309e9b4529ddcb5cfa4a953867a3e374693360e88b743f84123e6060",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/66fa609dce77417131e35a46c86499fa39ad039bf0098370cbc40a912538b0ef.body",
+      "body_sha256": "66fa609dce77417131e35a46c86499fa39ad039bf0098370cbc40a912538b0ef",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/676b1bb8f332638b3626a6f95ba873d0eed952523a7f16563b4ae3c7c31ed1aa.body",
+      "body_sha256": "676b1bb8f332638b3626a6f95ba873d0eed952523a7f16563b4ae3c7c31ed1aa",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/69d15103ed4e10cfcd346160b6801f3443d0b3175e14dd1be558a92bd9ca3064.body",
+      "body_sha256": "69d15103ed4e10cfcd346160b6801f3443d0b3175e14dd1be558a92bd9ca3064",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/6a1a7f2811faf0556e192a0caf26d7553268195b4245e346d7289a7ccc5d8a3d.body",
+      "body_sha256": "6a1a7f2811faf0556e192a0caf26d7553268195b4245e346d7289a7ccc5d8a3d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/6e96058e6428cb74190bd518d4b52aee21dbf3d64060be6c6069e24d5805eaf8.body",
+      "body_sha256": "6e96058e6428cb74190bd518d4b52aee21dbf3d64060be6c6069e24d5805eaf8",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/6ea87cf48b8275ea704681db179b06016e7605bb282917598d22bb2d174a9876.body",
+      "body_sha256": "6ea87cf48b8275ea704681db179b06016e7605bb282917598d22bb2d174a9876",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/6f1bfc7c52eee8b27f8d67ec7912604eecb617157e7fc23ce85bac59bbd7f1c9.body",
+      "body_sha256": "6f1bfc7c52eee8b27f8d67ec7912604eecb617157e7fc23ce85bac59bbd7f1c9",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/726abfd5c046ca11e203aa5b57d998d1c82702d7198163781c6e3ed16b21ffd1.body",
+      "body_sha256": "726abfd5c046ca11e203aa5b57d998d1c82702d7198163781c6e3ed16b21ffd1",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/7a6b92d16cffe0855e70f5be8b95e759b2bca80bf5405531bb072f4202d771fe.body",
+      "body_sha256": "7a6b92d16cffe0855e70f5be8b95e759b2bca80bf5405531bb072f4202d771fe",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/7ac76c0600b1dd511c352c869592eb41e5447001968e311135ec88a5306d3e00.body",
+      "body_sha256": "7ac76c0600b1dd511c352c869592eb41e5447001968e311135ec88a5306d3e00",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/7e69cd4c00a8623c41c67263b10be9c1dcc2e468167932d1a07d298519180e41.body",
+      "body_sha256": "7e69cd4c00a8623c41c67263b10be9c1dcc2e468167932d1a07d298519180e41",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/7e9bb748fc2f9474beb5c437277c9032a8fb3952101f45ff9b3e4210e1dd451d.body",
+      "body_sha256": "7e9bb748fc2f9474beb5c437277c9032a8fb3952101f45ff9b3e4210e1dd451d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/7ffac7f3625235fc03c98b911b896386a849984cfd5ee5347799b7317a635f5a.body",
+      "body_sha256": "7ffac7f3625235fc03c98b911b896386a849984cfd5ee5347799b7317a635f5a",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/81ae98e88b770eb9c0570f543f5c4b2590de4adfd6a9bf613b01326aad907db6.body",
+      "body_sha256": "81ae98e88b770eb9c0570f543f5c4b2590de4adfd6a9bf613b01326aad907db6",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/837cc9f2a1e94a653b302491eb4c4644653e3fb27aa17ae924584da4953826e3.body",
+      "body_sha256": "837cc9f2a1e94a653b302491eb4c4644653e3fb27aa17ae924584da4953826e3",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/8a335c0167c18747b1aca2cdf6f09619d1e1c9a6a5131e9e377287087add4480.body",
+      "body_sha256": "8a335c0167c18747b1aca2cdf6f09619d1e1c9a6a5131e9e377287087add4480",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/8c2d6584c41b96ab9faee34720fba9b63e4201bcbd6ce0151ebdbfb52253d497.body",
+      "body_sha256": "8c2d6584c41b96ab9faee34720fba9b63e4201bcbd6ce0151ebdbfb52253d497",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/8d75bb67faeae3416c190f7dabcfc02c67bd7a3770bb562484aefb3de7599641.body",
+      "body_sha256": "8d75bb67faeae3416c190f7dabcfc02c67bd7a3770bb562484aefb3de7599641",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/927ea83348769eb219a046700876a1b4145e542c4eb3fd1b82a0d5864af6a122.body",
+      "body_sha256": "927ea83348769eb219a046700876a1b4145e542c4eb3fd1b82a0d5864af6a122",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/954a2b884cf595a43215ce0322f3296e27c75bf464efc7cbb2eb96535886cf54.body",
+      "body_sha256": "954a2b884cf595a43215ce0322f3296e27c75bf464efc7cbb2eb96535886cf54",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/98355c493b4871b232ae74fdbe02d5bbe960dd39394ae67ea960e9134ddccdfc.body",
+      "body_sha256": "98355c493b4871b232ae74fdbe02d5bbe960dd39394ae67ea960e9134ddccdfc",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/9a4d982a1f68c95d7f34d49373bc92ea781035874e665a022f4c7df774f79e6d.body",
+      "body_sha256": "9a4d982a1f68c95d7f34d49373bc92ea781035874e665a022f4c7df774f79e6d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/9b5584b606caa2302b45019a8050d371ceda4c1f89851e058f9ea3a7091cd82d.body",
+      "body_sha256": "9b5584b606caa2302b45019a8050d371ceda4c1f89851e058f9ea3a7091cd82d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/9e8a4256f8da908bfb282e13f60f848c1b6435f67972bf439d12aec2b0bd03e8.body",
+      "body_sha256": "9e8a4256f8da908bfb282e13f60f848c1b6435f67972bf439d12aec2b0bd03e8",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/9f9959b55f640e313c4536a3c0b40be8e83e2d8c1ee0ff98132416565d096a79.body",
+      "body_sha256": "9f9959b55f640e313c4536a3c0b40be8e83e2d8c1ee0ff98132416565d096a79",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/a0014fc265f8b4e7c4790ad7980a9ebc7a73a5b27c516726ccfd05b2b6d89193.body",
+      "body_sha256": "a0014fc265f8b4e7c4790ad7980a9ebc7a73a5b27c516726ccfd05b2b6d89193",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/a06881e9ef1f9501445a11520408d46b1b16c5b8e4d881067393aec6a1b7e227.body",
+      "body_sha256": "a06881e9ef1f9501445a11520408d46b1b16c5b8e4d881067393aec6a1b7e227",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/a3c7dbafc21cdb546d6a6e7713970d1b498365de480742084b27b615288a12d9.body",
+      "body_sha256": "a3c7dbafc21cdb546d6a6e7713970d1b498365de480742084b27b615288a12d9",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/a56215b1e2f7a213dd8307b5ecec0332f0a5fe2e515ad4a598d6b0461e66aa84.body",
+      "body_sha256": "a56215b1e2f7a213dd8307b5ecec0332f0a5fe2e515ad4a598d6b0461e66aa84",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/ad9a0070cd553a497f33f7b190e86a828b3d919b70365d05664a4c4b591e5b0e.body",
+      "body_sha256": "ad9a0070cd553a497f33f7b190e86a828b3d919b70365d05664a4c4b591e5b0e",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/adf65ae2bcd808ce39825afa4ac15e21a6600233213a11b8a084d29880ffb23d.body",
+      "body_sha256": "adf65ae2bcd808ce39825afa4ac15e21a6600233213a11b8a084d29880ffb23d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b3bfb4909822c176541d0bb54464d274db4d97894b934124f60ac1b128b0246c.body",
+      "body_sha256": "b3bfb4909822c176541d0bb54464d274db4d97894b934124f60ac1b128b0246c",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b407d591311d2603ddcaf2d40eb4c2dea20df838fdebf6c772bb6757b7ac8029.body",
+      "body_sha256": "b407d591311d2603ddcaf2d40eb4c2dea20df838fdebf6c772bb6757b7ac8029",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b5c462b58342c7d47d4d0e59e25be0a1c7f94375179cc488f14ec62f1092024b.body",
+      "body_sha256": "b5c462b58342c7d47d4d0e59e25be0a1c7f94375179cc488f14ec62f1092024b",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b69dcf4947749268c91c4dbefd24d9b1e91f1eedc13360faf0b54030f8719bd5.body",
+      "body_sha256": "b69dcf4947749268c91c4dbefd24d9b1e91f1eedc13360faf0b54030f8719bd5",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b719d583893dbb2ad6de2e52baf2ae88055e08ef43eadf35d9a4a804d3d1b61d.body",
+      "body_sha256": "b719d583893dbb2ad6de2e52baf2ae88055e08ef43eadf35d9a4a804d3d1b61d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b8aa8d1f74f17334de7a22afa65b0932386eab844127ceba33c37802609ae05d.body",
+      "body_sha256": "b8aa8d1f74f17334de7a22afa65b0932386eab844127ceba33c37802609ae05d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b97c045a82b89b24b37a9226ee19c171a0dfb31aff1ff67817051a4459a6c665.body",
+      "body_sha256": "b97c045a82b89b24b37a9226ee19c171a0dfb31aff1ff67817051a4459a6c665",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/b9d63eb428f8efe1d7616498cd8e97f8d8360004860812f2ec947701149d42dd.body",
+      "body_sha256": "b9d63eb428f8efe1d7616498cd8e97f8d8360004860812f2ec947701149d42dd",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/bad78d48ac31e46deab40240447c3e105ac64c941d60f9818dcf048b24c34fc0.body",
+      "body_sha256": "bad78d48ac31e46deab40240447c3e105ac64c941d60f9818dcf048b24c34fc0",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/bee461e372c47c36774f437ec41224c31676e00ae6a4db47949cebba6ca622ac.body",
+      "body_sha256": "bee461e372c47c36774f437ec41224c31676e00ae6a4db47949cebba6ca622ac",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/c2790fc191dd4770fc00d7bfff21c52747e8466cae1ba496ac1a3f6d4639fe70.body",
+      "body_sha256": "c2790fc191dd4770fc00d7bfff21c52747e8466cae1ba496ac1a3f6d4639fe70",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/c2c530d5bb6396b6cc6060ab444c40f550cd9de64e72ca67166ca10b60c079bc.body",
+      "body_sha256": "c2c530d5bb6396b6cc6060ab444c40f550cd9de64e72ca67166ca10b60c079bc",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/c5b5048c260e8f7287072115f8c450ea8d89b3121f1c7d51aea6730c2b5d73c2.body",
+      "body_sha256": "c5b5048c260e8f7287072115f8c450ea8d89b3121f1c7d51aea6730c2b5d73c2",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/c6da45301a9de558ccab570c4938bcb098eeff7f0ac232275b7ce6f65f9378e1.body",
+      "body_sha256": "c6da45301a9de558ccab570c4938bcb098eeff7f0ac232275b7ce6f65f9378e1",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/cb5903b9998c80b7760de71dec9cddedb339f5b9c20943ca57e65448d81f06af.body",
+      "body_sha256": "cb5903b9998c80b7760de71dec9cddedb339f5b9c20943ca57e65448d81f06af",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/cd4cdeda87891d9c03c59e965bcb45f777d43e46ebb9b409751e52354bb5fcb3.body",
+      "body_sha256": "cd4cdeda87891d9c03c59e965bcb45f777d43e46ebb9b409751e52354bb5fcb3",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/cf57f7b739505fca8c4fe2dab09518ffa0e0b7c9ad80923943847c5d2110d8b3.body",
+      "body_sha256": "cf57f7b739505fca8c4fe2dab09518ffa0e0b7c9ad80923943847c5d2110d8b3",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/d5d16823c3ff4456a52f6e67f161b2088c439f7e7d34fe4cb78cbece95e09463.body",
+      "body_sha256": "d5d16823c3ff4456a52f6e67f161b2088c439f7e7d34fe4cb78cbece95e09463",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/d857c3c968c21496f76030ad0bfb935bea4c4a32966e4f2901c6333093071381.body",
+      "body_sha256": "d857c3c968c21496f76030ad0bfb935bea4c4a32966e4f2901c6333093071381",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/d94e601f2fbcefa63a345b24becc8bce34953a65802eeb6a464f16032a7747c7.body",
+      "body_sha256": "d94e601f2fbcefa63a345b24becc8bce34953a65802eeb6a464f16032a7747c7",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/de07e87c1de1ec6205a15303776f4bb11b8c30ec3c986a859e441df89307116c.body",
+      "body_sha256": "de07e87c1de1ec6205a15303776f4bb11b8c30ec3c986a859e441df89307116c",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/de6e36a32b06fbea88e39ac2965e27edde616f04fa081e0e23be6dfed9f0096e.body",
+      "body_sha256": "de6e36a32b06fbea88e39ac2965e27edde616f04fa081e0e23be6dfed9f0096e",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/df9d80d5bf1e6fe7e6115a925258499481e6bb09fa3197b943551841b9ba622d.body",
+      "body_sha256": "df9d80d5bf1e6fe7e6115a925258499481e6bb09fa3197b943551841b9ba622d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/dfd656a36e05f6675d90814209f86632106766ff20e59818e53e39505324090c.body",
+      "body_sha256": "dfd656a36e05f6675d90814209f86632106766ff20e59818e53e39505324090c",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/e0d837990731d162dd517898b70042a0c8cde7177959e5b6bcfd58bc3447b5bf.body",
+      "body_sha256": "e0d837990731d162dd517898b70042a0c8cde7177959e5b6bcfd58bc3447b5bf",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/e4f552b7c5fd559d868dc7388318b619911ed812651650ad8c8ebf640e80c075.body",
+      "body_sha256": "e4f552b7c5fd559d868dc7388318b619911ed812651650ad8c8ebf640e80c075",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/e5ae378659df04fb4c2df3287a38f1e6da8435ed8272411ee161f337e74bc6ab.body",
+      "body_sha256": "e5ae378659df04fb4c2df3287a38f1e6da8435ed8272411ee161f337e74bc6ab",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/e833c2ded8925d020c1735bb6423297ad816d7258cdf3f4987de193efedfa27d.body",
+      "body_sha256": "e833c2ded8925d020c1735bb6423297ad816d7258cdf3f4987de193efedfa27d",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/e9679bc6fab6e01981bf2f08f2b0ef158eef4d880c2c46926bd0bac606d45223.body",
+      "body_sha256": "e9679bc6fab6e01981bf2f08f2b0ef158eef4d880c2c46926bd0bac606d45223",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/eb967045db1af7b67c8dd64ca828c0a70a0ebee44e8ef4130b72fca9666a8672.body",
+      "body_sha256": "eb967045db1af7b67c8dd64ca828c0a70a0ebee44e8ef4130b72fca9666a8672",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/eb9956b8d9486ca08136c7cb8dc30ad6ef2020916f44414817a5aa68522c650c.body",
+      "body_sha256": "eb9956b8d9486ca08136c7cb8dc30ad6ef2020916f44414817a5aa68522c650c",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/ebe3cd2af324ef0c3475bff970737beb3f6b83b67e3ab91be3d668f58648fa4f.body",
+      "body_sha256": "ebe3cd2af324ef0c3475bff970737beb3f6b83b67e3ab91be3d668f58648fa4f",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/ec0ea5738e5264a259e04380b26b807da700feb2e3d88431357a22de27ea5985.body",
+      "body_sha256": "ec0ea5738e5264a259e04380b26b807da700feb2e3d88431357a22de27ea5985",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/ecaef2872e7fc42d1e15ba7c19f764dc9331374d1937c0c4c1a0968132bb1fbf.body",
+      "body_sha256": "ecaef2872e7fc42d1e15ba7c19f764dc9331374d1937c0c4c1a0968132bb1fbf",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/ed8277280abd344539d2529ce59527f5b89477319dcc822714489a12ae9aef89.body",
+      "body_sha256": "ed8277280abd344539d2529ce59527f5b89477319dcc822714489a12ae9aef89",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/f270cfc472654619b07d1f3a403317c4c4c983069b3110bd45a2b632a6bb28af.body",
+      "body_sha256": "f270cfc472654619b07d1f3a403317c4c4c983069b3110bd45a2b632a6bb28af",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    },
+    {
+      "path": "data/raw/eastmoney_guba/f8ad2fd71e41db88aeb21d24ac31316d0854f3f69299d665df2fac4f44379330.body",
+      "body_sha256": "f8ad2fd71e41db88aeb21d24ac31316d0854f3f69299d665df2fac4f44379330",
+      "row_count": 80,
+      "data_ok": true,
+      "raw_challenge_evidence": false,
+      "row_errors": []
+    }
+  ],
+  "corpus_errors": [],
+  "observability_limit": "No JS/CSS/iframe runtime. Absence of explicit raw-response evidence does not prove absence of a dynamically rendered challenge."
+}

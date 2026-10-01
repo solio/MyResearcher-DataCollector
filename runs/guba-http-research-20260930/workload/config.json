@@ -1,0 +1,37 @@
+{
+  "stocks": [
+    "601012",
+    "600519",
+    "300750"
+  ],
+  "pages_per_stock": 30,
+  "detail_quotas": [
+    [
+      1,
+      10,
+      34
+    ],
+    [
+      11,
+      20,
+      33
+    ],
+    [
+      21,
+      30,
+      33
+    ]
+  ],
+  "detail_total": 300,
+  "budget": 500,
+  "interval_seconds": 3.1,
+  "client": "ordinary curl",
+  "cookies": "none",
+  "global_stop_on": [
+    "explicit raw challenge",
+    "403",
+    "429"
+  ],
+  "probe_sha256": "3ed6a4553cca863bec4011bf21ecbad06c723194e1cbe3cf541c14284284a113",
+  "batch_sha256": "687163e4ed56f66b38de84f8b5c3ec43b14545f198ff68434c71871a6480be07"
+}

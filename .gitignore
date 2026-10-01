@@ -32,3 +32,29 @@ data/
 cookies*.json
 credentials*.json
 .runtime/
+
+# Client-private memory is not the repository's shared project contract.
+/.workbuddy/
+
+# This historical research run keeps Markdown and small audited summaries only.
+# Full replay data/scripts were moved to the local evidence archive; if restored,
+# these generated inputs and raw observations must not accidentally enter Git.
+/runs/guba-http-research-20260930/*.py
+/runs/guba-http-research-20260930/*.jsonl
+/runs/guba-http-research-20260930/expected-*.json
+/runs/guba-http-research-20260930/api-form-*.json
+/runs/guba-http-research-20260930/request-matrix.tsv
+/runs/guba-http-research-20260930/live/
+/runs/guba-http-research-20260930/session/expected-*.json
+/runs/guba-http-research-20260930/session/[0-9]*
+/runs/guba-http-research-20260930/workload/*.py
+/runs/guba-http-research-20260930/workload/*.jsonl
+/runs/guba-http-research-20260930/workload/jobs/
+/runs/guba-http-research-20260930/workload/raw/
+/runs/guba-http-research-20260930/workload/run.lock
+/runs/guba-http-research-20260930/workload/progress.json
+/runs/guba-http-research-20260930/workload/coverage.json
+/runs/guba-http-research-20260930/workload/main-result.json
+/runs/guba-http-research-20260930/workload/detail-failures.json
+/runs/guba-http-research-20260930/backfill/*.py
+/runs/guba-http-research-20260930/backfill/*.jsonl
