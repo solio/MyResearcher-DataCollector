@@ -2,6 +2,29 @@
 
 Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: post counts and enrichment subsets
+
+The user flags the misleading stock counters “window posts 293 / list text 241 /
+body 52 / pending 0”. These are states of the same source posts, not separate
+title/body records. The posts primary key remains (source, source_item_id), and
+normal detail acquisition updates content on the existing row while retaining
+its list title. Fleet also deduplicates by source identity; immutable versions
+are evidence and do not inflate the selected posts count.
+
+H5 uses acquired-post totals and explicit “among these” detail subsets. The
+policy state list_only means enrichment was not triggered, not the number of
+titles acquired or proof that short titles are complete. Stock totals prefer
+the observed-post count from the API. No backend/schema/policy change or data
+migration is required for this UI correction. Original title/body snapshot
+semantics, source cooldown and task queues are retained.
+
+Offline verification adds before/after enrichment assertions for the same IDs,
+rowid, title, unchanged total and content on the existing row. UI verification
+uses the user's 293/241/52/0 example against the actual app.js rendering.
+Targeted strict-ResourceWarning regressions PASS: unified Engine 4, actual UI 9,
+activity/pagination 6 (19 total). JavaScript syntax and diff whitespace checks
+PASS. No source requests, backend changes or remote deployment were performed.
+
 The user explicitly requests one migration command and deletion of the live
 experiment.sqlite3 afterward. v5 now uses collector.db as the sole local runtime
 database, preserving the original posts table's fields and adding app ledger

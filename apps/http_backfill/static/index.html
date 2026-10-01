@@ -38,7 +38,7 @@
         <div class="node-selector"><label for="selected-node">当前控制实例</label><select id="selected-node"><option value="local">本机采集实例</option></select><span id="selected-node-note" class="field-note">下方任务、控制与运行记录均属于本机。</span></div>
         <p id="fleet-error" class="page-error" role="status" hidden></p>
         <div id="fleet-nodes" class="fleet-nodes"><div class="empty-state">正在读取本机与已登记实例…</div></div>
-        <div class="merge-panel"><div class="merge-heading"><div><strong>中央合并数据</strong><p id="merge-sync-note" class="field-note">等待同步配置。同步只传输数据和证据，不请求股吧。</p></div><button id="sync-fleet" type="button" class="button secondary small">立即同步全部</button></div><div class="merge-metrics"><div><span>独立帖子</span><strong id="merge-posts">—</strong></div><div><span>真实正文</span><strong id="merge-bodies">—</strong></div><div><span>保留的冲突</span><strong id="merge-conflicts">—</strong></div></div><p id="merge-status" class="field-note">等待合并状态。</p><p id="merge-path" class="storage-path"></p><p id="merge-error" class="page-error" role="status" hidden></p><p class="small-note">同源帖子按源 ID 合并并保留实例出处，缺失正文不会覆盖已取得正文。冲突会保留；合并数量不能证明历史覆盖完整。</p></div>
+        <div class="merge-panel"><div class="merge-heading"><div><strong>中央合并数据</strong><p id="merge-sync-note" class="field-note">等待同步配置。同步只传输数据和证据，不请求股吧。</p></div><button id="sync-fleet" type="button" class="button secondary small">立即同步全部</button></div><div class="merge-metrics"><div><span>已采集帖子</span><strong id="merge-posts">—</strong></div><div><span>其中已补详情</span><strong id="merge-bodies">—</strong></div><div><span>保留的冲突</span><strong id="merge-conflicts">—</strong></div></div><p id="merge-status" class="field-note">等待合并状态。</p><p id="merge-path" class="storage-path"></p><p id="merge-error" class="page-error" role="status" hidden></p><p class="small-note">同源帖子按源 ID 合并并保留实例出处。标题与详情属于同一条帖子，已补详情是帖子总数的子集。缺失详情不会覆盖已取得详情，冲突会保留；合并数量不能证明历史覆盖完整。</p></div>
       </section>
 
       <section class="run-card" aria-labelledby="run-title">
@@ -73,12 +73,9 @@
         <div class="metrics-grid">
           <article class="metric"><span>源请求尝试</span><strong id="metric-attempts">—</strong><small id="metric-failures">失败 / 异常 —</small></article>
           <article class="metric"><span>前进列表成功</span><strong id="metric-pages">—</strong><small id="metric-calibration">校准成功 — / 尝试 —</small><small id="metric-list-total">列表成功合计 — 次</small></article>
-          <article class="metric"><span>独立帖子</span><strong id="metric-posts">—</strong><small>窗口内标准帖 · 保留跨吧关联</small></article>
-          <article class="metric"><span>仅列表文本</span><strong id="metric-list-only">—</strong><small>保留短标题 · 不计入详情正文</small></article>
-          <article class="metric"><span>已核实正文</span><strong id="metric-bodies">—</strong><small id="metric-body-breakdown">非空 — · 有效空正文 —</small></article>
-          <article class="metric"><span>待取正文</span><strong id="metric-pending">—</strong><small id="metric-removed">详情不可访问 —</small></article>
+          <article class="metric post-metric"><span>已采集帖子</span><strong id="metric-posts">—</strong><small>窗口内标准帖总数 · 每条保留列表记录与标题</small><div class="post-subsets"><div><span>其中已补详情</span><strong id="metric-bodies">—</strong><small id="metric-body-breakdown">非空 — · 有效空正文 —</small></div><div><span>其中待补详情</span><strong id="metric-pending">—</strong><small id="metric-removed">详情不可访问 —</small></div><div><span>其中未触发补详情</span><strong id="metric-list-only">—</strong><small>按默认标题长度规则未触发</small></div></div></article>
         </div>
-        <div class="data-boundary"><span aria-hidden="true">◈</span><p>全部列表行保留。默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情；短标题保留为列表文本，<strong>不当作已核实正文或漏正文</strong>。局部产出不代表日期窗口完整覆盖。</p></div>
+        <div class="data-boundary"><span aria-hidden="true">◈</span><p><strong>一条帖子对应一条记录；标题和正文是同一记录的字段，补详情不另计帖子数。</strong>默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情。未触发补详情的帖子已保留列表记录与标题，这不代表已取得完整详情。局部产出不代表日期窗口完整覆盖。</p></div>
         <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>采集数据库</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p id="storage-note" class="small-note">等待该实例返回存储布局。</p></div>
       </section>
 

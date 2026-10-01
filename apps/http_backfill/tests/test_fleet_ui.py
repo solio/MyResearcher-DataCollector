@@ -72,6 +72,29 @@ class FleetUITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS", result.stdout)
 
+    def test_details_are_shown_within_acquired_posts_for_293_post_example(self):
+        self.run_ui(r"""
+const t=await ready();
+const example=fixture('local',293);
+example.aggregate={...example.aggregate,unique_posts:293,list_only:241,body_complete:52,detail_required:52,pending:0};
+example.coverage=[{stock:'601012',pages:4,rows:320,details:{observed:293,required:999,complete:52,pending:0,list_only:241},gaps:[]}];
+t.load(example);
+assert.strictEqual(ids['metric-posts'].textContent,'293');
+assert.strictEqual(ids['metric-bodies'].textContent,'52');
+assert.strictEqual(ids['metric-list-only'].textContent,'241');
+assert.strictEqual(ids['metric-pending'].textContent,'0');
+const coverage=text(ids['coverage-list']);
+assert(coverage.includes('已采集帖子 293'),'stock count must use observed posts, not sum detail counters');
+assert(coverage.includes('其中')&&coverage.includes('已补详情 52')&&coverage.includes('未触发补详情 241')&&coverage.includes('待补详情 0'));
+assert(!coverage.includes('列表文本')&&!coverage.includes('窗口内帖')&&!coverage.includes('1240'));
+const summary=descend(ids['coverage-list']).find(n=>text(n).startsWith('已采集帖子 293')&&n.children.length===3);
+assert(summary&&text(summary.children[1]).startsWith('其中'),'detail counters belong inside the acquired-post summary');
+fleet.nodes[0].status=example;t.setFleet(fleet);
+assert(text(ids['fleet-nodes'].children[0]).includes('已采集帖子 293'));
+assert(text(ids['fleet-nodes'].children[0]).includes('标题与详情属于同一条帖子'));
+assert(!calls.some(c=>c.method!=='GET'),'rendering counters must not submit source controls');
+""")
+
     def test_status_switch_ignores_old_inflight_response(self):
         self.run_ui(r"""
 const t=await ready(),hold=deferred(c=>c.name==='status');

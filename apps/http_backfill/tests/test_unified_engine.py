@@ -13,6 +13,29 @@ class UnifiedEngineTests(unittest.TestCase):
     started = base.CoreTests.started
     tick_due = base.CoreTests.tick_due
 
+    def test_enrichment_updates_same_post_row_and_retains_its_list_title(self):
+        short = row("1001", post_title="保留的短标题")
+        long = row("1002", post_title="列表标题" * 10)
+        body = "这是从同一个帖子的详情页补充的正文"
+        e = self.started(Wire(ok(list_html([short, long])), ok(detail_html(long, body))))
+        e.tick()
+        before = {r["source_item_id"]: dict(r) for r in e.db.execute("SELECT rowid,* FROM posts")}
+        self.assertEqual(len(before), 2)
+        self.assertEqual(before["1002"]["title"], long["post_title"])
+        self.assertIsNone(before["1002"]["content"])
+        self.assertEqual(e.status()["aggregate"]["unique_posts"], 2)
+        self.tick_due(e)
+        after = {r["source_item_id"]: dict(r) for r in e.db.execute("SELECT rowid,* FROM posts")}
+        self.assertEqual(set(after), set(before))
+        self.assertEqual(after["1002"]["rowid"], before["1002"]["rowid"])
+        self.assertEqual(after["1002"]["title"], before["1002"]["title"])
+        self.assertEqual(after["1002"]["content"], body)
+        self.assertEqual(after["1001"], before["1001"])
+        counts = e.status()["aggregate"]
+        self.assertEqual((counts["unique_posts"], counts["list_only"], counts["body_complete"], counts["pending"]), (2, 1, 1, 0))
+        coverage = e.status()["coverage"][0]["details"]
+        self.assertEqual((coverage["observed"], coverage["list_only"], coverage["complete"], coverage["pending"]), (2, 1, 1, 0))
+
     def test_detail_state_failure_rolls_back_body_and_restart_retains_raw(self):
         source = row()
         e = self.started(Wire(ok(list_html([source])), ok(detail_html(source))))

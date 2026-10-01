@@ -164,9 +164,10 @@
       card.append(el("p", "node-address", node.local || id === "local" ? "中央控制台所在本机" : node.base_url || "地址未返回"));
       const state = objectValue(node.status), counts = objectValue(first(state, ["aggregate", "counters", "stats"], {}));
       card.append(el("p", "node-status", `${states[state.state] || "状态尚未取得"}${state.reason ? " · " + textValue(state.reason) : ""}`));
-      const metrics = el("div", "node-counts");
-      for (const [label, value] of [["源尝试", counts.attempts], ["帖子", counts.unique_posts], ["正文", counts.body_complete], ["待取", counts.pending]]) metrics.append(el("span", "", `${label} ${number(value)}`));
-      card.append(metrics);
+      const summary = el("div", "post-summary"); summary.append(el("strong", "", `已采集帖子 ${number(counts.unique_posts)}`));
+      const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
+      for (const [label, value] of [["已补详情", counts.body_complete], ["待补详情", counts.pending], ["未触发补详情", counts.list_only]]) subsets.append(el("span", "", `${label} ${number(value)}`));
+      summary.append(subsets); card.append(summary, el("p", "node-sync", `源请求尝试 ${number(counts.attempts)} · 标题与详情属于同一条帖子`));
       const config = state.job?.config || state.config;
       if (config) card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
       if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复采集数据库写入。" : "保留来源阻断，需在该实例明确安排一次探测。"));
@@ -484,14 +485,18 @@
       const bodies = first(item, ["body_complete", "bodies_complete", "complete_posts"], first(details, ["complete"]));
       const required = first(details, ["required"], first(item, ["detail_required"]));
       const listOnly = first(details, ["list_only"], first(item, ["list_only"]));
-      const posts = first(item, ["unique_posts", "posts", "total_posts"], required == null ? null : Number(required) + Number(listOnly || 0));
+      const posts = first(details, ["observed"], first(item, ["unique_posts", "posts", "total_posts"], required == null || listOnly == null ? null : Number(required) + Number(listOnly)));
       const pending = first(item, ["pending", "pending_details"], first(details, ["pending"]));
-      const counts = [["前进列表", pages], ["原始列表行", first(item, ["rows"])], ["窗口内帖", posts], ["列表文本", listOnly], ["正文", bodies], ["待取详情", pending]];
+      const summary = el("div", "post-summary"); summary.append(el("strong", "", `已采集帖子 ${number(posts)}`));
+      const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
+      for (const [label, value] of [["已补详情", bodies], ["待补详情", pending], ["未触发补详情", listOnly]]) subsets.append(el("span", "", `${label} ${number(value)}`));
+      summary.append(subsets, el("p", "post-record-note", "每条帖子保留列表记录与标题，详情补到同一条帖子。")); row.append(summary);
+      const counts = [["前进列表", pages], ["原始列表观察行", first(item, ["rows"])]];
       counts.forEach(([label, value]) => counters.append(el("span", "", `${label} ${number(value)}`)));
       row.append(counters);
       if (required != null && bodies != null && Number(required) > 0) {
         const bar = el("div", "coverage-progress");
-        bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", `${stock} 已取得正文占需详情帖子的比例`);
+        bar.setAttribute("role", "progressbar"); bar.setAttribute("aria-label", `${stock} 已补详情占已触发补详情帖子的比例`);
         const percent = Math.min(100, Math.max(0, Number(bodies) / Number(required) * 100));
         bar.setAttribute("aria-valuemin", "0"); bar.setAttribute("aria-valuemax", "100"); bar.setAttribute("aria-valuenow", percent.toFixed(0));
         const fill = el("span"); fill.style.width = `${percent}%`; bar.append(fill); row.append(bar);

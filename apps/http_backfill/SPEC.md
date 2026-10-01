@@ -1,5 +1,19 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-01 post identity and detail-counter clarification
+
+The user flags misleading counters that present list text and detail bodies as
+two independent datasets. One source post remains one posts row, with its title
+retained and acquired detail added to content on that same identity. Detail
+completion counts are subsets of acquired posts; they are not additional posts.
+Keep the established >=40 enrichment policy and storage semantics unchanged.
+Rename H5 counters to acquired posts, details added, details awaiting acquisition,
+and enrichment not triggered; show subset wording in stock/fleet summaries.
+Explain that untriggered short-title posts have retained list records and are
+not proof of acquired complete bodies. Verify title retention, stable row count
+before/after enrichment and the 293/241/52/0 counter display offline.
+
+
 ## 2026-10-01 authorized v5 single-database migration
 
 The user explicitly requests one migration command and deletion of the live
