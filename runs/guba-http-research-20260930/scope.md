@@ -95,3 +95,16 @@ Status: AUTHORIZED RESEARCH — EXTENDED WORKLOAD REQUIRED
 不是主控应用的 fleet 数据库。本节覆盖旧范围对独立导入命令的生产写入禁止；
 具体接口和保留规则见 `apps/http_backfill/SPEC.md` 的同日修订。采集 worker
 仍写节点本地库，不自动写训练库，不迁移任务状态或虚构浏览器历史覆盖。
+
+## 2026-10-02 用户明确授权更新 HTTP 请求头
+
+用户要求仅为 `apps/http_backfill` 的 curl/urllib 采集更换请求特征：固定
+Chrome UA；列表首页使用 Google 搜索来源 Referer，其余页使用上一页；详情
+首次请求以 60% 概率使用最近一次实际观察到该帖子的列表页、30% Google、
+10% 百度。搜索来源按跨站 origin Referer 处理，不需要关键词或真实搜索请求。
+同一任务重试和重定向保留已经选定的来源，新策略的 UA/Referer 随每次请求
+持久化到现有 analysis 台账，旧记录保持原事实。
+
+此授权覆盖本支线旧条款对 Chrome UA/显式 Referer 的禁止，范围仍为隔离
+HTTP 应用。普通 curl/urllib 的 TLS 行为、来源请求间隔和阻断规则继续适用；
+本次不据此宣称长期采集已获验证。实现契约见应用 SPEC 的请求头策略章节。

@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY,job INTEGER,task INTE
   http_status INTEGER,response_bytes INTEGER,sha256 TEXT,raw_ref TEXT,error TEXT,analysis TEXT,
   headers TEXT,final_url TEXT,probe INTEGER DEFAULT 0,network_attempted INTEGER,
   purpose TEXT DEFAULT 'forward',probe_only INTEGER DEFAULT 0);
+CREATE INDEX IF NOT EXISTS requests_task_id ON requests(task,id DESC);
 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,job INTEGER,created REAL,kind TEXT,message TEXT,evidence TEXT);
 CREATE TABLE IF NOT EXISTS frontiers(job INTEGER,stock TEXT,payload TEXT NOT NULL,PRIMARY KEY(job,stock));
 CREATE TABLE IF NOT EXISTS recoveries(job INTEGER,stock TEXT,payload TEXT NOT NULL,PRIMARY KEY(job,stock));

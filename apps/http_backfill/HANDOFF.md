@@ -2,6 +2,40 @@
 
 Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: operator-requested Chrome UA and Referer selection
+
+The user explicitly amended the isolated app's header policy. Both curl and
+urllib now use fixed desktop Linux Chrome 154 UA (major version read from local
+installed Chrome, reduced UA version form). List page 1 sends Google origin;
+page N > 1 sends this bar's page N-1 URL. A detail task's initial attempt chooses
+30% Google origin, 10% Baidu origin, 60% its nearest retained validated list
+observation (latest in the same job/bar, then original list_request, then queued
+list page). Search origins model the default cross-site referrer policy; no
+keyword pool/search request/claimed Google or Baidu navigation is needed.
+
+The selection is stored before I/O in existing requests.analysis, including
+request_profile/request_headers/referer_source/referer_list_request_id, and
+retained through outcome parsing, failed attempts, restart and redirect hops.
+Retries reuse the selected Referer; pre-upgrade attempts get the new policy on
+their next permitted attempt while retaining old facts. Block evidence and new
+immutable export versions retain the headers. H5 request records offer a
+collapsible view; old records are not backfilled with invented header facts.
+Wire VERSION stays http-backfill.v5 so existing fleet version validation keeps
+accepting upgraded nodes; status.http_request_profile.version=chrome-referer.v1
+identifies the additive request policy.
+No table columns changed; a task-ID request index is created at ordinary schema
+initialization. Root training database and unrelated dirty files are untouched.
+
+Changed: core.py, unified_store.py, static/app.js, README.zh-CN.md, SPEC.md and
+the run scope. This is an implementation change, not a live sustained-access
+result. No source requests or live-worker restart were executed for validation
+here, and no test suites were run per the user's standing preference. Python
+compile of core.py/unified_store.py, node --check static/app.js and git diff
+--check passed; the worker's actual long-run availability remains unverified.
+Normal deployment: git pull && docker compose up -d --build; API-only nodes use
+compose.node.yml. All collecting nodes need the new image. Restart remains
+paused or source-halted until the operator continues/probes by existing rules.
+
 ## Current unresolved goal: sustained backfill of large historical gaps
 
 The user recalls that prompt-engineering also encounters CAPTCHA during large-gap
@@ -23,7 +57,7 @@ repeats first-page attempts. This is the old detector's recorded outcome; the
 client's curl_cffi enablement and raw challenge bytes are not established by
 that excerpt. It supports failure under historical workload, not a universal
 date/page threshold or a conclusion about current 60-second pacing.
-This turn only reads existing evidence and records the corrected objective:
+The earlier gap-audit turn only read existing evidence and recorded the corrected objective:
 no source requests, live task modifications or test suites. The remote blocked
 instance and its precise HTTP/challenge response are still needed for diagnosis;
 the local node is a separate ongoing acquisition, not evidence of remote recovery.

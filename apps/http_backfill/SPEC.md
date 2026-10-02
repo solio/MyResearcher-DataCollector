@@ -172,8 +172,9 @@ This app is an isolated experiment, not a production transport amendment.
 
 - Existing `specs/eastmoney_guba.md` list/detail semantics and strict parsers apply.
 - Public HTTPS f.html/f_N.html and exact source-observed standard type0 detail links.
-- Ordinary curl or urllib transport; no browser, browser state export, CAPTCHA
-  solving, proxy rotation, browser/TLS impersonation or invented challenge tokens.
+- Ordinary curl or urllib transport with the explicitly authorized Chrome UA and
+  Referer policy below; no browser, browser state export, CAPTCHA solving, proxy
+  rotation, TLS impersonation or invented challenge tokens.
 - One global source request initiation per >=60 seconds, including redirects,
   failures and manually requested probe; timing persisted across process restarts.
 - Preserve raw response bytes/hash and every attempt. Network-level ambiguous
@@ -210,8 +211,41 @@ This app is an isolated experiment, not a production transport amendment.
 Config: required `stocks` (array of six-digit strings), `from_date`/`to_date`
 (inclusive Shanghai YYYY-MM-DD); optional `interval_seconds>=60`, `client`
 (`curl` or `urllib`). Invalid input raises ValueError; state conflicts RuntimeError.
-Transport callable `(url, client) -> Response(status, body, headers, url, error)`;
-clock returns epoch seconds. `tick` never sleeps and initiates at most one request.
+Built-in transport callable `(url, client, referer=None) -> Response(status,
+body, headers, url, error)`. Injected transports accepting a `referer` keyword
+receive it; legacy two-argument injected transports retain their existing API.
+Support is checked before I/O, never by retrying a failed transport call.
+Clock returns epoch seconds. `tick` never sleeps and initiates at most one request.
+
+## HTTP request profile — user amendment, 2026-10-02
+
+- Both real clients use the same fixed desktop Linux Chrome UA:
+  `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36`.
+  The Chrome major version comes from the locally installed Chrome 154; the
+  reduced version format is fixed and does not rotate during a run.
+- List page 1 uses `Referer: https://www.google.com/`. Page N > 1 uses the
+  same stock's canonical page N-1 URL, including recovery-page requests.
+- A detail task's first request chooses Google with probability 30%, Baidu 10%,
+  and a nearby observed list page 60%. These are independent random choices per
+  detail task, not guaranteed ratios for a small batch. Prefer the most recent
+  validated list observation containing that source ID in the task's job/bar;
+  fall back to its retained initial list request, then its queued list page.
+- Google and Baidu source values are `https://www.google.com/` and
+  `https://www.baidu.com/`, representing origin-only cross-site Referer under
+  the browser's default `strict-origin-when-cross-origin` policy. No keyword
+  pool or search-engine request is needed for these headers. This is a requested
+  header simulation, not evidence that a search was performed. Policy reference:
+  https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Referrer-Policy
+- Repeated attempts and explicit redirect hops for the same task reuse its
+  selected Referer. Old attempts without the current request profile get the
+  new headers on their next explicitly authorized request, preserving old facts.
+- The reserved request's existing `analysis` JSON records `request_profile`,
+  `request_headers`, `referer_source` and `referer_list_request_id` before I/O.
+  Outcome parsing retains those facts; request APIs, retained block evidence and
+  new immutable export versions expose them. Older rows remain unobserved.
+- Database layout, source pacing, challenge stop, manual one-shot retry and
+  parser acceptance remain governed by their existing contracts. This amendment
+  establishes implementation behavior, not sustained source availability.
 
 Status includes state (`idle/running/paused/blocked/error/completed`), reason,
 job config, next_request_at, current target, cumulative attempts/list_pages/

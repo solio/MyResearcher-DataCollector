@@ -12,10 +12,12 @@ from email.utils import parsedate_to_datetime
 import fcntl
 import hashlib
 from html.parser import HTMLParser
+import inspect
 import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import sqlite3
 import subprocess
@@ -39,7 +41,11 @@ from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_
 
 VERSION = "http-backfill.v5"
 MAX_BODY = 16 * 1024 * 1024
-UA = "MyResearcher-HTTP-Backfill/1.0 (public-source research)"
+UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36")
+REQUEST_PROFILE = "chrome-referer.v1"
+GOOGLE_REFERER = "https://www.google.com/"
+BAIDU_REFERER = "https://www.baidu.com/"
 REDIRECTS = {301, 302, 303, 307, 308}
 SAFE_HEADERS = {"content-type", "content-length", "content-encoding", "location", "retry-after", "date", "server"}
 
@@ -76,13 +82,28 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch(url, client):
+def list_url(stock, page=1):
+    return f"https://guba.eastmoney.com/list,{stock},f" + (f"_{page}" if page > 1 else "") + ".html"
+
+
+def request_headers(referer=None):
+    headers = {"User-Agent": UA, "Accept": "text/html"}
+    if referer is not None:
+        if (not isinstance(referer, str) or any(ord(c) < 32 or ord(c) > 126 for c in referer)
+                or (referer not in {GOOGLE_REFERER, BAIDU_REFERER} and not _allowed(referer))):
+            raise ValueError("Referer 必须为公开来源 URL 或允许的搜索来源站点")
+        headers["Referer"] = referer
+    return headers
+
+
+def fetch(url, client, referer=None):
     """Exactly one anonymous GET, no redirects or retries in either client."""
     if not _allowed(url):
         raise ValueError("请求地址必须属于公开 HTTPS Eastmoney 来源")
+    headers = request_headers(referer)
     if client == "urllib":
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
-        request = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html"})
+        request = urllib.request.Request(url, headers=headers)
         try:
             try:
                 response = opener.open(request, timeout=25)
@@ -102,7 +123,10 @@ def fetch(url, client):
         command = ["curl", "-q", "--silent", "--show-error", "--connect-timeout", "10", "--max-time", "25",
                    "--max-filesize", str(MAX_BODY), "--noproxy", "*", "--proto", "=https",
                    "--dump-header", str(hp), "--output", str(bp), "--write-out", "%{http_code}",
-                   "--user-agent", UA, "--header", "Accept: text/html", url]
+                   "--user-agent", headers["User-Agent"], "--header", "Accept: text/html"]
+        if referer is not None:
+            command.extend(["--referer", referer])
+        command.append(url)
         try:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=30)
             headers = {}
@@ -222,6 +246,12 @@ class Engine(LifecycleMixin):
         self._inflight = False
         self._closed = False
         self.transport, self.clock = transport or fetch, clock or time.time
+        try:
+            inspect.signature(self.transport).bind("url", "curl", referer=None)
+        except (TypeError, ValueError):
+            self._transport_with_referer = False
+        else:
+            self._transport_with_referer = True
         self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -440,8 +470,58 @@ class Engine(LifecycleMixin):
         return self.status()
 
     def _enqueue_list(self, job, stock, page):
-        url = f"https://guba.eastmoney.com/list,{stock},f" + (f"_{page}" if page > 1 else "") + ".html"
+        url = list_url(stock, page)
         self.db.execute("INSERT INTO tasks(job,kind,stock,page,url,original_url) VALUES(?,'list',?,?,?,?)", (job, stock, page, url, url))
+
+    def _detail_list_referer(self, task):
+        # Recovery can move an existing post to a different page. Prefer the
+        # most recent accepted observation in this job/bar over its first page.
+        observed = self.db.execute(
+            "SELECT r.id,r.url,r.final_url FROM observations o JOIN requests r ON r.id=o.request_id "
+            "WHERE o.job=? AND o.stock=? AND o.post_id=? AND r.kind='list' AND r.outcome='real_data' "
+            "ORDER BY o.id DESC LIMIT 1", (task["job"], task["stock"], task["post_id"])).fetchone()
+        if observed is None:
+            observed = self.db.execute(
+                "SELECT r.id,r.url,r.final_url FROM http_post_state p JOIN requests r ON r.id=p.list_request "
+                "WHERE p.post_id=? AND r.kind='list' AND r.outcome='real_data'",
+                (task["post_id"],)).fetchone()
+        if observed:
+            return observed["final_url"] or observed["url"], "detail_observed_list", observed["id"]
+        return list_url(task["stock"], task["page"] or 1), "detail_task_list_page", None
+
+    def _request_profile(self, task):
+        # One selection per logical task. A redirect or manual retry must not
+        # silently change the chosen originating page. Pre-upgrade attempts
+        # have no matching profile and receive the newly authorized headers.
+        previous = self.db.execute("SELECT analysis FROM requests WHERE task=? ORDER BY id DESC LIMIT 1",
+                                   (task["id"],)).fetchone()
+        saved = json.loads(previous["analysis"]) if previous and previous["analysis"] else {}
+        if (saved.get("request_profile") == REQUEST_PROFILE
+                and saved.get("request_headers", {}).get("User-Agent") == UA):
+            return {"request_profile": REQUEST_PROFILE,
+                    "request_headers": request_headers(saved["request_headers"]["Referer"]),
+                    "referer_source": saved["referer_source"],
+                    "referer_list_request_id": saved.get("referer_list_request_id")}
+        list_request_id = None
+        if task["kind"] == "list":
+            if task["page"] > 1:
+                referer, source = list_url(task["stock"], task["page"] - 1), "list_previous_page"
+            else:
+                referer, source = GOOGLE_REFERER, "google_search"
+        else:
+            choice = random.randrange(100)
+            if choice < 30:
+                referer, source = GOOGLE_REFERER, "google_search"
+            elif choice < 40:
+                referer, source = BAIDU_REFERER, "baidu_search"
+            else:
+                referer, source, list_request_id = self._detail_list_referer(task)
+        return {"request_profile": REQUEST_PROFILE, "request_headers": request_headers(referer),
+                "referer_source": source, "referer_list_request_id": list_request_id}
+
+    def _request_analysis(self, rid, analysis=None):
+        saved = self.db.execute("SELECT analysis FROM requests WHERE id=?", (rid,)).fetchone()
+        return {**(json.loads(saved[0]) if saved and saved[0] else {}), **(analysis or {})}
 
     def _task_in_active_scope(self, task):
         cfg = self._config()
@@ -740,16 +820,20 @@ class Engine(LifecycleMixin):
             if config is None:
                 raise RuntimeError("请求缺少原任务配置，无法安全探测")
             probe_only = probe and (self._get("halted_probe_only", False) or not self._task_in_active_scope(task))
+            profile = self._request_profile(task)
             self._set("probe", False)
             self._set("next_due", max(now, self._get("next_due", 0)) + config["interval_seconds"])
-            rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                                  (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only))).lastrowid
+            rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only,analysis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only), _dump(profile))).lastrowid
             self.db.execute("UPDATE tasks SET status='inflight' WHERE id=?", (task["id"],))
             self._inflight = True
         # A concurrent pause is now effective for the next request; this response
         # remains fully recorded. Transport never recursively requests a redirect.
         try:
-            response = self.transport(task["url"], config["client"])
+            if self._transport_with_referer:
+                response = self.transport(task["url"], config["client"], referer=profile["request_headers"]["Referer"])
+            else:
+                response = self.transport(task["url"], config["client"])
             if not isinstance(response, Response):
                 raise ValueError("transport 必须返回 Response")
         except Exception as exc:
@@ -914,15 +998,17 @@ class Engine(LifecycleMixin):
             return self.clock()
 
     def _outcome(self, rid, outcome, error=None, analysis=None):
-        self.db.execute("UPDATE requests SET outcome=?,error=?,analysis=? WHERE id=?", (outcome, error, _dump(analysis) if analysis else None, rid))
+        combined = self._request_analysis(rid, analysis)
+        self.db.execute("UPDATE requests SET outcome=?,error=?,analysis=? WHERE id=?", (outcome, error, _dump(combined) if combined else None, rid))
 
     def _halt(self, state, kind, reason, rid):
         self._set("state", state)
         self._set("active_halt", kind)
         self._set("reason", reason)
         self._end_segment(kind)
-        row = self.db.execute("SELECT id,url,http_status,raw_ref,sha256,started,finished FROM requests WHERE id=?", (rid,)).fetchone()
+        row = self.db.execute("SELECT id,url,http_status,raw_ref,sha256,started,finished,analysis FROM requests WHERE id=?", (rid,)).fetchone()
         evidence = dict(row)
+        evidence["analysis"] = json.loads(evidence["analysis"]) if evidence["analysis"] else None
         evidence.update({"kind": kind, "reason": reason, "server_blacklist": "unproven"})
         failed = self.db.execute("SELECT task,job FROM requests WHERE id=?", (rid,)).fetchone()
         self._set("halted_task_id", failed["task"])
@@ -999,7 +1085,7 @@ class Engine(LifecycleMixin):
         if probe_only:
             stats["probe_only"] = True
             return stats
-        self.db.execute("UPDATE requests SET analysis=? WHERE id=?", (_dump({"list_structure_validated": True, "list_observation": stats}), rid))
+        self.db.execute("UPDATE requests SET analysis=? WHERE id=?", (_dump(self._request_analysis(rid, {"list_structure_validated": True, "list_observation": stats})), rid))
         cov = self.db.execute("SELECT * FROM coverage WHERE job=? AND stock=?", (task["job"], task["stock"])).fetchone()
         if cov is None:
             raise ValueError("任务股票已不在活动覆盖范围")
@@ -1170,6 +1256,11 @@ class Engine(LifecycleMixin):
                       "active_halt": self._get("active_halt"), "probe_pending": self._get("probe", False),
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
                       "content_policy": self._get("content_policy"),
+                      "http_request_profile": {"version": REQUEST_PROFILE, "user_agent": UA,
+                                               "list_first_page_referer": GOOGLE_REFERER,
+                                               "list_next_page_referer": "previous_page",
+                                               "detail_referer_probability": {"observed_list": 0.6, "google": 0.3, "baidu": 0.1},
+                                               "search_referers": {"google": GOOGLE_REFERER, "baidu": BAIDU_REFERER}},
                       "data_storage": self._get("data_storage"), "storage_halt": self._get("storage_halt"),
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
             result["rate_audit"] = tail_audit(self)

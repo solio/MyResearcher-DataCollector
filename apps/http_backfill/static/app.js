@@ -765,6 +765,17 @@
       if (details) main.append(el("div", "activity-detail", details));
       const url = first(request, ["url", "requested_url"], target.url);
       if (url) main.append(el("div", "activity-url", url));
+      const profile = objectValue(request.analysis);
+      const headers = objectValue(profile.request_headers);
+      if (headers["User-Agent"] || headers.Referer) {
+        const sources = { google_search: "Google 搜索来源", baidu_search: "百度搜索来源", list_previous_page: "上一列表页", detail_observed_list: "该帖子最近观察到的列表页", detail_task_list_page: "详情任务关联的列表页" };
+        const headerDetails = el("details", "activity-detail");
+        headerDetails.append(el("summary", "", `请求特征 · ${sources[profile.referer_source] || profile.request_profile || "已记录"}`));
+        if (headers.Referer) headerDetails.append(el("div", "activity-url", `Referer: ${headers.Referer}`));
+        if (headers["User-Agent"]) headerDetails.append(el("div", "activity-url", `UA: ${headers["User-Agent"]}`));
+        if (profile.referer_list_request_id != null) headerDetails.append(el("div", "activity-detail", `关联列表请求 #${profile.referer_list_request_id}`));
+        main.append(headerDetails);
+      }
       row.append(main, el("div", `activity-result ${resultClass(outcome)}`, `${outcomes[outcome] || outcome}${http == null ? "" : " · HTTP " + http}`));
       list.append(row);
     }
