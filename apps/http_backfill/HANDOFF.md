@@ -2,6 +2,62 @@
 
 Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: merge into the actual training database
+
+The user explicitly names repository-root `data/collector.db` as the merge
+destination for later training. This supersedes the old isolation restriction
+only for the operator-invoked `training_import.py`; worker/fleet writes retain
+their existing isolated paths. SPEC and run scope record this authorization.
+
+The new CLI defaults to that existing training database, accepts `--source-dir`,
+`--bundle` or `--jsonl`, and provides `--target-db` and read-only `--dry-run`.
+Source directories produce a consistent verified evidence bundle without Engine
+construction or source requests. ZIP preflight reuses the existing full hash/raw
+and parser validation. JSONL accepts the existing H5 export and explicitly marks
+linked raw evidence as absent, retaining the original file. Inputs are staged
+before target mutation. Target HTTP/fleet ownership is rejected, including the
+separate neighboring fleet `merge.sqlite3` ledger.
+
+The original 15-column posts structure is unchanged. New source IDs insert once;
+existing rows only receive missing fields/body, never replacing existing non-NULL
+values (including acquired empty bodies). Non-NULL title/author/stock/publication/
+URL identity differences block that post's update; body conflicts preserve the
+existing body. Acquisition times and import time remain distinct. A single
+BEGIN IMMEDIATE transaction includes posts and three collector_import_* tables
+for receipts, immutable input versions and conflicts. Before mutation a separate
+read connection creates a committed SQLite backup including WAL; the verified
+input is durably retained. Repeated identical evidence is idempotent and a no-op
+creates no additional backup or receipt. Browser state/coverage is never imported.
+
+Actual local operation (not a fixture): exported a fixed 446-post snapshot with
+182 bodies, 200 linked raw responses and 1,064 immutable evidence records to
+runtime/imports/local-http-node-20261002.zip. Dry-run then actual import reported:
+217 new posts, 165 existing posts supplemented with bodies, 64 unchanged, zero
+identity/body conflicts and zero unexported source posts. Training count changed
+215,901 -> 216,118; post-import body count is 20,163 (the 165 statistic counts only
+existing-post supplementation, not bodies on new rows).
+
+Import ID: 20261002T021128949450Z-179f2a7c. Backup:
+data/collector.db.import-backups/20261002T021128949450Z-179f2a7c.db.
+Retained evidence:
+data/collector.db.imports/inputs/f13655a5730b943915107b4b4c1024bda1602111b793f0c075d29309e47505f9.zip.
+The ignored operation receipt/audit is runtime/imports/training-import-20261002.json.
+Readonly comparison against that backup confirmed no lost original rows, no
+changes to any existing non-NULL field except the intended updated_at, identical
+original posts columns and identical content hashes for backfill_resume,
+backfill_coverage and backfill_page_anchors. Retained archive SHA matches receipt.
+Readonly planning against the same fixed bundle after import found zero new
+posts, zero updates and zero new evidence versions, with all 446 posts unchanged.
+No test suite was run, following the user's instruction. No worker restart or
+source request was made by this import. The user's local collector is continuing
+to acquire data; the import is explicitly a fixed snapshot, not a live mirror.
+The remote collector's previously mentioned 5,274 posts were not downloaded here.
+
+README gives local direct import, remote ZIP export/scp/import and the convenient
+single-console merged JSONL download followed by one local training import.
+The existing DataClean read_collector_posts/fresh_pool path already reads this
+original posts structure; no training/cleaning run was started.
+
 ## Latest fix: local H5 works without nginx
 
 The user explicitly requires direct host:port login and asks not to run test

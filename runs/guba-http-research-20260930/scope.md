@@ -88,3 +88,10 @@ Status: AUTHORIZED RESEARCH — EXTENDED WORKLOAD REQUIRED
 - `docs/data-collector/decision-log.md` D-016/D-017 及 2026-09-24 的真实挑战记录。
 
 本次用户明确授权重新研究无浏览器访问；旧 SOURCE_SPEC 的浏览器生产入口限制不禁止上述隔离研究，也不授权擅自修改生产入口。
+
+## 2026-10-02 用户明确授权合入训练库
+
+用户明确纠正数据合并目标为仓库根目录 `data/collector.db`，供后续训练使用，
+不是主控应用的 fleet 数据库。本节覆盖旧范围对独立导入命令的生产写入禁止；
+具体接口和保留规则见 `apps/http_backfill/SPEC.md` 的同日修订。采集 worker
+仍写节点本地库，不自动写训练库，不迁移任务状态或虚构浏览器历史覆盖。

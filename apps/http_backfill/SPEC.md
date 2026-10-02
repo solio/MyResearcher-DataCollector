@@ -1,5 +1,32 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-02 explicit import into the training database
+
+The user clarifies that merging means adding collected posts to the existing
+repository `data/collector.db` for subsequent training, rather than importing
+into the console's fleet store. This explicit instruction supersedes earlier
+production-write prohibitions only for the separate operator-invoked importer.
+The HTTP worker and fleet synchronizer keep their isolated runtime directories.
+
+Provide one CLI accepting a node evidence ZIP, a local node data directory, or
+the existing H5 JSONL export, with the training database as its default target.
+Preflight the entire input before target mutation, keep the original 15-column
+posts schema and `(source, source_item_id)` identity, and create a SQLite backup
+including committed WAL before a write. Insert new posts; supplement NULL fields
+and missing bodies on matching identities without replacing existing values.
+Different non-NULL identity facts block that post's update; other field conflicts
+retain the existing value and record both observations. An acquired empty body
+is not NULL. Preserve original source/acquisition times and import time separately.
+
+Keep import receipts, immutable input versions and conflict facts alongside the
+training posts, without copying HTTP runtime queues or modifying browser
+backfill_resume, backfill_page_anchors or backfill_coverage. A verified ZIP retains
+its linked raw responses; a JSONL import retains the original export and explicitly
+records that linked raw evidence was not supplied. Partial imports do not claim
+complete historical coverage. Repeating the same input is idempotent. Provide a
+read-only dry run and concrete remote export/local import commands. The user has
+asked not to run test suites: use code review and actual import/receipt checks.
+
 ## 2026-10-02 direct local H5 login
 
 The user requires login without nginx and requests an immediate fix without

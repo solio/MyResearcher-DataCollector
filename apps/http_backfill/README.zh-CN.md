@@ -1,6 +1,6 @@
 # 闲时 HTTP 回补控制台
 
-这是独立的研究采集应用：不依赖 GUI，以每分钟最多一次来源请求起步，手机网页查看状态、暂停与手动探测。本机采集数据、任务、请求与恢复台账统一保存在本应用 `data/collector.db`；原有 `posts` 查询结构沿用浏览器的 `SimplePostStore`，raw 响应继续留存。不写根目录的生产 `data/collector.db`，也不自动送入训练。当前阶段不承诺来源长期放行，更不承诺拥有二十年历史。
+这是独立的研究采集应用：不依赖 GUI，以每分钟最多一次来源请求起步，手机网页查看状态、暂停与手动探测。本机采集数据、任务、请求与恢复台账统一保存在 `apps/http_backfill/data/collector.db`；原有 `posts` 查询结构沿用浏览器的 `SimplePostStore`，raw 响应继续留存。采集 worker 和主控同步继续使用各自的运行目录；需要合入现有训练数据时，由你单独执行下方的导入命令，默认目标是**仓库根目录 `data/collector.db`**。当前阶段不承诺来源长期放行，更不承诺拥有二十年历史。
 
 ## 本地启动
 
@@ -44,15 +44,128 @@ python3 -B apps/http_backfill/server.py --host 127.0.0.1 --port 8790
 
 暂停恢复、进程重启和较长的详情处理会触发列表校准。系统保留源帖子 ID 与发布时间锚点，重新定位已观察的区间、补入新发现的详情，比较连续两轮区间观察；一致后才按重新定位的页码继续。校准也是实际来源请求，同样受全局间隔限制，控制台单独显示校准次数、轮次和页码漂移。若列表持续变化就继续核对；锚点缺失、时间顺序未知或不能安全定位时会显示缺口或暂停。部分非普通帖子不按发布时间排列，不能拿这些行的最早时间推断历史位置。
 
-用户指定历史日期边界后，应用显示列表覆盖与正文完成度；来源已到尽头但还没达到日期边界，会显示覆盖不足。两轮局部观察一致只证明该次锚点区间核对结果，不能证明整段历史完整，更无法发现从未观察到且已永久删除的帖子。`coverage_complete` 和 `model_database_eligible` 始终为 false；这批数据继续留在独立研究库。
+用户指定历史日期边界后，应用显示列表覆盖与正文完成度；来源已到尽头但还没达到日期边界，会显示覆盖不足。两轮局部观察一致只证明该次锚点区间核对结果，不能证明整段历史完整，更无法发现从未观察到且已永久删除的帖子。采集与汇总状态中的 `coverage_complete` 和 `model_database_eligible` 始终为 false；人工导入训练库也不把这些标记改为完整或已通过模型数据审查。
 
 `data/` 包含本机唯一运行数据库 `collector.db`、请求对应的 `raw/` 响应和控制台令牌 `console.token`。`collector.db` 的 `posts` 保持原 `SimplePostStore` 字段，其他表保存任务、请求、恢复、来源与导出版本；当前核实正文只写 `posts.content`，工作状态不另存一份正文。原来的 `posts` SQL、源 ID、股票代码、发布时间和 enrich 候选规则可以沿用。未取得详情的 `posts.content` 是 NULL；已取得的真实空正文是空字符串。正文来源、跨股票关联和范围缺口保留在同一库的台账/API 中，不会凭局部数据写入完整回补覆盖。raw 和不可变导出版本保留历史证据，因此历史正文版本仍可能出现于证据中。
 
-旧版升级必须执行下方的一次性迁移命令，完整校验后自动删除运行目录中的 `experiment.sqlite3` 及其 WAL/SHM。迁移保留断点与来源阻断，自动生成旧库备份，不请求来源、不移动 raw；重复执行安全。`api/posts` 是带原始来源/范围状态的研究查询，不是向生产库晋升数据的接口。实例拥有持久化 `instance_id`，状态、请求和帖子查询携带该 ID，供后续汇总追踪来源使用。
+旧版升级必须执行下方的一次性迁移命令，完整校验后自动删除运行目录中的 `experiment.sqlite3` 及其 WAL/SHM。迁移保留断点与来源阻断，自动生成旧库备份，不请求来源、不移动 raw；重复执行安全。`api/posts` 是带原始来源/范围状态的研究查询；写入仓库根目录训练库使用下方独立的 `training_import.py`，不由查询接口自动执行。实例拥有持久化 `instance_id`，状态、请求和帖子查询携带该 ID，供后续汇总追踪来源使用。
 
 本版支持一个中央控制台管理本机和多台远程实例，并在后台增量合并数据。每台实例保留自己的 SQLite、队列、请求间隔和阻断记录；中央服务通过鉴权 API 控制任务和同步证据，不直接拼接数据库文件。各实例的股票和时间窗口在同一控制台分别配置。
 
-## 多实例统一控制与合并
+## 合入仓库根目录的训练数据库
+
+这里的合并目标是 `MyResearcher-DataCollector/data/collector.db`，即已有的训练数据库。
+`apps/http_backfill/data/collector.db` 是采集器运行库，
+`apps/http_backfill/data/fleet/collector.db` 是主控的可选汇总库；
+它们都不会由后台 worker 或同步程序自动写入根目录训练库。
+使用独立的 [training_import.py](training_import.py) 人工导入，直接保留原 `posts`
+表的 15 个字段和 `(source, source_item_id)` 主键，不需要先配置 fleet 汇总。
+目标必须是已存在、具有原 `posts` 结构的训练数据库。
+
+已经用唯一主控同步各节点时，最便捷的路径是：在控制台确认同步完成，下载
+“合并帖子 JSONL”，然后用本节 `--jsonl` 命令一次合入训练库。这份主控汇总
+文件已经包含各已同步节点的去重帖子，无需逐节点下载；它保留文件出处，
+不包含 raw。需要帖子关联的完整原始证据时，使用节点 ZIP。主控汇总是可选
+的中间步骤，最终人工导入目标仍是根目录训练库。
+
+### 本机已采数据直接导入
+
+在 **`MyResearcher-DataCollector` 仓库根目录**执行。先预览，再决定正式导入：
+
+```bash
+python3 apps/http_backfill/training_import.py \
+  --source-dir apps/http_backfill/data --dry-run
+python3 apps/http_backfill/training_import.py \
+  --source-dir apps/http_backfill/data
+```
+
+`--source-dir` 只读取得节点的一致快照和相关证据，不启动采集、不请求股吧，
+不修改节点任务或来源阻断。默认目标由脚本定位到仓库根目录 `data/collector.db`。
+`--dry-run` 只预览新增帖子、补充字段/正文、冲突和证据数量，不修改目标库，
+也不创建训练库备份。输入中未能导出的帖子会显示 `unexported_source_posts`，
+不能把证据包所含记录数当成原采集库的全部帖子数。
+
+### 远端节点导出 ZIP，再传回本地导入
+
+推荐 ZIP 证据包，包内保留帖子版本、相关 raw 响应和哈希清单。先在**远端节点
+的 `MyResearcher-DataCollector/apps/http_backfill` 目录**执行：
+
+```bash
+docker compose exec -T collector-console python apps/http_backfill/transfer.py \
+  export --data-dir /data --output /data/exports/node-a-20261002.zip
+```
+
+节点使用 `compose.node.yml` 时，将命令开头替换为
+`docker compose -f compose.node.yml exec -T collector-console`，其余参数相同。
+Compose 命令从宿主机应用目录执行，但**容器工作目录是 `/opt/collector`**，
+所以容器内脚本路径必须保留 `apps/http_backfill/transfer.py`。
+导出文件位于远端宿主机的
+`MyResearcher-DataCollector/apps/http_backfill/data/exports/node-a-20261002.zip`。
+同名文件已存在时另取文件名；导出不会重启或启停采集器。
+
+然后在**本地仓库根目录**传回文件并导入；把示例登录用户、节点 IP 和远端
+仓库绝对路径替换为实际值：
+
+```bash
+mkdir -p runtime/imports
+scp 'user@10.0.0.12:/path/to/MyResearcher-DataCollector/apps/http_backfill/data/exports/node-a-20261002.zip' runtime/imports/
+python3 apps/http_backfill/training_import.py \
+  --bundle runtime/imports/node-a-20261002.zip --dry-run
+python3 apps/http_backfill/training_import.py \
+  --bundle runtime/imports/node-a-20261002.zip
+```
+
+其他节点的包按相同步骤导入同一训练库即可；重复导入相同输入是幂等操作。
+不需要先把包导入 `fleet/`，也不需要停远端采集进程。
+
+### 已从 H5 下载 JSONL
+
+在唯一主控的“中央合并数据”下载“导出合并帖子 JSONL”，把文件放到本地
+`runtime/imports/`。在仓库根目录执行一次命令，即可导入已同步的各节点帖子；
+下面的 `posts.jsonl` 替换为实际下载文件名：
+
+```bash
+python3 apps/http_backfill/training_import.py \
+  --jsonl runtime/imports/posts.jsonl --dry-run
+python3 apps/http_backfill/training_import.py \
+  --jsonl runtime/imports/posts.jsonl
+```
+
+JSONL 保留原文件作为输入来源，并保留 NULL 与真实空正文的区别；它没有
+帖子关联的 raw 响应，导入记录会明确标记 `linked_raw_supplied=false`。
+从“导出本机帖子 JSONL”下载的文件也可用同一命令导入，但它只含主控本机帖子。
+需要 raw 追溯时使用前面的 ZIP。CSV 用于查看数据，这个导入器接收 ZIP、
+节点数据目录或 JSONL。三个输入选项每次只使用一个。
+需要指定其他已有训练库时，在任一命令追加
+`--target-db /absolute/path/to/collector.db`。
+
+### 写入规则、备份和导入记录
+
+整个输入校验通过后，正式写入前自动使用 SQLite 备份接口保存目标库，包含
+已提交的 WAL 数据；默认备份位于 `data/collector.db.import-backups/`。
+原始输入保存在 `data/collector.db.imports/inputs/`，ZIP 中的关联 raw 证据
+随原包保留。命令输出包含目标路径、备份路径、输入路径、导入时间和计数；
+目标库中的 `collector_import_runs`、`collector_import_versions`、
+`collector_import_conflicts` 分别保存导入记录、输入版本和冲突事实。
+这三个新增表用于溯源，当前帖子仍只有原来的 `posts` 表，没有第二套帖子表。
+使用 `--target-db` 时，备份与输入证据目录位于指定目标库旁，文件分别按导入
+记录和输入 SHA-256 命名；相同输入重复导入且没有改动时，不创建新备份。
+
+新源 ID 插入新行；已有源 ID 只补充 NULL 字段和缺失正文，保留原来非 NULL
+值。已采到的真实空正文是空字符串，不能当作缺正文。标题、作者名称、股票、
+发布时间、URL 或作者 ID 等身份字段的非 NULL 值不一致时，保留目标库旧值，
+阻止该帖子补字段或正文，并记录双方事实供后续核对。单独正文内容冲突时，
+保留旧正文并记录双方内容，不用新正文覆盖它。
+原帖子的采集/来源时间保留，人工导入时间单独记录。
+
+导入只合入帖子和导入来源，不复制 HTTP 任务、运行队列或来源阻断，不修改
+浏览器采集的 `backfill_resume`、`backfill_page_anchors`、`backfill_coverage`。
+部分历史数据进入训练库不会被标成整段日期覆盖完整。
+
+## 多实例统一控制与可选主控汇总
+
+下面的 fleet 功能用于手机集中管理和主控汇总，输出位于应用运行目录。
+要把已有采集数据合入仓库根目录训练库，使用上一节的人工导入命令。
 
 现有服务器可以同时作为采集实例和中央服务，无需迁移原任务。手机只打开中央服务器的 `/collector/`。在“采集实例”区域登记其他服务器的实例别名、名称、**IP、端口和访问密钥**，协议默认 HTTP；当前支持本机加最多 16 台远程实例。例如填 IP `10.0.0.12`、端口 `8790`，中央服务直接访问该机的鉴权 API。采集节点不需要域名、nginx 或单独供手机访问的前端。
 
@@ -64,7 +177,8 @@ v5 中央服务支持 v4/v5 采集实例逐台升级；先升级中央服务，�
 
 后台默认每 60 秒检查新增记录；有积压时分批接续同步，也可以点击“立即同步”。同步只传输采集机已有记录及其原始响应，不发起新的股吧请求。每台实例有独立的不可变导出序列与持久化同步游标，断联或重启后继续传输；哈希或原始响应验证失败会显示同步错误并保留游标，不把失败当成已同步。
 
-中央服务的数据文件如下：
+中央服务的数据文件如下，表内 `data/` 均指应用的 `apps/http_backfill/data/`
+（容器内 `/data`），不是仓库根目录训练数据目录：
 
 | 文件 | 用途 |
 | --- | --- |
@@ -80,7 +194,10 @@ v5 中央服务支持 v4/v5 采集实例逐台升级；先升级中央服务，�
 
 本版集中管理各实例自己的任务，股票/日期窗口由你在对应实例中配置。某机验证码阻断后保留该机的停机状态，不自动把失败请求交给另一 IP；远程控制指令超时会提示结果未确认，不自动重复提交。
 
-## 实际怎样合并和导出
+## 可选的主控汇总与网页导出
+
+这一节操作的是主控的 fleet 汇总库。下载得到的 JSONL 可再通过前面的
+`training_import.py --jsonl` 合入根目录训练库；网页同步本身不执行该导入。
 
 能从主控连到的采集节点，按以下顺序操作：
 
@@ -120,7 +237,10 @@ docker compose exec -T collector-console python - \
 `/data/fleet/collector.db`。同名目标已存在时拒绝覆盖，请另取文件名。该命令
 将当前 checkout 的独立脚本送入现有容器执行，无需为了导出重启采集器。
 
-### 节点断网时用证据包合并
+### 节点断网时导入可选 fleet 汇总库
+
+若目的是补充根目录训练数据库，按前面的“远端节点导出 ZIP，再传回本地
+导入”操作即可。下面的 `transfer.py merge` 仅用于主控 fleet 汇总。
 
 节点暂时不能被主控访问时，可在节点运行离线导出：
 
@@ -157,8 +277,10 @@ docker compose up -d
 
 帖子证据包包含该节点固定导出序列快照、帖子关联的原始响应与哈希清单；不包含登录令牌、
 注册表或整个运行数据库。导入使用同一套源 ID/实例/版本/正文合并规则，
-校验失败会报错，重复导入幂等。合并目标仍是主控 `fleet/collector.db`。
-不要用复制覆盖 SQLite 文件来合并实例，不要把包导入项目根目录的生产 `data/`。
+校验失败会报错，重复导入幂等。这个 `transfer.py merge` 命令的目标是主控
+`fleet/collector.db`，不要把它的 `--data-dir` 指向仓库根目录 `data/`。
+向根目录训练库合入 ZIP 使用 `training_import.py --bundle`。
+不要用复制覆盖 SQLite 文件来合并实例。
 这些新工具需要新版镜像；普通更新后即可使用。导出包完整仅表示已拥有证据
 保存完整，所有日期覆盖和模型可用性仍需另外核实。未关联已采帖子的一些
 失败、验证码、探测请求不会进入这个包；核验全部源请求间隔应使用下面的
