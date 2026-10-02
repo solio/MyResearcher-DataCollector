@@ -1,5 +1,19 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-02 large-gap challenge remains the unresolved objective
+
+The user recalls the same failure in prompt-engineering: curl acquisition can
+work initially but historical backfill over a large date gap encounters a
+verification challenge. Treat this as user-reported history; compare with retained
+logs rather than asserting that date span itself is the server's trigger.
+The current list URL carries stock/page, not the local configured date range.
+Request volume, duration, page depth, detail mix and recovery traffic therefore
+remain separate explanatory candidates. Current 60-second spacing is a trial
+setting, not a proven sustainable limit. A H5 console, safe stop, resumable queue
+and training import do not establish sustained unattended historical acquisition.
+Review already acquired blocking evidence before choosing the next intervention;
+this follow-up leaves existing node tasks and source request settings untouched.
+
 ## 2026-10-02 explicit import into the training database
 
 The user clarifies that merging means adding collected posts to the existing

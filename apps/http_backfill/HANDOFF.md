@@ -2,6 +2,32 @@
 
 Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
 
+## Current unresolved goal: sustained backfill of large historical gaps
+
+The user recalls that prompt-engineering also encounters CAPTCHA during large-gap
+curl backfill. Current app functionality must not be presented as resolving that
+access problem. Stock/page list URLs do not transmit the local date window, so
+date gap correlates with volume/duration/depth/detail work but is not an identified
+server-side trigger. Fixed >=60-second pacing, failure stop and resumability are
+controls whose long-term access effectiveness remains unproven. The 2026-09-30
+research ledger stopped on a genuine challenge at request 78 after 77 successful
+list requests; this remains distinct from current 60-second app operation.
+The previous prompt-engineering audit also records both page-1 failures and
+ten-page successes; no universal page/date/request threshold or TLS/IP cause was
+established. See experts/eastmoney-live-access/CURL-CFFI-AUDIT.md.
+Direct large-gap log: prompt-engineering/logs/20260618.log:114 starts a 60-trading-
+day 601012 backfill for 20260222~20260522. Lines 346~366 raise the budget to 50
+pages for a target 114 days earlier, receive pages 1~4, then record CAPTCHA at
+page 5 after about 5.1 seconds. The outer loop then continues other dates and
+repeats first-page attempts. This is the old detector's recorded outcome; the
+client's curl_cffi enablement and raw challenge bytes are not established by
+that excerpt. It supports failure under historical workload, not a universal
+date/page threshold or a conclusion about current 60-second pacing.
+This turn only reads existing evidence and records the corrected objective:
+no source requests, live task modifications or test suites. The remote blocked
+instance and its precise HTTP/challenge response are still needed for diagnosis;
+the local node is a separate ongoing acquisition, not evidence of remote recovery.
+
 ## Latest correction: merge into the actual training database
 
 The user explicitly names repository-root `data/collector.db` as the merge
