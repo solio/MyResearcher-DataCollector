@@ -2,6 +2,23 @@
 
 Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest fix: local H5 works without nginx
+
+The user explicitly requires direct host:port login and asks not to run test
+suites. The local .env now sets API_ONLY=0. Main Compose had forced the cookie
+Path to /collector/, so a direct /api/session login succeeded but the browser
+did not send that cookie to /api/status. Compose now defaults COOKIE_PATH to /
+and supports an optional BACKFILL_COOKIE_PATH override. Existing nginx /collector/
+also receives a root-path cookie; server auth/HTTPOnly/SameSite/Secure behavior
+is retained. No source scheduler or data changes were needed.
+
+Applied actual local Compose config with up -d --no-build (no apt/image build).
+One actual host login flow returned H5 GET /=200, login POST=200 authenticated,
+cookie Path=/, and /api/status=200 using only the received cookie. The temporary
+verification session was logged out. Source state remains paused with 229 posts
+and 179 requests. No broad/unit/browser suite was run for this fix as requested.
+README and SPEC document direct login and compatibility with nginx subpaths.
+
 ## Latest operation: local Docker startup recovered after legacy migration
 
 The user's locally deployed collector was Restarting(1). Actual Docker inspect
@@ -26,9 +43,9 @@ healthy, Restarting=false, RestartCount=0 with published 0.0.0.0:8790->8790/tcp.
 Source request count remained 179. No real source requests, automatic task start,
 token output or production-root data access was required.
 
-The user's current .env API_ONLY=1 and FLEET_SYNC_ENABLED=0 were preserved;
-this is an API node, so its root H5 route is intentionally closed. An optional
-question asks whether local H5 is wanted; no role change is assumed. README now
+At the initial recovery the .env API_ONLY=1 and FLEET_SYNC_ENABLED=0 were preserved.
+The user subsequently selected local H5/API_ONLY=0 and explicitly requested the
+direct-login fix recorded above. README now
 puts legacy migration requirements before both hub and node startup commands and
 explains the misleading empty runtime Ports during this failure. Existing guard
 and migration behavior remain correct; no runtime code change was necessary.

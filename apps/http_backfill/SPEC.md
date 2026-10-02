@@ -1,5 +1,15 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-02 direct local H5 login
+
+The user requires login without nginx and requests an immediate fix without
+running test suites. Compose must not force a /collector/ cookie path: default
+to / so direct host:port and existing nginx subpaths both retain sessions. Keep
+an optional BACKFILL_COOKIE_PATH override, existing authentication/HTTPOnly/
+SameSite/Secure behavior, port settings and acquired data. Apply to the user's
+current local Docker deployment and check the actual login/session flow only;
+do not start source collection or run broad regression suites.
+
 ## 2026-10-01 inspect actual source pacing and provide usable exports
 
 The user requests concrete data merging/export instructions and confirmation

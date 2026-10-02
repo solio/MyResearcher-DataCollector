@@ -244,7 +244,7 @@ curl -fsS http://127.0.0.1:8790/healthz
 
 基础镜像默认复用 labelapp 使用的 `fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim`。应用镜像直接在服务器构建，不需要推送镜像仓库；已有私有仓库登录和基础镜像缓存可以沿用。首次应用构建仍需访问 Debian 软件包源安装 curl 和 CA 证书。其他环境可设置 `BACKFILL_BASE_IMAGE=python:3.12-slim` 后运行 Compose。应用没有额外 pip 依赖。
 
-容器内绑定 0.0.0.0，宿主仅发布 `127.0.0.1:8790`；应用目录的 `./data` 挂载为容器 `/data`，`collector.db`、raw 响应、队列和登录令牌都保存在这里。配置使用 `/collector/` cookie path，网页登录通过 nginx 入口进行。直接本机启动不设置此前缀，使用根路径即可。Dockerfile 的专属 ignore 只发送源码和本应用，不发送生产数据、历史 raw、凭据或 Git 目录。
+容器内绑定 0.0.0.0，宿主默认发布 `127.0.0.1:8790`；应用目录的 `./data` 挂载为容器 `/data`，`collector.db`、raw 响应、队列和登录令牌都保存在这里。Cookie 路径默认 `/`，直接打开 `http://127.0.0.1:8790/` 即可登录，也兼容原 nginx `/collector/` 入口，无需 nginx 才能登录。已有特定子路径隔离需求时可选设置 `BACKFILL_COOKIE_PATH`。本地需要 H5 时 `BACKFILL_API_ONLY=0`；节点预设的仅 API 模式不提供网页登录。Dockerfile 的专属 ignore 只发送源码和本应用，不发送生产数据、历史 raw、凭据或 Git 目录。
 
 在现有 `server_name testapi.zuzurent.com.cn` 的 **HTTPS server 块内部**加入以下两个 location（同一块中的 `/labeler/` 保持原配置）：
 
