@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# Run from any directory; use --node for the standalone collector preset.
+# Run from any directory; every instance uses the existing compose.yml.
 set -euo pipefail
 compose_cmd=(docker compose)
 retry_command='bash migrate-storage.sh'
 if (($# == 0)); then
-  : # Existing hub defaults.
+  :
 elif (($# == 1)) && [[ $1 == --node ]]; then
-  compose_cmd+=(-f compose.node.yml)
-  retry_command+=' --node'
+  printf '%s\n' '--node 是旧参数；现在统一沿用 compose.yml 和已有 .env，请以后直接执行 bash migrate-storage.sh。'
 else
-  printf '%s\n' 'Usage: bash migrate-storage.sh [--node]' '--node: 使用独立采集节点预设；不带参数使用中央控制台预设。' >&2
+  printf '%s\n' 'Usage: bash migrate-storage.sh [--node]' '--node 仅兼容旧命令；所有实例均使用 compose.yml。' >&2
   exit 2
 fi
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"

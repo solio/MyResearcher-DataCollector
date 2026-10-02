@@ -219,6 +219,12 @@ Clock returns epoch seconds. `tick` never sleeps and initiates at most one reque
 
 ## HTTP request profile — user amendment, 2026-10-02
 
+Deployment correction: the user requires one existing compose.yml entry for
+all instances. No separate node Compose preset is required or retained. Existing
+.env port/bind and optional API-only settings continue to apply. The old
+migration --node flag is accepted only as a compatibility alias for the same
+entry, without changing runtime data or requiring node role configuration.
+
 - Both real clients use the same fixed desktop Linux Chrome UA:
   `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36`.
   The Chrome major version comes from the locally installed Chrome 154; the

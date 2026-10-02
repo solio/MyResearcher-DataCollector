@@ -42,9 +42,8 @@ Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/15
 请求头。本次没有改变数据库表字段，无需另做数据迁移。
 
 采集节点更新后新请求才会应用此策略；只更新主控页面不能改变远端采集器的
-请求头。普通 Compose 部署仍在 `apps/http_backfill` 下执行
-`git pull && docker compose up -d --build`；API 节点使用
-`git pull && docker compose -f compose.node.yml up -d --build`。
+请求头。所有实例统一在 `apps/http_backfill` 下执行
+`git pull && docker compose up -d --build`。
 重启后按既有规则暂停，在控制台继续；已有阻断时先按原流程单次探测。
 Chrome UA 与来源头是否能改善长时间采集，需要之后的真实运行记录判断。
 
@@ -128,8 +127,6 @@ docker compose exec -T collector-console python apps/http_backfill/transfer.py \
   export --data-dir /data --output /data/exports/node-a-20261002.zip
 ```
 
-节点使用 `compose.node.yml` 时，将命令开头替换为
-`docker compose -f compose.node.yml exec -T collector-console`，其余参数相同。
 Compose 命令从宿主机应用目录执行，但**容器工作目录是 `/opt/collector`**，
 所以容器内脚本路径必须保留 `apps/http_backfill/transfer.py`。
 导出文件位于远端宿主机的
@@ -399,7 +396,7 @@ curl -fsS http://127.0.0.1:8790/healthz
 
 基础镜像默认复用 labelapp 使用的 `fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim`。应用镜像直接在服务器构建，不需要推送镜像仓库；已有私有仓库登录和基础镜像缓存可以沿用。首次应用构建仍需访问 Debian 软件包源安装 curl 和 CA 证书。其他环境可设置 `BACKFILL_BASE_IMAGE=python:3.12-slim` 后运行 Compose。应用没有额外 pip 依赖。
 
-容器内绑定 0.0.0.0，宿主默认发布 `127.0.0.1:8790`；应用目录的 `./data` 挂载为容器 `/data`，`collector.db`、raw 响应、队列和登录令牌都保存在这里。Cookie 路径默认 `/`，直接打开 `http://127.0.0.1:8790/` 即可登录，也兼容原 nginx `/collector/` 入口，无需 nginx 才能登录。已有特定子路径隔离需求时可选设置 `BACKFILL_COOKIE_PATH`。本地需要 H5 时 `BACKFILL_API_ONLY=0`；节点预设的仅 API 模式不提供网页登录。Dockerfile 的专属 ignore 只发送源码和本应用，不发送生产数据、历史 raw、凭据或 Git 目录。
+容器内绑定 0.0.0.0，宿主默认发布 `127.0.0.1:8790`；应用目录的 `./data` 挂载为容器 `/data`，`collector.db`、raw 响应、队列和登录令牌都保存在这里。Cookie 路径默认 `/`，直接打开 `http://127.0.0.1:8790/` 即可登录，也兼容原 nginx `/collector/` 入口，无需 nginx 才能登录。已有特定子路径隔离需求时可选设置 `BACKFILL_COOKIE_PATH`。H5 默认启用；已有 `.env` 中明确设置 `BACKFILL_API_ONLY=1` 时仅提供 API。Dockerfile 的专属 ignore 只发送源码和本应用，不发送生产数据、历史 raw、凭据或 Git 目录。
 
 在现有 `server_name testapi.zuzurent.com.cn` 的 **HTTPS server 块内部**加入以下两个 location（同一块中的 `/labeler/` 保持原配置）：
 
@@ -452,44 +449,44 @@ python3 -B apps/http_backfill/migrate_storage.py --data-dir apps/http_backfill/d
 
 同样的 nginx 片段保存在 [deploy/nginx.conf.example](deploy/nginx.conf.example)。
 
-### 只运行采集 API 的节点
+### 多实例使用同一部署入口
 
-节点不需要手写 `.env`、填写自身 IP、配置域名或 nginx。节点专用
-[compose.node.yml](compose.node.yml) 已准备好运行模式：默认监听宿主机端口
-8790，只开放鉴权 API 和健康检查，关闭节点自身的后台汇总。访问密钥首启
-自动生成并保存；股票、日期、频率和开始/暂停全部由主控配置。
+主控、本机和远端采集器都使用现有 `compose.yml`，不需要额外的节点 Compose
+文件，不需要在节点登记主控地址。远端没有 nginx 或域名也可由主控通过
+IP/端口访问鉴权 API。访问密钥首启自动生成并保存；股票、日期、频率和
+开始/暂停全部由主控配置。节点附带的网页可以不用打开。
 
 在节点的 `apps/http_backfill` 目录，**已有 v1–v4 数据先执行**：
 
 ```bash
-git pull && bash migrate-storage.sh --node
+git pull && bash migrate-storage.sh
 ```
 
-这条命令迁移后会以节点模式启动。**全新空目录或已有 v5 单库**，启动和
-以后更新使用：
+**全新空目录或已有 v5 单库**，启动和以后更新使用原来的命令：
 
 ```bash
-git pull && docker compose -f compose.node.yml up -d --build
+git pull && docker compose up -d --build
 ```
 
 首次登记时取出自动生成的密钥：
 
 ```bash
-docker compose -f compose.node.yml exec -T collector-console cat /data/console.token
+docker compose exec -T collector-console cat /data/console.token
 ```
 
 主控面板登记节点的 IP、端口 `8790` 和这个密钥即可；节点不用再登记主控，
-也不用配置任何采集任务。默认端口监听宿主网络接口，安全组/防火墙允许主控
-访问该端口。不同节点各用自己的 `data/`，不要复制其他节点的数据目录。
+也不用配置任何采集任务。安全组/防火墙允许主控访问该端口。不同实例各用
+自己的 `data/`，不要复制其他实例的数据目录。统一入口仍使用同一服务名和
+`./data:/data`，保留现有数据、令牌和实例 UUID。全新实例保持暂停，登记不会
+自动开始来源请求。
 
-已有 v1–v4 数据的节点先执行 `git pull && bash migrate-storage.sh --node`，完成
-单库迁移并以节点模式启动；已有 v5 数据直接用上述更新命令。两份 Compose
-使用同一应用目录、服务名和 `./data:/data`，切换节点模式保留现有数据、令牌
-和实例 UUID。全新节点保持暂停，登记不会自动开始来源请求。
-
-仅在现有部署要求特定监听 IP 或宿主端口时，才可选使用
-`BACKFILL_BIND_ADDRESS` / `BACKFILL_PORT` 覆盖默认值；正常节点无需这些配置。
-若此前已经创建过含这两个变量的 `.env`，节点模式继续尊重已有值。
+监听地址和端口继续沿用已有 `.env` 的 `BACKFILL_BIND_ADDRESS` /
+`BACKFILL_PORT`。默认 Compose 仍为 `127.0.0.1:8790`；需让远端主控通过 IP
+连接的实例，应在现有 `.env` 中使用 `BACKFILL_BIND_ADDRESS=0.0.0.0` 或可路由
+的本机接口 IP。此前使用旧节点预设且没有 `.env` 的机器，切换前需保留这个
+监听设置；旧预设曾默认监听 `0.0.0.0`。已有 `BACKFILL_API_ONLY` 和
+`BACKFILL_FLEET_SYNC_ENABLED` 设置继续被同一 Compose 支持，均不是部署的
+必填项。旧迁移命令的 `--node` 参数仅作兼容，使用统一入口和已有配置。
 
 在主控服务器验证到节点的网络连通：
 

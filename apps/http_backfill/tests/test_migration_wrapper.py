@@ -60,29 +60,29 @@ if command == os.environ.get('MIGRATION_TEST_FAIL'):
         self.assertEqual([c["arguments"] for c in commands], [["compose", "build", "collector-console"]])
 
 
-    def test_node_preset_is_retained_for_build_stop_migrate_start_and_health(self):
+    def test_legacy_node_argument_uses_same_compose_for_every_step(self):
         result, commands = self.run_wrapper(args=("--node",))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([c["command"] for c in commands], ["build", "stop", "run", "up", "exec"])
         for command in commands:
-            self.assertEqual(command["profile"], "compose.node.yml")
-            self.assertEqual(command["arguments"][:3], ["compose", "-f", "compose.node.yml"])
+            self.assertIsNone(command["profile"])
+            self.assertEqual(command["arguments"][0], "compose")
             self.assertEqual(Path(command["cwd"]).name, Path(commands[0]["cwd"]).name)
-        self.assertEqual(commands[2]["arguments"][3:], ["run", "--rm", "--no-deps", "collector-console", "python", "apps/http_backfill/migrate_storage.py", "--data-dir", "/data"])
-        self.assertEqual(commands[3]["arguments"][3:], ["up", "-d", "--no-build", "collector-console"])
+        self.assertEqual(commands[2]["arguments"][1:], ["run", "--rm", "--no-deps", "collector-console", "python", "apps/http_backfill/migrate_storage.py", "--data-dir", "/data"])
+        self.assertEqual(commands[3]["arguments"][1:], ["up", "-d", "--no-build", "collector-console"])
         self.assertIn("http://127.0.0.1:8790/healthz", commands[4]["stdin"])
 
-    def test_failed_node_migration_never_restores_hub_or_starts_service(self):
+    def test_failed_legacy_node_migration_never_starts_service(self):
         result, commands = self.run_wrapper("run", ("--node",))
         self.assertEqual(result.returncode, 23)
         self.assertEqual([c["command"] for c in commands], ["build", "stop", "run"])
-        self.assertTrue(all(c["profile"] == "compose.node.yml" for c in commands))
-        self.assertIn("bash migrate-storage.sh --node", result.stderr)
+        self.assertTrue(all(c["profile"] is None for c in commands))
+        self.assertIn("bash migrate-storage.sh", result.stderr)
 
     def test_failed_node_build_does_not_stop_old_worker(self):
         result, commands = self.run_wrapper("build", ("--node",))
         self.assertEqual(result.returncode, 23)
-        self.assertEqual([c["arguments"] for c in commands], [["compose", "-f", "compose.node.yml", "build", "collector-console"]])
+        self.assertEqual([c["arguments"] for c in commands], [["compose", "build", "collector-console"]])
 
     def test_unknown_or_extra_arguments_rejected_before_any_docker_command(self):
         for arguments in (("--hub",), ("node",), ("--node", "extra"), ("--node", "--node"), ("--port", "8791")):

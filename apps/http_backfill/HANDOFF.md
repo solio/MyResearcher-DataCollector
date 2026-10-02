@@ -2,6 +2,25 @@
 
 Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: one Compose deployment entry
+
+The user rejects the extra compose.node.yml. That duplicate preset is removed;
+every instance uses `git pull && docker compose up -d --build` in the existing
+app directory. Export commands also use ordinary docker compose. Existing
+compose.yml, service name, ./data mount, .env overrides and server capabilities
+remain the shared deployment path. A node does not need its own nginx/domain or
+reverse registration; the hub uses its IP/port and generated token.
+
+migrate-storage.sh keeps --node only as an old-command compatibility alias with
+an explanatory message; it never references a separate file. Its offline
+build/stop/migrate/start/health order remains. For historical nodes that used the
+old preset without .env, explicitly retain a routable BACKFILL_BIND_ADDRESS in
+the existing .env: the removed preset defaulted to 0.0.0.0, while ordinary Compose
+defaults to 127.0.0.1. No database migration is required for this cleanup. The
+API_ONLY/SYNC environment options remain optional, not mandatory node setup.
+Historical node-preset descriptions later in this handoff are superseded by
+this section. No containers or runtime data were modified, and no suites ran.
+
 ## Latest change: operator-requested Chrome UA and Referer selection
 
 The user explicitly amended the isolated app's header policy. Both curl and
@@ -32,8 +51,8 @@ result. No source requests or live-worker restart were executed for validation
 here, and no test suites were run per the user's standing preference. Python
 compile of core.py/unified_store.py, node --check static/app.js and git diff
 --check passed; the worker's actual long-run availability remains unverified.
-Normal deployment: git pull && docker compose up -d --build; API-only nodes use
-compose.node.yml. All collecting nodes need the new image. Restart remains
+Normal deployment: git pull && docker compose up -d --build on every instance.
+All collecting nodes need the new image. Restart remains
 paused or source-halted until the operator continues/probes by existing rules.
 
 ## Current unresolved goal: sustained backfill of large historical gaps
