@@ -224,7 +224,8 @@
     $("coverage-list").replaceChildren(el("div", "empty-state", "正在读取所选实例的覆盖状态…")); display("coverage-count", "等待状态");
     for (const field of ["metric-attempts", "metric-pages", "metric-posts", "metric-list-only", "metric-bodies", "metric-pending", "run-duration", "current-target", "last-success"]) display(field, "—");
     for (const field of ["metric-failures", "metric-calibration", "metric-list-total", "metric-removed", "metric-body-breakdown", "observed-rate", "next-request", "next-request-time"]) display(field, "等待所选实例状态");
-    $("block-panel").hidden = true; $("storage-panel").hidden = true; display("recovery-reason", "等待所选实例的校准状态。"); display("recovery-phase", "等待状态"); $("recovery-facts").replaceChildren();
+    $("block-panel").hidden = true; $("block-history").hidden = true; $("block-history").open = false; display("block-history-evidence", "");
+    $("storage-panel").hidden = true; display("recovery-reason", "等待所选实例的校准状态。"); display("recovery-phase", "等待状态"); $("recovery-facts").replaceChildren();
     renderRateAudit({});
     display("run-title", `正在读取 ${nodeName()} 的状态`); display("run-reason", "切换实例不会发出任何来源请求或采集控制命令。"); display("job-window", "等待配置"); display("run-start", "等待状态"); display("state-label", "等待状态");
     notice(""); setConnection(false); display("updated-at", "—");
@@ -514,23 +515,31 @@
   }
   function renderBlock(data) {
     const firstBlock = first(data, ["first_block_evidence", "first_block"]);
-    const evidence = firstBlock || first(data, ["blocking_evidence", "block_evidence", "block"]);
-    const blocked = ["blocked", "error"].includes(data.state) && !data.storage_halt;
-    $("block-panel").hidden = !blocked && !evidence;
-    if ($("block-panel").hidden) return;
-    const info = objectValue(evidence);
-    const reason = first(info, ["reason", "error", "message"], data.reason || "历史拦截证据已保留。");
-    display("block-title", blocked ? "已停止后续请求" : "历史阻断证据仍保留");
-    display("block-kind", outcomes[first(info, ["outcome", "kind", "type"])] || first(info, ["outcome", "kind", "type"], "待检查"));
+    const evidence = first(data, ["blocking_evidence", "block_evidence", "block"], firstBlock);
+    const blocked = Boolean(data.active_halt) || (["blocked", "error"].includes(data.state) && !data.storage_halt);
+    const evidenceKind = first(objectValue(evidence), ["kind", "outcome", "type"]);
+    const staleEvidence = Boolean(data.active_halt && evidenceKind && evidenceKind !== data.active_halt);
+    const currentEvidence = staleEvidence ? null : evidence;
+    const history = $("block-history"), hideHistory = !evidence || (blocked && !staleEvidence);
+    if (history.hidden || hideHistory) history.open = false;
+    history.hidden = hideHistory;
+    display("block-history-evidence", hideHistory ? "" : JSON.stringify(firstBlock ? { first_block: firstBlock, latest_block: evidence } : evidence, null, 2));
+    $("block-panel").hidden = !blocked;
+    if (!blocked) return;
+    const info = objectValue(currentEvidence);
+    const reason = first(info, ["reason", "error", "message"], data.reason || "当前来源阻断尚未解除。");
+    display("block-title", "当前来源阻断尚未解除");
+    const kind = first(info, ["outcome", "kind", "type"], data.active_halt || "待检查");
+    display("block-kind", outcomes[kind] || kind);
     display("block-reason", reason);
     const facts = [
-      [firstBlock ? "首次阻断时间" : "阻断记录时间", time(first(info, ["at", "timestamp", "started_at", "started", "blocked_at", "time"]))],
+      ["阻断记录时间", time(first(info, ["at", "timestamp", "started_at", "started", "blocked_at", "time"]))],
       ["请求序号 / ID", first(info, ["attempt", "attempt_no", "request_id", "id", "sequence"], "—")],
       ["HTTP 状态", first(info, ["http_status", "status_code", "status"], "未知 / 无响应")],
     ];
     const list = $("block-facts"); list.replaceChildren();
     facts.forEach(([label, value]) => { const fact = el("div", "evidence-fact"); fact.append(el("span", "", label), el("strong", "", value)); list.append(fact); });
-    display("block-evidence", evidence ? JSON.stringify(firstBlock ? { first_block: firstBlock, latest_block: data.block_evidence } : evidence, null, 2) : JSON.stringify({ state: data.state, reason: data.reason }, null, 2));
+    display("block-evidence", JSON.stringify(currentEvidence || { state: data.state, active_halt: data.active_halt, reason: data.reason }, null, 2));
   }
   function renderCoverage(data, config) {
     let items = first(data, ["coverage", "stock_coverage", "per_stock"], []);

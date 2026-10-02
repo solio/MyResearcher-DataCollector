@@ -1,5 +1,22 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-03 current blocking alert versus retained history
+
+The user requests that old verification responses stop occupying the prominent
+pause/evidence card once source access has resumed. Render that card only while
+active_halt is set, with blocked/error state fallback for older nodes, excluding
+storage-only errors. Prefer the latest blocking evidence over the first record.
+An outstanding source halt remains current during a scheduled probe or new task;
+later task timestamps alone never clear a halt. Once resolved, move retained
+evidence to a default-collapsed entry under task history. Preserve its expanded
+state during polling and reset it when switching instances. Source raw evidence,
+requests, backend halt/probe behavior and all stored history remain unchanged.
+If active_halt names a different cause from retained evidence (for example a
+process-interrupted request after an earlier resolved challenge), display the
+current halt cause without attributing the old request facts to it; keep the old
+record in the collapsed historical entry.
+This is a display change; no test suites or source-access attempts are required.
+
 ## 2026-10-02 large-gap challenge remains the unresolved objective
 
 The user recalls the same failure in prompt-engineering: curl acquisition can

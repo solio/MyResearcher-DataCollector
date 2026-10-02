@@ -1,6 +1,27 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-03, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest correction: resolved block evidence leaves the alert card
+
+The user rejects a permanent prominent historical CAPTCHA alert after later
+source acquisition. The H5 card now follows active_halt, with blocked/error
+fallback for older nodes and separate storage-error handling. It prefers the
+latest blocking evidence; an unresolved halt stays visible even during a queued
+probe. Resolved evidence appears only in a default-collapsed entry under task
+history. Polling preserves an explicitly expanded entry; switching instances
+hides, clears and folds it before loading the new instance. If a restart/anchor
+halt differs from the retained evidence kind, its current reason is shown with
+unknown request facts; the old response stays historical. No raw responses,
+request history, data or backend halt/probe rules are changed. Changed app.js,
+index.html and SPEC.md. JavaScript syntax and git diff whitespace checks passed,
+with independent read-only review of source/probe/storage and node-switch cases.
+The two static assets were replaced in the existing local container; direct
+localhost responses match their workspace SHA256 and use Cache-Control no-store.
+Container ID, start time and restart count remained unchanged. Refresh the local
+page to load this display change. No test suites or source requests were used for
+verification. Remote controls need only the updated central H5 deployment; no
+node backend upgrade is required for this change.
 
 ## Latest correction: one Compose deployment entry
 
