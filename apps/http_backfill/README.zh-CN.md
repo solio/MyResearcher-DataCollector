@@ -219,7 +219,11 @@ docker compose exec -T collector-console python - \
 
 沿用 labelapp 的服务器和现有 HTTPS，新增入口 `https://testapi.zuzurent.com.cn/collector/`。以下命令由服务器执行；仓库包含部署文件，尚未自动修改远程服务器。应用使用独立端口 8790 和 SQLite，不需要 labelapp 的 MySQL 配置。
 
-先进入服务器上存放项目的目录，首次部署：
+先检查应用的 `data/`：如果已有 `experiment.sqlite3`、旧 WAL/SHM，或存储
+迁移尚未完成，必须先用 `git pull && bash migrate-storage.sh`。全新空目录，
+或已经迁移为 v5 单库的目录，才使用下面的普通启动/更新命令。
+
+先进入服务器上存放项目的目录，全新部署：
 
 ```bash
 git clone git@github.com:solio/MyResearcher-DataCollector.git
@@ -230,6 +234,13 @@ curl -fsS http://127.0.0.1:8790/healthz
 ```
 
 若服务器已有旧版数据，进入 `MyResearcher-DataCollector/apps/http_backfill` 执行 `git pull && bash migrate-storage.sh`；这次会切换到单库。以后普通更新再使用 `git pull && docker compose up -d --build`。`compose.yml` 是自动识别的文件名，无需 `-f`；命令要在这个应用目录执行。健康检查返回 `{"ok": true}`。首启处于暂停状态，不会因健康检查或网页刷新请求股吧。
+
+若看到容器一直 `Restarting (1)`，先运行
+`docker compose logs --tail=40 collector-console`。日志出现
+`检测到旧版 experiment.sqlite3` 表示启动前的存储检查拒绝旧布局，需执行上面
+的迁移命令。进程立即退出时，`docker ps` 的 Ports 列可能为空，不能据此判断
+`.env` 没生效；可用 `docker inspect` 的 `HostConfig.PortBindings` 检查配置。
+迁移保留一致性备份，完整校验后才清理运行目录旧库，不要手动删除数据库。
 
 基础镜像默认复用 labelapp 使用的 `fangzuzu-docker-registry-vpc.cn-guangzhou.cr.aliyuncs.com/fangzuzu/python:3.12-slim`。应用镜像直接在服务器构建，不需要推送镜像仓库；已有私有仓库登录和基础镜像缓存可以沿用。首次应用构建仍需访问 Debian 软件包源安装 curl 和 CA 证书。其他环境可设置 `BACKFILL_BASE_IMAGE=python:3.12-slim` 后运行 Compose。应用没有额外 pip 依赖。
 
@@ -293,7 +304,14 @@ python3 -B apps/http_backfill/migrate_storage.py --data-dir apps/http_backfill/d
 8790，只开放鉴权 API 和健康检查，关闭节点自身的后台汇总。访问密钥首启
 自动生成并保存；股票、日期、频率和开始/暂停全部由主控配置。
 
-在节点的 `apps/http_backfill` 目录，首次启动及以后更新都用同一条命令：
+在节点的 `apps/http_backfill` 目录，**已有 v1–v4 数据先执行**：
+
+```bash
+git pull && bash migrate-storage.sh --node
+```
+
+这条命令迁移后会以节点模式启动。**全新空目录或已有 v5 单库**，启动和
+以后更新使用：
 
 ```bash
 git pull && docker compose -f compose.node.yml up -d --build

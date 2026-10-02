@@ -1,6 +1,37 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-01, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-02, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest operation: local Docker startup recovered after legacy migration
+
+The user's locally deployed collector was Restarting(1). Actual Docker inspect
+showed the requested 0.0.0.0:8790->8790 PortBindings and the correct bind-mounted
+app data, while runtime Ports were empty. Startup logs showed v5's intentional
+legacy-layout refusal because this local data still contained experiment.sqlite3.
+The .env port settings were effective; no port mapping implementation bug was
+found. No native 8790 listener or active worker.lock owner remained.
+
+The root agent stopped this restart loop, used the user's already built image
+to run the existing stopped-worker migrator, and restarted the same service
+without rebuilding/apt. Migration passed complete ledger/body/raw verification:
+179 requests, 229 posts, 176 acquired bodies and all 179 raw files preserved.
+Receipt is data/storage-migration.json; backups remain under
+data/migration-backups/20261002T013506Z-cb7f3c4320b54fe98a9f407f9e8ed078/.
+The runtime legacy file was removed only after validated publication.
+
+Actual host GET http://127.0.0.1:8790/healthz returned 200 and {ok:true}; an
+authenticated /api/status returned v5, paused, the preserved counts and a scoped
+rate audit with minimum recorded gap 60.00268292427063 seconds. Docker was running,
+healthy, Restarting=false, RestartCount=0 with published 0.0.0.0:8790->8790/tcp.
+Source request count remained 179. No real source requests, automatic task start,
+token output or production-root data access was required.
+
+The user's current .env API_ONLY=1 and FLEET_SYNC_ENABLED=0 were preserved;
+this is an API node, so its root H5 route is intentionally closed. An optional
+question asks whether local H5 is wanted; no role change is assumed. README now
+puts legacy migration requirements before both hub and node startup commands and
+explains the misleading empty runtime Ports during this failure. Existing guard
+and migration behavior remain correct; no runtime code change was necessary.
 
 ## Latest extension: actual pacing audit and usable data exports
 
@@ -356,8 +387,10 @@ Local v1 trial started 2026-09-30 20:00:59 Shanghai using ordinary curl for
 179 attempts, 3 forward pages, 176 nonempty complete bodies, 229 discovered
 eligible posts, 53 pending and no failures in that observed period. This is
 local evidence, not the user's server status or a sustained-access guarantee.
-No new live source traffic was required for v4 verification. The original local
-trial remains paused with its old loaded code; clone checks did not upgrade it.
+No new live source traffic was required for v4 verification. Those clone checks
+did not upgrade the original local trial. On 2026-10-02 the user deployed Docker;
+the original local data was migrated and the v5 API node recovered as recorded
+above. It remains paused with its retained evidence.
 
 All results remain observed_pages_only, coverage_complete=false,
 dataset_complete=false and model_database_eligible=false. Local reconciliation
