@@ -6,7 +6,11 @@ investment source, retries a mutation, or rotates the acquisition endpoint.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime, timezone
+import csv
+import hashlib
+import io
 import json
 import ipaddress
 import os
@@ -27,12 +31,39 @@ VERSION = "http-backfill.v4"
 SUPPORTED_NODE_VERSIONS = {VERSION, "http-backfill.v5"}
 MAX_NODES = 16
 MAX_JSON = 32 * 1024 * 1024
+MAX_DOWNLOAD = 2 * 1024 * 1024 * 1024
+DOWNLOAD_TIMEOUT = 15
+DOWNLOAD_DEADLINE = 600
+MAX_DOWNLOAD_FIELD = 64 * 1024 * 1024
 
 
 class FleetError(RuntimeError):
     def __init__(self, status_code, error, ambiguous=False):
         super().__init__(error)
         self.status_code, self.error, self.ambiguous = status_code, error, bool(ambiguous)
+
+
+@dataclass
+class PostsDownload:
+    """A fully validated private temporary file; caller must close it."""
+    stream: object
+    bytes: int
+    posts: int
+    snapshot_at: str
+    content_type: str
+    sha256: str
+    remote_instance_id: str | None = None
+    node_id: str | None = None
+    instance_id: str | None = None
+
+    def close(self):
+        self.stream.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 
 def _iso(epoch):
@@ -156,6 +187,157 @@ class NodeClient:
         except (OSError, urllib.error.URLError, ValueError) as exc:
             timeout = isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout))
             raise FleetError(504 if timeout else 502, "节点连接超时" if timeout else "无法连接节点；请检查地址、网络及服务", method != "GET") from exc
+
+    @staticmethod
+    def _validate_posts(stream, format, expected_posts, deadline, token):
+        from data_export import COLUMNS, EXTRA
+        counters = {"read_count", "reply_count", "like_count", "forward_count"}
+        count = 0
+        try:
+            if format == "jsonl":
+                while True:
+                    line = stream.readline(MAX_DOWNLOAD_FIELD + 1)
+                    if not line:
+                        break
+                    if time.monotonic() > deadline:
+                        raise FleetError(504, "节点导出校验超过总时限")
+                    if len(line) > MAX_DOWNLOAD_FIELD:
+                        raise ValueError("导出单行过大")
+                    item = json.loads(line.decode("utf-8", errors="strict"))
+                    if (not isinstance(item, dict) or set(item) != set(COLUMNS + EXTRA)
+                            or type(item["content_missing"]) is not bool
+                            or item["content_missing"] != (item["content"] is None)
+                            or item["research_only"] is not True or item["model_database_eligible"] is not False):
+                        raise ValueError("导出帖子字段无效")
+                    if any(item[field] is not None and type(item[field]) is not (int if field in counters else str)
+                           for field in COLUMNS):
+                        raise ValueError("导出帖子字段类型无效")
+                    if any(token in value for value in item.values() if isinstance(value, str)):
+                        raise ValueError("导出包含私密鉴权信息")
+                    count += 1
+            else:
+                # The original export permits multiline bodies; csv.reader must
+                # count records, rather than treating every newline as a post.
+                csv.field_size_limit(MAX_DOWNLOAD_FIELD)
+                text = io.TextIOWrapper(stream, encoding="utf-8-sig", errors="strict", newline="")
+                try:
+                    def lines():
+                        while True:
+                            line = text.readline(MAX_DOWNLOAD_FIELD + 1)
+                            if not line:
+                                return
+                            if len(line) > MAX_DOWNLOAD_FIELD:
+                                raise ValueError("导出单行过大")
+                            yield line
+                    reader = csv.reader(lines(), strict=True)
+                    if next(reader, None) != list(COLUMNS + EXTRA):
+                        raise ValueError("导出 CSV 表头无效")
+                    for row in reader:
+                        if time.monotonic() > deadline:
+                            raise FleetError(504, "节点导出校验超过总时限")
+                        if (len(row) != len(COLUMNS + EXTRA) or row[-3] not in {"True", "False"}
+                                or row[-2:] != ["True", "False"]):
+                            raise ValueError("导出 CSV 帖子字段无效")
+                        if any(token in value for value in row):
+                            raise ValueError("导出包含私密鉴权信息")
+                        count += 1
+                finally:
+                    text.detach()  # The artifact, rather than this wrapper, owns the file.
+            if count != expected_posts:
+                raise ValueError("导出条数与响应声明不一致")
+        except (ValueError, UnicodeError, csv.Error) as exc:
+            raise FleetError(502, "节点未返回完整有效的帖子导出文件") from exc
+        stream.seek(0)
+
+    def download(self, url, token, format):
+        """One GET into a temporary file, with a separate large-file budget."""
+        mime = "text/csv" if format == "csv" else "application/x-ndjson"
+        request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
+                                                      "Accept": mime, "Accept-Encoding": "identity"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE
+        stream = None
+        try:
+            try:
+                response = opener.open(request, timeout=DOWNLOAD_TIMEOUT)
+            except urllib.error.HTTPError as exc:
+                response = exc
+            with response:
+                if response.status in {301, 302, 303, 307, 308}:
+                    raise FleetError(502, "节点下载返回重定向；已拒绝转发鉴权信息")
+                if response.status != 200:
+                    if response.status in {401, 403}:
+                        raise FleetError(502, f"节点下载鉴权失败（HTTP {response.status}）；请检查该节点登记的令牌")
+                    if response.status == 404:
+                        raise FleetError(404, "选中节点没有帖子下载接口（HTTP 404）；未回退主控数据")
+                    raise FleetError(409 if response.status == 409 else 502, f"节点下载返回 HTTP {response.status}；未回退主控数据")
+                def header(name, required=True):
+                    values = response.headers.get_all(name, [])
+                    if len(values) > 1 or (required and not values):
+                        raise FleetError(502, "节点导出响应头缺失或重复")
+                    value = values[0] if values else None
+                    if value is not None and any(ord(c) < 32 or ord(c) > 126 for c in value):
+                        raise FleetError(502, "节点导出响应头无效")
+                    return value
+                content_type = header("Content-Type")
+                if not re.fullmatch(re.escape(mime) + r"(?:\s*;\s*charset\s*=\s*(?:utf-8|\"utf-8\"))?", content_type, re.I):
+                    raise FleetError(502, "节点下载未返回所选 CSV/JSONL 类型")
+                disposition = header("Content-Disposition")
+                matched = re.fullmatch(r'attachment;\s*filename="([A-Za-z0-9][A-Za-z0-9._-]{0,199})"', disposition, re.I)
+                if not matched or not matched[1].lower().endswith("." + format):
+                    raise FleetError(502, "节点导出文件名或下载类型无效")
+                length = header("Content-Length")
+                if not length.isdigit() or len(length) > 12 or int(length) > MAX_DOWNLOAD:
+                    raise FleetError(502, "节点导出长度无效或超过 2 GiB 上限")
+                if header("Content-Encoding", False) not in {None, "", "identity"} or header("Transfer-Encoding", False):
+                    raise FleetError(502, "节点导出使用了不支持的编码或传输长度")
+                count = header("X-Collector-Post-Count")
+                if not count.isdigit() or len(count) > 20:
+                    raise FleetError(502, "节点导出帖子条数无效")
+                snapshot = header("X-Export-Snapshot-At")
+                try:
+                    captured = datetime.fromisoformat(snapshot.replace("Z", "+00:00"))
+                    if captured.tzinfo is None:
+                        raise ValueError
+                except ValueError:
+                    raise FleetError(502, "节点导出快照时间无效") from None
+                remote_id = header("X-Collector-Instance-ID", False)
+                stream = tempfile.TemporaryFile(mode="w+b", prefix="collector-node-download-")
+                digest, received, tail = hashlib.sha256(), 0, b""
+                secret = token.encode("ascii")
+                while True:
+                    if time.monotonic() > deadline:
+                        raise FleetError(504, "节点导出下载超过 10 分钟总时限")
+                    chunk = response.read1(128 * 1024)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > int(length) or received > MAX_DOWNLOAD:
+                        raise FleetError(502, "节点导出字节数超过声明或下载上限")
+                    combined = tail + chunk
+                    if secret in combined:
+                        raise FleetError(502, "节点导出包含私密鉴权信息，已拒绝下载")
+                    tail = combined[-max(1, len(secret) - 1):]
+                    digest.update(chunk)
+                    stream.write(chunk)
+                if received != int(length):
+                    raise FleetError(502, "节点导出文件不完整，实际长度与声明不一致")
+                stream.seek(0)
+                self._validate_posts(stream, format, int(count), deadline, token)
+                result = PostsDownload(stream, received, int(count), captured.isoformat(), mime + "; charset=utf-8",
+                                       digest.hexdigest(), remote_instance_id=remote_id)
+                stream = None  # Ownership transfers only after all validation succeeds.
+                return result
+        except FleetError:
+            raise
+        except (TimeoutError, socket.timeout) as exc:
+            raise FleetError(504, "节点导出连接或响应超时") from exc
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            timeout = isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout))
+            raise FleetError(504 if timeout else 502, "节点导出连接超时" if timeout else "节点导出连接或临时文件保存失败") from exc
+        finally:
+            if stream is not None:
+                stream.close()
 
 
 class FleetManager:
@@ -431,6 +613,46 @@ class FleetManager:
         except FleetError as exc:
             self._offline(node, exc)
             raise
+
+    def download_posts(self, alias, format="jsonl"):
+        """Download this registered node's own posts; never use a merged fallback."""
+        if format not in {"csv", "jsonl"}:
+            raise ValueError("format 必须是 csv/jsonl")
+        node = self._node(alias)
+        if node["id"] == "local":
+            raise ValueError("本机导出应使用已有本机下载接口")
+        download = None
+        try:
+            self._check_status(node)
+            url = node["base_url"] + "/api/download/posts?" + urlencode({"scope": "local", "format": format})
+            download = self.client.download(url, node["token"], format)
+            if download.remote_instance_id is not None and download.remote_instance_id != node["instance_id"]:
+                raise FleetError(409, "节点导出 UUID 与登记身份不一致；已拒绝下载")
+            self._check_status(node)  # Older nodes lack identity headers; check the pinned endpoint again.
+            with self._lock:
+                if self._closed or self._nodes.get(node["id"]) != node:
+                    raise FleetError(409, "节点登记在下载期间改变；请重新选择后下载")
+            if self._redact(node["instance_id"], (node["token"],)) != node["instance_id"]:
+                raise FleetError(409, "节点身份标识与私密鉴权信息冲突；已拒绝下载")
+            safe_alias = self._redact(node["id"], (node["token"],))
+            download.node_id = safe_alias if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", safe_alias) else "node"
+            download.instance_id = node["instance_id"]
+            result, download = download, None
+            return result
+        except FleetError as exc:
+            error = self._redact(exc.error, (node["token"],))[:2000]
+            if exc.status_code in {502, 504}:
+                error += "；" + self._redact(self._connection_hint(node), (node["token"],))
+            safe = FleetError(exc.status_code, error)
+            self._offline(node, safe)
+            raise safe from None
+        except Exception:
+            safe = FleetError(502, self._redact("选中节点下载失败；" + self._connection_hint(node), (node["token"],)))
+            self._offline(node, safe)
+            raise safe from None
+        finally:
+            if download is not None:
+                download.close()
 
     def _local_get(self, path, query):
         values = {k: v if isinstance(v, list) else [str(v)] for k, v in query.items()}

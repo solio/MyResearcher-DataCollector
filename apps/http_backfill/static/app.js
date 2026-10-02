@@ -138,6 +138,23 @@
     const node = fleetData?.nodes?.find((entry) => String(first(entry, ["id", "alias"])) === id);
     return node?.name || (id === "local" ? "本机采集实例" : id);
   }
+  function downloadURL(scope, format, node = selectedNode) {
+    const path = scope === "local" && node !== "local" ? `api/nodes/${encodeURIComponent(node)}/download/posts` : "api/download/posts";
+    return new URL(`${path}?scope=${scope}&format=${format}`, document.baseURI);
+  }
+  function downloadKey(scope, format, node = selectedNode) {
+    return `${scope}:${scope === "fleet" ? "local" : node}:${format}`;
+  }
+  function downloadNodeId(node) { return String(node).replace(/[^A-Za-z0-9._-]/g, "_"); }
+  function updateDownloadLinks() {
+    for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) {
+      const link = $(`download-${scope}-${format}`);
+      link.setAttribute("href", downloadURL(scope, format).href);
+      link.setAttribute("download", "");
+      link.setAttribute("aria-disabled", String(!authenticated || downloadBusy.has(downloadKey(scope, format))));
+    }
+    display("download-node-description", `当前导出节点：${nodeName()}（${selectedNode}）。下载该节点全部已采集帖子，涵盖已留存的所有任务；与主控的“导出合并帖子”分开。导出不启动采集或同步。`);
+  }
   async function refreshFleet() {
     if (!authenticated || fleetLoading) return;
     fleetLoading = true;
@@ -189,7 +206,7 @@
     }
     if (!nodes.some((entry) => String(first(entry, ["id", "alias"])) === selectedNode)) { const option = el("option", "", `${selectedNode} · 已移除登记`); option.value = selectedNode; selector.append(option); }
     selector.value = selectedNode;
-    display("selected-node-note", `下方任务、配置、控制与记录属于 ${nodeName()}。切换只改变查看对象，不会开始或暂停采集。`);
+    display("selected-node-note", `下方任务、配置、控制、记录与当前节点导出属于 ${nodeName()}。切换只改变查看对象，不会开始或暂停采集。`);
     const merge = objectValue(data.merge), stats = objectValue(first(merge, ["aggregate", "counts", "summary"], merge));
     display("merge-sync-note", data.auto_sync === false ? "自动同步已关闭，可手动立即同步已采记录。同步只传输数据和证据，不请求股吧。" : "服务端每 60 秒同步已采记录。同步只传输数据和证据，不请求股吧。");
     display("merge-posts", number(first(stats, ["posts", "unique_posts", "post_count"])));
@@ -212,6 +229,7 @@
   async function switchNode(id, force = false) {
     if (busy || (!force && id === selectedNode)) return false;
     selectedNode = id; nodeEpoch += 1; statusGeneration += 1; pollSerial += 1; polling = false;
+    updateDownloadLinks();
     status = null; online = false; lastPoll = null; requestItems = []; latestRequestItems = [];
     pendingDeletion = null; retryNodeEpoch = null;
     for (const dialog of ["retry-dialog", "delete-dialog"]) if ($(dialog).open) { $(dialog).returnValue = "cancel"; $(dialog).close?.(); }
@@ -324,7 +342,7 @@
     $("add-node").disabled = busy || !authenticated;
     $("sync-fleet").disabled = busy || !authenticated || !fleetData;
     $("save-node").disabled = busy;
-    for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) $(`download-${scope}-${format}`).setAttribute("aria-disabled", String(!authenticated || downloadBusy.has(`${scope}-${format}`)));
+    updateDownloadLinks();
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
@@ -486,18 +504,20 @@
     display("rate-uncertainty", `网络尝试标记未知 ${number(unknown.attempt_rows)} 行 · 时间未知 ${number(unknown.timing_rows)} 行 · 未完成 ${number(unknown.unfinished_rows)} 行 · 间隔未知 ${number(unknown.pairs)} 对 · 重叠 ${number(unknown.overlaps)} 对 · 时钟异常 ${number(unknown.clock_anomalies)} 项。以上未知项不能视为遵守间隔。历史配置策略未知 ${number(policy.unknown_pairs)} 对${policy.history_truncated ? "，配置历史也有未纳入部分" : ""}；当前配置与 60 秒审计下限分别列出。`);
   }
   async function downloadPosts(scope, format) {
-    const key = `${scope}-${format}`;
+    const targetNode = scope === "fleet" ? "local" : selectedNode, targetName = nodeName(targetNode), selection = nodeEpoch;
+    const key = downloadKey(scope, format, targetNode), url = downloadURL(scope, format, targetNode);
     if (downloadBusy.has(key)) return;
     if (!authenticated) { showAuth("导出需要有效的中央控制台会话，请重新登录。"); return; }
     downloadBusy.add(key); controls();
-    const label = scope === "fleet" ? "中央合并" : "主控本机";
-    notice(`正在生成${label}帖子导出文件，不会开始或暂停采集。`);
+    const label = scope === "fleet" ? "主控中央合并" : `节点 ${targetName}（${targetNode}）`;
+    const selectionNote = () => scope === "local" && selection !== nodeEpoch ? ` 本次导出属于点击时的${label}；当前查看 ${nodeName()}（${selectedNode}）。` : "";
+    notice(`正在生成${label}的全部已采帖子导出文件，不会启动采集或同步。`);
     try {
-      const response = await fetch(new URL(`api/download/posts?scope=${scope}&format=${format}`, document.baseURI), { credentials: "same-origin", cache: "no-store", headers: { Accept: format === "csv" ? "text/csv" : "application/x-ndjson" } });
+      const response = await fetch(url, { credentials: "same-origin", cache: "no-store", headers: { Accept: format === "csv" ? "text/csv" : "application/x-ndjson" } });
       if (!response.ok) {
         let message = `导出失败，HTTP ${response.status}。`;
         if ((response.headers.get("content-type") || "").includes("application/json")) { const data = await response.json(); if (data?.error) message = textValue(data.error); }
-        if (response.status === 404) message += " 请检查主控是否已更新到支持帖子导出的版本。";
+        if (response.status === 404) message += scope === "fleet" ? " 请检查主控是否已更新到支持合并帖子导出的版本。" : ` 请检查所选节点 ${targetName}（${targetNode}）的下载接口是否已升级；不会改为导出主控本机。`;
         if (response.status === 401) showAuth("中央控制台会话已过期，请重新登录后导出。");
         throw new Error(message);
       }
@@ -505,12 +525,16 @@
       if (!/^attachment(?:;|$)/i.test(disposition)) throw new Error("导出接口未返回文件附件，未保存错误响应。请检查服务或代理配置。");
       let filename = disposition.match(/filename="([^"]+)"/i)?.[1] || `collector-${scope}-posts.${format}`;
       filename = filename.split(/[\\/]/).at(-1).replace(/[\u0000-\u001f]/g, "_");
+      if (scope === "local") {
+        const prefix = `collector-node-${downloadNodeId(targetNode)}-`;
+        if (!filename.startsWith(prefix)) filename = prefix + filename.replace(/^collector-local-/, "");
+      }
       const blob = await response.blob(), objectURL = URL.createObjectURL(blob), link = document.createElement("a");
       link.href = objectURL; link.download = filename; document.body.append(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
       const count = response.headers.get("x-collector-post-count"), snapshot = response.headers.get("x-export-snapshot-at");
-      notice(`${label}帖子文件已交给浏览器下载${count == null ? "" : " · " + number(count) + " 条"}${snapshot ? " · 快照 " + time(snapshot) : ""}。文件只包含已采记录，不代表覆盖完整。`);
-    } catch (error) { if (authenticated) notice(`未下载文件：${error.message}`, true); else authMessage("会话已过期，请重新登录后导出。", true); }
+      notice(`${label}帖子文件已交给浏览器下载${count == null ? "" : " · " + number(count) + " 条"}${snapshot ? " · 快照 " + time(snapshot) : ""}。${selectionNote()} 文件只包含已采记录，不代表覆盖完整。`);
+    } catch (error) { if (authenticated) notice(`未下载${label}帖子：${error.message}${selectionNote()}`, true); else authMessage("会话已过期，请重新登录后导出。", true); }
     finally { downloadBusy.delete(key); controls(); }
   }
   function renderBlock(data) {
@@ -994,10 +1018,13 @@
     if (removed && id === selectedNode) await switchNode("local");
   });
   $("sync-fleet").addEventListener("click", () => { void fleetMutation("fleet/sync", { node_id: "all" }, "POST", "已安排后台增量同步。同步只传输已经采集的记录与证据，不请求来源。"); });
+  updateDownloadLinks();
   for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) {
     const link = $(`download-${scope}-${format}`);
-    link.setAttribute("href", new URL(`api/download/posts?scope=${scope}&format=${format}`, document.baseURI).href);
-    link.addEventListener("click", (event) => { event.preventDefault(); void downloadPosts(scope, format); });
+    link.addEventListener("click", (event) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      event.preventDefault(); void downloadPosts(scope, format);
+    });
   }
   $("refresh").addEventListener("click", () => { void poll(); });
   for (const kind of ["requests", "events"]) for (const action of ["prev", "next", "latest"]) $(`${kind}-${action}`).addEventListener("click", () => { void loadActivity(kind, action); });

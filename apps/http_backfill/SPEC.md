@@ -1,5 +1,29 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-03 selected collector posts download
+
+The user identifies that the local export button ignores the selected control
+node. Replace its H5 meaning with export of the currently selected collector.
+Freeze the node identity/name at click time and update ordinary link targets
+when switching selection; a download completing later still belongs to the
+clicked node. Show the selected source in the button explanation and filename.
+The separate fleet download remains the hub's already merged dataset.
+
+For remote nodes, provide authenticated hub GET
+api/nodes/{alias}/download/posts?scope=local&format=csv|jsonl. The hub uses the
+registered private token to request the node's existing local posts download;
+the browser talks only to the hub. Keep legacy api/download/posts local/fleet
+semantics. Export includes that collector's retained posts across all its tasks,
+not only the selected job. It neither requests Guba nor synchronizes data.
+Verify registered instance identity, reject redirects, distinguish node auth
+failure from hub session expiry, and never fall back to hub/local/fleet data.
+Use bounded streaming to a temporary file, validate attachment/content type and
+complete length, then send HTTP 200 with hub-generated node-specific filename
+and safe origin metadata. The file path has a separate 2 GiB limit and download
+deadline from the ordinary bounded JSON client. Existing download-capable nodes
+do not require an upgrade. CSV/JSONL contents and training-import compatibility
+remain unchanged; no test suites are requested for this correction.
+
 ## 2026-10-03 current blocking alert versus retained history
 
 The user requests that old verification responses stop occupying the prominent

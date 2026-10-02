@@ -2,6 +2,36 @@
 
 Date: 2026-10-03, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: download follows the selected collector
+
+The user identifies that the H5 local-post download always uses the hub's own
+database. The selected-collector button now routes remote downloads through
+authenticated api/nodes/{alias}/download/posts at the hub and keeps fleet export
+separate. The clicked node is frozen for URL, filename and completion/error
+messages; changing selection updates ordinary link targets. Remote downloads use
+the node's existing local download API and private registry token, with UUID
+verification, no redirects or fallback, bounded file streaming and complete
+attachment validation before browser HTTP 200. Node auth errors do not expire
+the hub browser session. Data format, source acquisition and queues are unchanged.
+SPEC and README describe the new meaning. Python/JavaScript syntax and diff
+whitespace checks passed, with independent source review of both routing and
+download validation. Existing live localhost CSV and JSONL downloads each
+contained 5,609 posts and passed file/type/count validation. The new authenticated
+api/nodes/local/download/posts route also returned a verified 5,609-post JSONL;
+served H5 assets match the workspace. This local hub has no registered remote
+nodes, so live remote relay remains unverified; no fake registrations or test
+suites were created/run, and no Guba requests were used as verification.
+
+For local deployment, pause was requested and request_inflight=false confirmed,
+then only fleet.py/server.py and the two H5 assets were copied into the existing
+container and it was reloaded. The previously running job 3 for 002353 retained
+its exact configuration and resumed at the existing 60-second interval with no
+active halt. No root training database or unrelated source changes were deployed.
+The container's writable files are updated; a normal image rebuild from this
+commit makes the same change durable across container replacement. Remote
+deployment uses the original git pull / docker compose up -d --build command
+on the central H5 host. Nodes already serving api/download/posts need no upgrade.
+
 ## Latest correction: resolved block evidence leaves the alert card
 
 The user rejects a permanent prominent historical CAPTCHA alert after later

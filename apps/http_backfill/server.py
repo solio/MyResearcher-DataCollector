@@ -144,6 +144,9 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.split("/", 3)
                 if len(parts) != 4 or not parts[2] or not parts[3]:
                     raise ValueError("实例接口路径无效")
+                if method == "GET" and parts[3] == "download/posts":
+                    self.download_node_posts(parts[2], query or {})
+                    return True
                 result = fleet.proxy(parts[2], method, "api/" + parts[3], body=obj, query=query or {})
             else:
                 self.send(404, {"error": "接口不存在"})
@@ -156,6 +159,42 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.send(409, {"error": str(exc)})
         return True
+
+    def download_node_posts(self, alias, query):
+        """Selected-node downloads remain on the hub's authenticated origin."""
+        if set(query) - {"scope", "format"} or any(len(values) != 1 for values in query.values()):
+            raise ValueError("节点下载只允许单个 scope 和 format 参数")
+        scope = query.get("scope", ["local"])[0]
+        format = query.get("format", ["jsonl"])[0]
+        if scope != "local" or format not in {"csv", "jsonl"}:
+            raise ValueError("选中节点只允许 scope=local，format 必须是 csv/jsonl")
+        if alias == "local":
+            return self.download_posts({"scope": ["local"], "format": [format]})
+        with self.server.fleet.download_posts(alias, format) as download:
+            filename = (f"collector-node-{download.node_id}-{download.instance_id}-"
+                        f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.{format}")
+            if self.server.fleet._redact(filename) != filename:
+                from fleet import FleetError
+                raise FleetError(409, "节点导出文件名与私密鉴权信息冲突；已拒绝下载")
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", download.content_type)
+                self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                self.send_header("Content-Length", str(download.bytes))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Collector-Post-Count", str(download.posts))
+                self.send_header("X-Export-Snapshot-At", download.snapshot_at)
+                self.send_header("X-Collector-Node-ID", download.node_id)
+                self.send_header("X-Collector-Instance-ID", download.instance_id)
+                self.send_header("X-Export-Scope", "local")
+                self.send_header("X-Export-SHA256", download.sha256)
+                self.send_header("X-Model-Database-Eligible", "false")
+                self.end_headers()
+                for chunk in iter(lambda: download.stream.read(128 * 1024), b""):
+                    self.wfile.write(chunk)
+            except OSError:
+                self.close_connection = True  # No second JSON response after a partial file.
 
     def export_route(self, path, query):
         if not path.startswith("api/federation/"):

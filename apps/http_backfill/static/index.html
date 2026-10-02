@@ -78,7 +78,7 @@
         </div>
         <div class="data-boundary"><span aria-hidden="true">◈</span><p><strong>一条帖子对应一条记录；标题和正文是同一记录的字段，补详情不另计帖子数。</strong>默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情。未触发补详情的帖子已保留列表记录与标题，这不代表已取得完整详情。局部产出不代表日期窗口完整覆盖。</p></div>
         <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>采集数据库</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p id="storage-note" class="small-note">等待该实例返回存储布局。</p></div>
-        <div class="download-actions"><a id="download-local-csv" class="button secondary small" href="api/download/posts?scope=local&amp;format=csv" download>导出本机帖子 CSV</a><a id="download-local-jsonl" class="button secondary small" href="api/download/posts?scope=local&amp;format=jsonl" download>导出本机帖子 JSONL</a></div><p class="field-note">这里始终下载主控本机的全部已采集帖子，与当前查看的远端实例无关。若下载返回 401，请重新登录；返回 404 时请检查主控是否已更新。</p>
+        <div class="download-actions"><a id="download-local-csv" class="button secondary small" href="api/download/posts?scope=local&amp;format=csv" download>导出当前节点帖子 CSV</a><a id="download-local-jsonl" class="button secondary small" href="api/download/posts?scope=local&amp;format=jsonl" download>导出当前节点帖子 JSONL</a></div><p id="download-node-description" class="field-note">当前导出节点：本机采集实例（local）。下载当前节点全部已采集帖子，涵盖已留存的所有任务，与主控“导出合并帖子”分开；导出不启动采集或同步。</p>
       </section>
 
       <div class="workspace-grid">
