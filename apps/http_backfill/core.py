@@ -862,7 +862,7 @@ class Engine(LifecycleMixin):
                 return
             proxy_status = self.proxy.status()
             settings = proxy_status["settings"]
-            if settings["mode"] != "mayi" or not settings["auto_recover"]:
+            if settings["mode"] not in {"mayi", "qingguo"} or not settings["auto_recover"]:
                 return
             if (proxy_status.get("fallback") or {}).get("blocked"):
                 self._suspend_proxy_recovery()

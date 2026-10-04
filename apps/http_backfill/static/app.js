@@ -3,6 +3,8 @@
   const $ = (id) => document.getElementById(id);
   const display = (id, value) => { $(id).textContent = value == null || value === "" ? "—" : String(value); };
   const states = { idle: "待配置", running: "采集中", paused: "已暂停", blocked: "已拦截", error: "需要检查", completed: "任务结束" };
+  const proxyModes = { direct: "直连", http: "HTTP 代理", mayi: "动态 IP", qingguo: "青果动态 IP" };
+  const dynamicProxyMode = (mode) => ["mayi", "qingguo"].includes(mode);
   const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", detail_unavailable: "详情不可用", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", error: "异常", pending: "待处理", unknown: "结果未确认" };
   let authenticated = false;
   let status = null;
@@ -337,17 +339,24 @@
   }
   function proxyVisibility() {
     const mode = $("proxy-mode").value;
-    for (const [id, visible] of [["proxy-http-fields", mode === "http"], ["proxy-mayi-fields", mode === "mayi"], ["proxy-auth-fields", mode !== "direct" || first(proxyState, ["has_auth"], proxyState?.settings?.has_auth) === true], ["proxy-rotation-fields", mode === "mayi"], ["proxy-auto-fields", mode === "mayi"]]) {
+    const dynamic = dynamicProxyMode(mode);
+    for (const [id, visible] of [["proxy-http-fields", mode === "http"], ["proxy-mayi-fields", dynamic], ["proxy-auth-fields", mode !== "direct" || first(proxyState, ["has_auth"], proxyState?.settings?.has_auth) === true], ["proxy-rotation-fields", dynamic], ["proxy-auto-fields", dynamic]]) {
       $(id).hidden = !visible; $(id).disabled = !visible;
     }
-    const recovering = mode === "mayi" && $("proxy-auto-recover").checked;
+    display("proxy-api-label", mode === "qingguo" ? "青果国内短效 IP 提取 API（私密）" : "动态 IP 提取 API（私密）");
+    display("proxy-api-help", mode === "qingguo" ? "仅支持青果国内短效代理的新接口：share.proxy.qg.net/get 或 share.proxy.qg.net/aggregate/get。填写后台生成的完整 API URL，num=1，默认返回 JSON，无需蚂蚁的 type/mode 参数。程序读取实际到期时间；海外代理、长效代理和旧版 /allocate 暂不支持，完整 API URL 不回显。" : "使用蚂蚁生成的单 IP、HTTP、JSON 提取接口（num=1、type=2、mode=1），返回 IP、端口及到期时间。这里配置动态提取来源，不是填写一个永久静态 IP；完整 API URL 不回显。");
+    display("proxy-auth-note", mode === "qingguo" ? "青果代理认证的 Authkey / Authpwd 分别填入用户名 / 密码；使用节点出口 IP 白名单时可两项留空，若有旧认证须勾选明确移除。提取 API URL 中的 pwd 不作为代理密码。认证字段不回显，留空会保留旧值。" : "用户名和密码不回显。输入为空会保留旧值；修改密钥后输入框会清空。");
+    const savedMode = first(proxyState?.settings, ["mode"], proxyState?.mode);
+    const apiConfigured = first(proxyState, ["has_api_url"], proxyState?.settings?.has_api_url) === true;
+    $("proxy-api-url").placeholder = apiConfigured && (!dynamic || mode === savedMode) ? "已配置，留空保留" : mode === "qingguo" ? "填写青果官方生成的提取 API URL" : "填写蚂蚁生成的提取 API URL";
+    const recovering = dynamic && $("proxy-auto-recover").checked;
     $("proxy-recovery-limits").hidden = !recovering;
     $("proxy-recovery-cooldown").disabled = !recovering;
     $("proxy-recovery-max").disabled = !recovering;
     $("proxy-username").disabled = $("proxy-clear-auth").checked;
     $("proxy-password").disabled = $("proxy-clear-auth").checked;
     $("proxy-api-url").disabled = $("proxy-clear-api").checked;
-    $("proxy-api-clear-row").hidden = mode !== "mayi" && first(proxyState, ["has_api_url"], proxyState?.settings?.has_api_url) !== true;
+    $("proxy-api-clear-row").hidden = !dynamic && first(proxyState, ["has_api_url"], proxyState?.settings?.has_api_url) !== true;
   }
   function loadProxyForm(data) {
     if (proxyDirty) return;
@@ -375,11 +384,11 @@
     return safe;
   }
   function renderProxy(data) {
-    if (!data || !["direct", "http", "mayi"].includes(first(data.settings, ["mode"], data.mode))) return;
+    if (!data || !Object.hasOwn(proxyModes, first(data.settings, ["mode"], data.mode))) return;
     proxyState = data; proxySupported = true;
     const settings = objectValue(data.settings), mode = first(settings, ["mode"], data.mode);
-    const fallback = mode === "mayi" && data.effective_mode === "direct" && data.fallback ? objectValue(data.fallback) : null;
-    display("proxy-summary-state", fallback ? "动态 IP · 已回退直连" : { direct: "直连", http: "HTTP 代理", mayi: "动态 IP" }[mode]);
+    const fallback = dynamicProxyMode(mode) && data.effective_mode === "direct" && data.fallback ? objectValue(data.fallback) : null;
+    display("proxy-summary-state", fallback ? `${proxyModes[mode]} · 已回退直连` : proxyModes[mode]);
     display("proxy-config-state", proxyDirty ? "页面修改尚未保存" : "已读取保存配置");
     display("proxy-node-note", `作用节点：${nodeName()}（${selectedNode}）。这里只改变该节点的来源请求出站，手机与主控的管理连接不使用此代理。`);
     display("proxy-capability-note", "保存只修改该节点的代理配置，不会清除已有阻断、冷却或响应证据。已保存的用户名、密码和完整提取 API 不回显。");
@@ -391,17 +400,18 @@
     for (const [label, value] of [["今日提取", number(daily.count)], ["每日上限", number(first(daily, ["limit"], settings.daily_limit))], ["今日剩余", number(daily.remaining)], ["连续恢复", number(data.recovery_attempts)]]) facts.append(el("span", "", `${label} ${value}`));
     if (daily.date) facts.append(el("span", "", `额度日期 ${daily.date}`));
     if (fallback) {
-      const reasons = { provider_budget: "每日提取额度已用完", provider_unavailable: "提取服务暂不可用", provider_no_ip: "提取接口未返回 IP", provider_duplicate: "返回的 IP 仍在隔离期", provider_expiry: "返回的 IP 有效期不足", provider_auth: "提取接口认证失败", provider_schema: "提取响应格式无法识别" };
+      const reasons = { provider_budget: "每日提取额度已用完", provider_balance: "供应商余额不足", provider_unavailable: "提取服务暂不可用", provider_no_ip: "提取接口未返回 IP", provider_duplicate: "返回的 IP 仍在隔离期", provider_expiry: "返回的 IP 有效期不足", provider_auth: "提取接口认证失败", provider_schema: "提取响应格式无法识别" };
       const parts = [`当前使用 ${nodeName()} 的原直连出口，不走已配置的 HTTP 代理`, `回退原因：${reasons[fallback.reason] || "未取得可用动态 IP"}`];
       const message = safeProxyMessage(fallback.message, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
       if (message) parts.push(message);
       if (fallback.since) parts.push(`开始回退 ${time(fallback.since)}`);
-      if (fallback.manual_retry === true) parts.push("自动提取已暂停；检查 API 配置后保存，或手动更换出站后再试");
+      if (fallback.manual_retry === true) parts.push(fallback.reason === "provider_balance" ? "自动提取已暂停；充值后保存配置或手动更换出站后再试" : "自动提取已暂停；检查 API 配置后保存，或手动更换出站后再试");
       else if (fallback.retry_at) parts.push(`下次最早提取 ${time(fallback.retry_at)}，仅在有采集请求时尝试`);
       if (fallback.blocked === true) parts.push("来源已阻断直连，采集已暂停；不会自动用直连重试，检查证据后可安排单次探测");
       display("proxy-lease-note", parts.join(" · "));
     } else if (data.lease) {
-      const parts = [`候选出站：${lease.endpoint || "尚未返回"}`, `租约剩余 ${lease.remaining_seconds == null ? "—" : duration(lease.remaining_seconds)}`, `候选来源尝试 ${number(lease.requests)}`];
+      const parts = [`${mode === "qingguo" ? "代理连接端点" : "候选出站"}：${lease.endpoint || "尚未返回"}`, `租约剩余 ${lease.remaining_seconds == null ? "—" : duration(lease.remaining_seconds)}`, `候选来源尝试 ${number(lease.requests)}`];
+      if (mode === "qingguo" && lease.ip) parts.splice(1, 0, `供应商报告出口 IP ${lease.ip}`);
       const reasons = { explicit_endpoint: "使用已配置端点", initial_extraction: "首次提取", lease_expiring: "租约即将到期", elapsed_rotation: "达到使用时间", attempt_count_rotation: "达到尝试次数", manual_rotation: "手动更换" };
       if (lease.selection_reason) parts.push(`选择原因：${reasons[lease.selection_reason] || textValue(lease.selection_reason)}`);
       parts.push(lease.recent_success_at ? `最近来源核实 ${time(lease.recent_success_at)}（${outcomes[lease.recent_success_outcome] || "已核实响应"}）` : "尚未取得此候选的来源成功证据");
@@ -409,7 +419,7 @@
       display("proxy-lease-note", parts.join(" · "));
     } else display("proxy-lease-note", mode === "direct" ? "当前为直连，没有代理候选。" : "尚无候选租约。更换操作只安排下一次出站，来源结果仍须实际请求核实。");
     const suspended = first(data, ["auto_suspended"], status?.proxy?.auto_suspended) === true;
-    display("proxy-recovery-note", fallback ? "回退直连保留原采集间隔与来源冷却；遇到验证码或限流仍会暂停，不会自动重复直连请求。恢复动态 IP 后仍须由实际来源响应核实可用性。" : mode !== "mayi" || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${data.next_recovery_at ? "；下次最早 " + time(data.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
+    display("proxy-recovery-note", fallback ? "回退直连保留原采集间隔与来源冷却；遇到验证码或限流仍会暂停，不会自动重复直连请求。恢复动态 IP 后仍须由实际来源响应核实可用性。" : !dynamicProxyMode(mode) || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${data.next_recovery_at ? "；下次最早 " + time(data.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
     const error = safeProxyMessage(data.last_error, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
     $("proxy-status-error").hidden = !error; display("proxy-status-error", error);
   }
@@ -421,7 +431,7 @@
       const data = await api("proxy", "GET", undefined, target);
       if (!authenticated || selection !== nodeEpoch || generation !== statusGeneration || serial !== proxyReadSerial) return;
       const proxy = data?.proxy || data;
-      if (!["direct", "http", "mayi"].includes(first(proxy?.settings, ["mode"], proxy?.mode))) throw new Error("该节点返回的代理配置格式无法识别，需要更新节点。");
+      if (!Object.hasOwn(proxyModes, first(proxy?.settings, ["mode"], proxy?.mode))) throw new Error("该节点返回的代理配置格式无法识别，需要更新节点。");
       renderProxy(proxy); proxyError();
     } catch (error) {
       if (!authenticated || selection !== nodeEpoch || generation !== statusGeneration || serial !== proxyReadSerial) return;
@@ -469,7 +479,7 @@
     $("proxy-rotate").disabled = locked || proxySupported !== true || proxyDirty || pending || !!status?.storage_halt || (["blocked", "error"].includes(state) && status?.request_inflight);
     const proxyMode = first(proxyState?.settings, ["mode"], proxyState?.mode);
     const blockedProxy = ["blocked", "error"].includes(state);
-    display("proxy-rotate", proxyMode === "mayi" ? (blockedProxy ? "更换 IP 并单次探测" : "更换下一次出口") : (blockedProxy ? "重选出站并单次探测" : "重选下一次出站"));
+    display("proxy-rotate", dynamicProxyMode(proxyMode) ? (blockedProxy ? "更换 IP 并单次探测" : "更换下一次出口") : (blockedProxy ? "重选出站并单次探测" : "重选下一次出站"));
     proxyVisibility();
     updateDownloadLinks();
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
@@ -1099,22 +1109,22 @@
   }
   function proxyPayload() {
     const mode = $("proxy-mode").value;
-    if (!["direct", "http", "mayi"].includes(mode)) throw new Error("请选择支持的出站方式。");
-    const payload = { mode, auto_recover: mode === "mayi" && $("proxy-auto-recover").checked };
+    if (!Object.hasOwn(proxyModes, mode)) throw new Error("请选择支持的出站方式。");
+    const payload = { mode, auto_recover: dynamicProxyMode(mode) && $("proxy-auto-recover").checked };
     if (mode === "http") {
       const endpoint = $("proxy-endpoint").value.trim(); let url;
       try { url = new URL(endpoint); } catch { throw new Error("请填写所选节点可访问的 HTTP 代理端点（http://）。"); }
       if (url.protocol !== "http:" || url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)) throw new Error("代理端点应为 HTTP 地址（http://），不带路径、查询、用户名或密码；HTTPS 加密代理端点和 SOCKS 端口不适用，认证请在下方填写。");
       payload.endpoint = endpoint;
     }
-    if (mode === "mayi") {
+    if (dynamicProxyMode(mode)) {
       const seconds = proxyInteger("proxy-rotate-seconds", "按使用时间更换的秒数");
       if (seconds !== undefined && seconds > 0 && seconds < 60) throw new Error("按使用时间更换须为 0（关闭）或至少 60 秒。");
       if (seconds !== undefined) payload.rotate_seconds = seconds;
       const requests = proxyInteger("proxy-rotate-requests", "按来源尝试次数更换");
       if (requests !== undefined) payload.rotate_requests = requests;
     }
-    if (mode === "mayi") {
+    if (dynamicProxyMode(mode)) {
       payload.daily_limit = proxyInteger("proxy-daily-limit", "每天最多提取次数", 1, true);
       const apiURL = $("proxy-api-url").value.trim();
       if ($("proxy-clear-api").checked) throw new Error("动态 IP 模式需要提取 API。要移除已有 API，请先切换为直连或 HTTP 代理再保存。");
@@ -1123,6 +1133,7 @@
         if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new Error("提取 API 必须是有效的 HTTP(S) URL，不带地址认证或片段。");
         payload.api_url = apiURL;
       } else if (first(proxyState, ["has_api_url"], proxyState?.settings?.has_api_url) !== true) throw new Error("首次使用动态 IP 需要填写提取 API URL；已有配置才可以留空保留。");
+      else if (dynamicProxyMode(first(proxyState?.settings, ["mode"], proxyState?.mode)) && mode !== first(proxyState?.settings, ["mode"], proxyState?.mode)) throw new Error("切换动态 IP 供应商时，请填写新供应商生成的提取 API URL。");
       if (payload.auto_recover) {
         payload.recovery_cooldown_seconds = proxyInteger("proxy-recovery-cooldown", "恢复冷却时间", 60, true);
         payload.recovery_max_attempts = proxyInteger("proxy-recovery-max", "最大连续恢复次数", 1, true);

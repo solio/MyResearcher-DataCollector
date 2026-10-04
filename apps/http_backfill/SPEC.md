@@ -1,5 +1,45 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-04 Qingguo short-effect provider — authorized
+
+The user requests Qingguo support using its official API overview
+https://www.qg.net/doc/2145.html. Add configured mode qingguo while preserving
+existing mayi/direct/http configuration. Both dynamic providers share source
+transport, actual lease-expiry guard, node-wide persisted extraction counters,
+rotation, bounded recovery, no-IP direct fallback, source evidence and pacing.
+Switching providers does not reset the node's daily extraction/recovery counters.
+Require a matching new API URL when switching providers; blank secrets still
+preserve the current provider's configuration. No Compose/dependency/migration.
+
+Support the new domestic short-effect JSON GET endpoints share.proxy.qg.net/get
+and share.proxy.qg.net/aggregate/get.
+Require a single nonempty key and num absent or exactly 1; keep other generated
+product/account parameters, including extraction-auth pwd. Do not accept legacy
+proxy.qg.net/allocate or long-effect APIs: their contracts differ and long-effect
+deadline is release eligibility rather than expiration. Also exclude
+overseas.proxy.qg.net/get: short/global-long products share its URL and JSON, so
+they cannot be distinguished safely by this configuration. Primary docs:
+https://www.qg.net/doc/2255.html, /2713.html, /1839.html, /1863.html, /6637.html.
+
+Accept code=SUCCESS and data=[one candidate]. Connect through HTTP server
+host:port, never proxy_ip, which identifies the provider-reported exit. Validate
+server, proxy_ip and deadline (YYYY-MM-DD HH:MM:SS), applying the same 30-second
+lease margin. The official docs do not specify the naive datetime's timezone;
+Asia/Shanghai is the explicit current integration convention, not a live finding.
+Qingguo proxy Authkey/Authpwd are supplied through existing username/password,
+or both remain blank when the operator configured the provider's IP whitelist.
+API pwd remains in the private URL and is not synthesized from proxy credentials.
+See https://www.qg.net/doc/1574.html and /2283.html.
+
+Map documented auth/permission codes to manual-rearm provider_auth; invalid
+parameters/unknown schema to provider_schema; BALANCE_INSUFFICIENT to a visible
+manual-rearm provider_balance. Temporary/no-resource/rate-limit codes use the
+existing minimum-five-minute direct fallback. EXTRACT_LIMIT_EXCEEDED can be a
+minute or daily quota depending on product, so do not infer next-day recovery
+from it; only the node's own daily cap has that fixed meaning. See
+https://www.qg.net/doc/1838.html and /2259.html. No account extraction or source
+request is needed to implement this provider.
+
 ## 2026-10-04 no-IP fallback — explicitly authorized
 
 The user requires mayi extraction limits or unavailable candidates to fall back
@@ -50,7 +90,7 @@ finish-to-next-start pacing remain the contract.
 
 ### Selected-node configuration and routing
 
-Provide direct / generic HTTP endpoint / mayi dynamic extraction modes. The hub
+Provide direct / generic HTTP endpoint / mayi and Qingguo dynamic modes. The hub
 configures the selected node through authenticated GET api/proxy, POST
 api/proxy/config and POST api/proxy/rotate, with existing UUID verification for
 mutations. The node persists settings once in owner-only proxy.json outside job
@@ -63,7 +103,7 @@ recovery after the operator paused. Start/continue arms an explicitly configured
 recovery policy. No extra Compose file, node SSH setup or global proxy variables.
 
 Only source curl/urllib transport uses the chosen route. Fleet, login, health,
-exports and mayi extraction retain explicit direct transport. Environment
+exports and provider extraction retain explicit direct transport. Environment
 NO_PROXY must not bypass an explicitly selected source proxy. Both clients
 retain the existing headers, TLS checks, request timeout/body bound, and no
 transport-level origin redirects or retries. Distinguish proxy authentication,
@@ -100,7 +140,7 @@ that a detail body exists, that the exit IP caused a block, or future access.
 Reuse a lease within its observed lifetime, refreshing before it cannot cover
 the source timeout. Optional rotate_seconds (0 disables; positive at least 60)
 and rotate_requests (0 disables) choose proactive replacement between requests.
-A daily_limit >0 is required for mayi; count every attempted extraction before
+A daily_limit >0 is required for dynamic providers; count every attempted extraction before
 network I/O, including failures and duplicates, persist across restart, and use
 Shanghai calendar days. No silent per-request extraction and no retry loops
 inside fetch. A blocked/cooled or explicitly replaced candidate cannot be
@@ -110,12 +150,12 @@ source halt, Retry-After, queued target, resume anchors and interval are retaine
 Manual rotate affects the next request, leaving in-flight evidence on its old
 route. In blocked/error state it queues at most one existing paced manual probe;
 validated success leaves collection paused for manual continuation. Changing to
-direct/local mode is an explicit operator choice; configured mayi can also use
+direct/local mode is an explicit operator choice; configured dynamic modes also use
 the authorized no-IP direct fallback without rewriting its settings.
 Changing local upstream then manually rotating allows a new source probe without
 assuming the endpoint identifies its external exit.
 
-Optional auto_recover applies only to mayi and is off by default. Enabling it
+Optional auto_recover applies to dynamic providers and is off by default. Enabling it
 requires explicit recovery_cooldown_seconds >=60, recovery_max_attempts >0 and
 the daily extraction cap. After observed challenge/source 403/429, proxy connect
 failure, unavailable provider or duplicate cooled candidate, schedule exactly

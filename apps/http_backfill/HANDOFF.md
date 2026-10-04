@@ -2,6 +2,42 @@
 
 Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest addition: Qingguo short-effect dynamic HTTP provider
+
+The user authorizes adding Qingguo through the official API overview. The new
+qingguo mode reuses ProxyManager transport/expiry/budget/fallback/recovery and the
+same node configuration UI. Only URL validation, provider response/error parsing,
+and mode recognition differ. Primary evidence and supported short-effect new API
+endpoints are recorded in SPEC and README. Connect to server, retain proxy_ip as
+provider-reported exit, and parse deadline using the explicit Asia/Shanghai
+integration convention (official docs omit timezone). Proxy Authkey/Authpwd use
+the existing private username/password; extraction API pwd stays in its URL.
+
+Old allocate, long-effect and overseas products are excluded. Domestic long uses
+longterm.proxy.qg.net/get; global long and short share overseas.proxy.qg.net/get
+and the same JSON, so the final allowlist is domestic share.proxy.qg.net only.
+The deadline distinction and primary evidence are recorded in SPEC.
+The shared node daily cap is preserved when switching provider; a matching new
+API is required. Both dynamic modes keep no-IP direct fallback and blocked-direct
+suspension. Qingguo balance/auth/schema errors stop extraction until explicit
+re-arm while direct remains available. EXTRACT_LIMIT_EXCEEDED is a temporary
+fallback, not an assumed daily reset, because the code also means minute quota.
+
+Files: proxy.py, Engine dynamic-mode recognition, static app/index and
+SPEC/README/HANDOFF. No dependency, Compose entry, storage migration or automatic
+provider switching is introduced. Python AST/JavaScript syntax, diff whitespace,
+independent source review and isolated offline replays passed. Replays covered
+official Qingguo parsing, server/exit separation, source-vs-API auth isolation,
+secret redaction, cap/restart fallback, balance suspension, product-quota cooldown,
+Mayi no-code response compatibility and provider-switch counter preservation.
+The final domestic-only allowlist was verified after discovering global long and
+short share an endpoint. An Engine replay confirmed Qingguo bounded fresh-IP
+recovery at 60 seconds and direct fallback 429 stopping automatic retries, with
+three mocked source requests accurately counted. No test suite, paid extraction, Guba request,
+training import or running-collector change. Operators update nodes and the H5
+host using the existing git pull / compose rebuild command, then configure the
+selected node once. Existing direct/HTTP/mayi configurations remain compatible.
+
 ## Latest change: no-IP / extraction-cap direct fallback
 
 The user explicitly requires returning to the node's original direct exit when

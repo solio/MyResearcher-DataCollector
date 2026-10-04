@@ -31,9 +31,10 @@ LEASE_MARGIN = REQUEST_TIMEOUT + 5
 PROVIDER_TIMEOUT = 10
 PROVIDER_MAX_BODY = 1024 * 1024
 PROVIDER_RETRY_SECONDS = 300
+DYNAMIC_MODES = {"mayi", "qingguo"}
 FALLBACK_REASONS = {
     "provider_budget", "provider_unavailable", "provider_no_ip", "provider_duplicate",
-    "provider_expiry", "provider_auth", "provider_schema",
+    "provider_expiry", "provider_auth", "provider_schema", "provider_balance",
 }
 DEFAULTS = {
     "mode": "direct", "endpoint": "", "username": "", "password": "", "api_url": "",
@@ -89,6 +90,15 @@ def _endpoint(value):
         raise ValueError("endpoint 必须为无凭据的 HTTP/mixed 代理地址，例如 http://host:port；不支持 SOCKS-only") from exc
 
 
+def _api_provider(value):
+    host = (urlsplit(value).hostname or "").lower()
+    if host == "mayihttp.com" or host.endswith(".mayihttp.com"):
+        return "mayi"
+    if host == "share.proxy.qg.net":
+        return "qingguo"
+    return None
+
+
 def _api_url(value):
     value = _clean_string(value, "api_url", 8192).strip()
     if not value:
@@ -96,18 +106,34 @@ def _api_url(value):
     try:
         p = urlsplit(value)
         host = (p.hostname or "").lower()
-        if (p.scheme not in {"http", "https"} or not (host == "mayihttp.com" or host.endswith(".mayihttp.com"))
+        provider = _api_provider(value)
+        if (p.scheme not in {"http", "https"} or provider is None
                 or p.username is not None or p.password is not None or p.fragment or p.port not in {None, 80, 443}
                 or any(c.isspace() for c in value)):
             raise ValueError
         query = parse_qs(p.query, keep_blank_values=True)
-        if any(query.get(k) != [v] for k, v in {"num": "1", "type": "2", "mode": "1"}.items()):
-            raise ValueError("mayi 生成地址必须包含 num=1、type=2、mode=1，避免批量提取和错误协议")
+        if provider == "mayi":
+            if any(query.get(k) != [v] for k, v in {"num": "1", "type": "2", "mode": "1"}.items()):
+                raise ValueError("mayi 生成地址必须包含 num=1、type=2、mode=1，避免批量提取和错误协议")
+        else:
+            if p.path not in {"/get", "/aggregate/get"}:
+                raise ValueError("青果仅支持国内短效 HTTP 新接口 /get 或 /aggregate/get")
+            if len(query.get("key", [])) != 1 or not query["key"][0].strip():
+                raise ValueError("青果生成地址必须包含单个非空 key")
+            if "num" in query and query["num"] != ["1"]:
+                raise ValueError("青果生成地址的 num 必须省略或为 1，避免批量提取")
         return value
     except ValueError as exc:
-        if str(exc).startswith("mayi 生成"):
+        if str(exc).startswith(("mayi 生成", "青果")):
             raise
-        raise ValueError("api_url 必须为 mayihttp.com 域下的供应商生成 HTTP(S) URL，无重定向；优先 HTTPS") from exc
+        raise ValueError("api_url 必须为 mayihttp.com 或青果指定短效接口的生成 HTTP(S) URL，无重定向；优先 HTTPS") from exc
+
+
+def _expires_at(value):
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value):
+        raise ValueError("代理有效期格式无效")
+    # Qingguo's naive deadline uses the explicit integration convention in SPEC.
+    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=SHANGHAI).timestamp()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -188,7 +214,7 @@ class ProxyManager:
                     _endpoint(lease.get("endpoint"))
                     if not isinstance(lease.get("acquired_at"), (float, int)):
                         raise ValueError
-                    if lease.get("mode") == "mayi" and not isinstance(lease.get("expires_at"), (float, int)):
+                    if lease.get("mode") in DYNAMIC_MODES and not isinstance(lease.get("expires_at"), (float, int)):
                         raise ValueError
                 for row in state["quarantine"].values():
                     if not isinstance(row, dict) or not isinstance(row.get("until"), (float, int)):
@@ -233,7 +259,7 @@ class ProxyManager:
         text = str(value)
         for secret in secrets:
             text = text.replace(secret, "[redacted]")
-        text = re.sub(r"(?i)(?:https?://)[^\s\"'<>]*mayihttp\.com[^\s\"'<>]*", "[provider URL redacted]", text)
+        text = re.sub(r"(?i)(?:https?://)[^\s\"'<>]*(?:mayihttp\.com|qg\.net)[^\s\"'<>]*", "[provider URL redacted]", text)
         text = re.sub(r"(?i)(proxy-authorization|authorization)\s*[:=]\s*\S+(?:\s+\S+)?", r"\1: [redacted]", text)
         return text[:2000]
 
@@ -283,11 +309,13 @@ class ProxyManager:
             cfg["username"] = cfg["password"] = ""
         if partial.get("clear_api_url"):
             cfg["api_url"] = ""
-        if not isinstance(cfg["mode"], str) or cfg["mode"] not in {"direct", "http", "mayi"}:
-            raise ValueError("mode 必须为 direct、http 或 mayi")
-        if cfg["mode"] != "mayi" and "mode" in partial and "auto_recover" not in partial:
+        if not isinstance(cfg["mode"], str) or cfg["mode"] not in {"direct", "http"} | DYNAMIC_MODES:
+            raise ValueError("mode 必须为 direct、http、mayi 或 qingguo")
+        if cfg["mode"] not in DYNAMIC_MODES and "mode" in partial and "auto_recover" not in partial:
             cfg["auto_recover"] = False
         cfg["endpoint"], cfg["api_url"] = _endpoint(cfg["endpoint"]), _api_url(cfg["api_url"])
+        if cfg["mode"] in DYNAMIC_MODES and cfg["api_url"] and _api_provider(cfg["api_url"]) != cfg["mode"]:
+            raise ValueError("所选动态代理与 api_url 供应商不一致；切换供应商时请填写对应的新提取地址")
         for key in ("username", "password"):
             _clean_string(cfg[key], key)
         if bool(cfg["username"]) != bool(cfg["password"]) or ":" in cfg["username"]:
@@ -296,10 +324,10 @@ class ProxyManager:
             _number(cfg[key], key, seconds=key in {"rotate_seconds", "recovery_cooldown_seconds"})
         if cfg["mode"] == "http" and not cfg["endpoint"]:
             raise ValueError("HTTP/mixed 模式需要 endpoint")
-        if cfg["mode"] == "mayi" and (not cfg["api_url"] or cfg["daily_limit"] <= 0):
-            raise ValueError("mayi 模式需要生成 api_url 和正整数 daily_limit")
-        if cfg["auto_recover"] and (cfg["mode"] != "mayi" or cfg["recovery_cooldown_seconds"] < 60 or cfg["recovery_max_attempts"] <= 0):
-            raise ValueError("自动恢复仅支持 mayi，且冷却至少 60 秒、最大尝试必须为正整数")
+        if cfg["mode"] in DYNAMIC_MODES and (not cfg["api_url"] or cfg["daily_limit"] <= 0):
+            raise ValueError("动态代理模式需要生成 api_url 和正整数 daily_limit")
+        if cfg["auto_recover"] and (cfg["mode"] not in DYNAMIC_MODES or cfg["recovery_cooldown_seconds"] < 60 or cfg["recovery_max_attempts"] <= 0):
+            raise ValueError("自动恢复仅支持动态代理，且冷却至少 60 秒、最大尝试必须为正整数")
         return cfg
 
     def configure(self, partial_dict):
@@ -367,7 +395,7 @@ class ProxyManager:
             lease = self._state.get("lease")
             fallback = self._state.get("fallback")
             public_fallback = None
-            if fallback and cfg["mode"] == "mayi":
+            if fallback and cfg["mode"] in DYNAMIC_MODES:
                 public_fallback = {k: fallback[k] for k in ("reason", "manual_retry", "blocked")}
                 public_fallback.update(message=self.sanitize(fallback["message"]),
                                        since=_iso(fallback["since"]), retry_at=_iso(fallback["retry_at"]))
@@ -391,17 +419,17 @@ class ProxyManager:
         fallback = self._state["fallback"]
         if fallback["blocked"]:
             raise _ProxyError("provider_fallback_blocked", "回退直连已遭来源验证/限流；需人工处理，未发送来源请求")
-        return {"mode": "direct", "route_id": self._state["route_id"], "configured_mode": "mayi",
+        return {"mode": "direct", "route_id": self._state["route_id"], "configured_mode": self._state["config"]["mode"],
                 "fallback_reason": fallback["reason"], "fallback_message": self.sanitize(fallback["message"]),
                 "fallback_since": _iso(fallback["since"])}
 
     def _activate_fallback(self, reason, message):
         # Called under the state lock, before any proxy/source dispatch.
         cfg, now = self._state["config"], self.clock()
-        if cfg["mode"] != "mayi":
+        if cfg["mode"] not in DYNAMIC_MODES:
             raise _ProxyError("proxy_config_changed", "代理设置已改变；未发送来源请求")
         previous = self._state.get("fallback") or {}
-        manual = reason in {"provider_auth", "provider_schema"}
+        manual = reason in {"provider_auth", "provider_schema", "provider_balance"}
         if reason == "provider_budget":
             tomorrow = datetime.fromtimestamp(now, SHANGHAI).date() + timedelta(days=1)
             retry_at = datetime.combine(tomorrow, datetime.min.time(), tzinfo=SHANGHAI).timestamp()
@@ -440,6 +468,49 @@ class ProxyManager:
                 obj = json.loads(body.decode("utf-8"))
             except (ValueError, UnicodeError):
                 raise _ProxyError("provider_schema", "供应商未返回有效 UTF-8 JSON") from None
+        if _api_provider(api_url) == "qingguo":
+            return self._qingguo_candidate(obj)
+        return self._mayi_candidate(obj)
+
+    @staticmethod
+    def _qingguo_candidate(obj):
+        if not isinstance(obj, dict) or not isinstance(obj.get("code"), str):
+            raise _ProxyError("provider_schema", "青果未返回有效的 JSON 请求状态码")
+        code = obj["code"]
+        if code != "SUCCESS":
+            # Static descriptions only: provider messages may contain credentials.
+            if code in {"INVALID_KEY", "UNAVAILABLE_KEY", "ACCESS_DENY", "API_AUTH_DENY", "KEY_BLOCK"}:
+                raise _ProxyError("provider_auth", "青果提取认证或权限失败；使用直连，修正配置后再提取")
+            if code == "BALANCE_INSUFFICIENT":
+                raise _ProxyError("provider_balance", "青果提取余额不足；使用直连，充值后保存配置或手动更换再提取")
+            if code in {"INTERNAL_ERROR", "REQUEST_LIMIT_EXCEEDED", "NO_AVAILABLE_CHANNEL",
+                        "NO_RESOURCE_FOUND", "FAILED_OPERATION", "EXTRACT_LIMIT_EXCEEDED"}:
+                raise _ProxyError("provider_no_ip", "青果暂无可提取 IP 或提取额度受限；使用直连，至少五分钟后再提取")
+            raise _ProxyError("provider_schema", "青果提取参数错误或返回未知状态码；响应消息不回显")
+        if obj.get("data") == []:
+            raise _ProxyError("provider_no_ip", "青果未返回可用 IP；使用直连，稍后再提取")
+        if not isinstance(obj.get("data"), list) or len(obj["data"]) != 1 or not isinstance(obj["data"][0], dict):
+            raise _ProxyError("provider_schema", "青果未返回单个成功的 JSON 代理候选")
+        row = obj["data"][0]
+        try:
+            server = _clean_string(row["server"], "provider server", 2048)
+            if not server or server != server.strip() or "://" in server:
+                raise ValueError
+            p = urlsplit("http://" + server)
+            if p.port is None or p.path or p.query or p.fragment:
+                raise ValueError
+            endpoint = _endpoint("http://" + server)
+            if not isinstance(row["proxy_ip"], str) or "%" in row["proxy_ip"]:
+                raise ValueError
+            ip = str(ipaddress.ip_address(row["proxy_ip"]))
+            expires = _expires_at(row["deadline"])
+        except (KeyError, ValueError, TypeError, UnicodeError) as exc:
+            raise _ProxyError("provider_schema", "青果候选 server、proxy_ip 或 deadline 缺失/无效") from exc
+        # Proxy Authkey/Authpwd come from explicit config, independent of API pwd.
+        return {"endpoint": endpoint, "ip": ip, "port": p.port, "username": "", "password": "", "expires_at": expires}
+
+    @staticmethod
+    def _mayi_candidate(obj):
         if isinstance(obj, dict) and (obj.get("success") is False
                 or (obj.get("success") is True and obj.get("data") == [])):
             raise _ProxyError("provider_no_ip", "供应商提取失败或没有可用 IP；响应消息不回显")
@@ -460,10 +531,7 @@ class ProxyManager:
                 port = int(port)
             if type(port) is not int or not 1 <= port <= 65535:
                 raise ValueError
-            expire = row["expire_time"]
-            if not isinstance(expire, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", expire):
-                raise ValueError
-            expires = datetime.strptime(expire, "%Y-%m-%d %H:%M:%S").replace(tzinfo=SHANGHAI).timestamp()
+            expires = _expires_at(row["expire_time"])
             user, password = row.get("user") or "", row.get("pass") or ""
             _clean_string(user, "provider username")
             _clean_string(password, "provider password")
@@ -511,7 +579,7 @@ class ProxyManager:
                 daily = self._state["daily"] = {"date": self._day(), "count": 0}
             if daily["count"] >= cfg["daily_limit"]:
                 self._extract_lock.release()
-                return self._activate_fallback("provider_budget", "mayi 今日提取上限已耗尽；使用节点原直连出口，次日再提取")
+                return self._activate_fallback("provider_budget", "动态代理今日提取上限已耗尽；使用节点原直连出口，次日再提取")
             daily["count"] += 1
             generation = self._state["generation"]
             self._state["last_error"] = None
@@ -545,7 +613,7 @@ class ProxyManager:
                 if cooling and cooling["until"] > now:
                     return self._activate_fallback("provider_duplicate", "供应商重复返回冷却/待替换 IP；使用节点原直连出口")
                 self._state["quarantine"] = {k: v for k, v in self._state["quarantine"].items() if v["until"] > now}
-                lease = {**candidate, "mode": "mayi", "route_id": uuid.uuid4().hex, "acquired_at": now, "requests": 0,
+                lease = {**candidate, "mode": cfg["mode"], "route_id": uuid.uuid4().hex, "acquired_at": now, "requests": 0,
                          "selection_reason": reason, "recent_success_at": None, "recent_success_outcome": None}
                 self._state["lease"] = lease
                 self._state["fallback"] = self._state["last_error"] = None
@@ -606,7 +674,7 @@ class ProxyManager:
                 on_route(dict(public))
             except Exception:
                 raise RuntimeError("来源请求台账写入失败；未发送来源请求") from None
-        if route["mode"] == "mayi" and route["expires_at"] <= self.clock() + REQUEST_TIMEOUT:
+        if route["mode"] in DYNAMIC_MODES and route["expires_at"] <= self.clock() + REQUEST_TIMEOUT:
             try:
                 with self._lock:
                     lease = self._state.get("lease")
@@ -764,7 +832,7 @@ class ProxyManager:
                 return
             fallback = self._state.get("fallback")
             if (source_block and fallback and public.get("mode") == "direct"
-                    and public.get("configured_mode") == "mayi" and route_id == self._state["route_id"]):
+                    and public.get("configured_mode") in DYNAMIC_MODES and route_id == self._state["route_id"]):
                 fallback["blocked"] = True
             floor = now + max(60, cfg["recovery_cooldown_seconds"])
             until = max(floor, cooldown_until or 0)
@@ -780,7 +848,7 @@ class ProxyManager:
     def claim_recovery(self):
         with self._lock:
             cfg, now = self._state["config"], self.clock()
-            if cfg["mode"] != "mayi" or not cfg["auto_recover"]:
+            if cfg["mode"] not in DYNAMIC_MODES or not cfg["auto_recover"]:
                 return False
             if self._state["next_recovery_at"] and now < self._state["next_recovery_at"]:
                 return False
