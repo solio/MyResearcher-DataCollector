@@ -2,6 +2,51 @@
 
 Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest research: task routing through the existing local Clash port
+
+The user asks whether different collector tasks can select different existing
+Clash nodes while all use mixed port 7890. This is feasibility research; task
+mapping, controller writes, live Clash configuration changes and core migration
+have not been implemented or performed.
+
+Read-only local evidence on 2026-10-04: Clash for Windows runs Premium
+2022.07.07, not Mihomo. Runtime uses mixed-port 7890 and rule mode; Proxy is a
+Selector with 99 choices (choices may include groups). The current controller
+is loopback port 49961, a runtime snapshot rather than a stable deployment
+contract. The existing collector Docker container can GET its version through
+host.docker.internal. Runtime rules include GEOIP,CN,DIRECT and final MATCH,Proxy;
+no Guba/Eastmoney-specific rule was found. Sending a request to 7890 therefore
+does not itself prove a proxied exit. No Guba traffic was sent to check its
+actual route.
+
+An isolated configuration parser invocation of the installed core, using a
+removed temporary directory and no listening ports, accepts MATCH,DIRECT but
+rejects IN-USER,collector-task,DIRECT with "unsupported rule type IN-USER".
+Modern Mihomo documents IN-USER for inbound authenticated username routing:
+https://wiki.metacubex.one/config/rules/ . Its controller documents selector
+changes with PUT /proxies/{group} and a name payload:
+https://wiki.metacubex.one/api/ . New-core capabilities must not be assumed for
+this installed older core.
+
+Current collector configuration is node-wide; Engine passes URL/client/Referer
+to one ProxyManager, without job/stock route selection. Curl and urllib already
+support HTTP proxy authentication, but use the same configured credentials.
+One instance currently accepts one unfinished backfill job; it can contain
+multiple stocks and dispatches source requests serially.
+
+Two candidate designs, neither yet implemented: (1) retain the old core, route
+Guba to a dedicated collector Selector, and select its mapped node before each
+serial source request; selection is shared state, including other traffic using
+that group/rule, and independent workers can race. Do not change the everyday
+Proxy group or claim concurrent isolation. (2) migrate to a core supporting
+IN-USER, give each job/stock a distinct inbound proxy identity and map it to a
+fixed node/group through the same 7890 port; authentication and existing browser
+access must be handled in the migration rather than silently changed. HTTPS
+CONNECT reveals the target host, not the encrypted stock URL, so host rules
+alone cannot distinguish two Guba stock tasks. Preserve source pacing, halt
+semantics and list/detail route affinity. Node names do not prove distinct exit
+IPs. Persist intended selection and observed route evidence if implemented.
+
 ## Latest addition: Qingguo short-effect dynamic HTTP provider
 
 The user authorizes adding Qingguo through the official API overview. The new
