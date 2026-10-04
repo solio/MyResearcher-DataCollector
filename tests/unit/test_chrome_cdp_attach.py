@@ -106,3 +106,40 @@ def test_list_click_paging_is_allowed_here_because_the_delegate_supports_it():
 
     with pytest.raises(ValueError):
         create_eastmoney_transport("chrome-clean", list_click_paging=True)
+
+
+def test_loopback_is_exempted_from_the_http_proxy(monkeypatch):
+    """REGRESSION 2026-10-02: the environment sets HTTP_PROXY and no NO_PROXY.
+
+    Playwright's driver honours them, so `connect_over_cdp` asked the proxy for
+    `http://127.0.0.1:9222/json/version` and got `Unexpected status 502 ... This
+    does not look like a DevTools server` -- which reads as a broken browser.
+    Loopback must never be proxied.
+    """
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.setenv("NO_PROXY", "example.com")
+
+    ChromeCdpAttachTransport._exempt_loopback_from_proxy()
+
+    import os
+
+    # An existing exemption must survive where it was set...
+    assert "example.com" in os.environ["NO_PROXY"].split(",")
+    # ...and every host must be exempt in BOTH spellings, since either can be the
+    # one a given client reads.
+    for key in ("NO_PROXY", "no_proxy"):
+        hosts = os.environ[key].split(",")
+        for host in ("127.0.0.1", "localhost", "::1"):
+            assert host in hosts, f"{host} missing from {key}"
+
+
+def test_exempting_loopback_twice_does_not_duplicate_entries(monkeypatch):
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    ChromeCdpAttachTransport._exempt_loopback_from_proxy()
+    ChromeCdpAttachTransport._exempt_loopback_from_proxy()
+
+    import os
+
+    assert os.environ["NO_PROXY"].count("127.0.0.1") == 1

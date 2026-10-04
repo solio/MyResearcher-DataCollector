@@ -381,3 +381,109 @@ def test_seek_rejects_a_nonsensical_budget():
         seek_historical_page(target_to=pages[1][0], anchors=[], probe=probe, max_probes=0)
     with pytest.raises(ValueError):
         seek_historical_page(target_to=pages[1][0], anchors=[], probe=probe, safety_pages=-1)
+
+
+# ---------------------------------------------------------------------------
+# REPRODUCTION 2026-10-02 -- 603039, live run, 9 of 20 probes used
+# ---------------------------------------------------------------------------
+# Observed on a live backfill (FROM=2026-03-04): probe order
+#     130 -> 131 -> 65 -> 98 -> 114 -> 122 -> 126 -> 128 -> 129
+# and then SeekFailure("time seek exhausted valid page candidates") -- NOT the
+# probe-limit message, and only 9 probes in.
+#
+# The sequence decodes exactly as the code's own arithmetic:
+#     131 -> 65      too_old // 2
+#     65  -> 98      (65 + 131) // 2
+#     98  -> 114     (98 + 131) // 2
+#     114 -> 122     (114 + 131) // 2
+#     122 -> 126     (122 + 131) // 2
+#     126 -> 128     (126 + 131) // 2
+#     128 -> 129     (128 + 131) // 2
+#     next           (129 + 131) // 2 == 130  -- already probed
+#
+# Page 130 was the FIRST probe (the anchor's own page) and it is the page that
+# contains the target: 129 is too_new and 131 is too_old, so the answer sits
+# between them, i.e. on 130. Its measurement existed and was thrown away: with
+# an anchor present the relocation branch runs BEFORE the bracket check and
+# `continue`s, so page 130 was marked visited without being recorded as a bound.
+# The bisection then legitimately needs it back and hits the `page in visited`
+# guard, whose comment claims it is "Unreachable through the bracketed search".
+# It is reachable, and this is the path.
+
+_SEEK_PAGE_SIZE = 80
+_SEEK_SOURCE_COUNT = 39636
+_SEEK_BASE = datetime(2026, 10, 2)
+# The live shape (603039): page 130 -- the anchor's page -- SPANS the target, so
+# it satisfies neither bound; page 131 is entirely older; pages 129 and below are
+# entirely newer. That makes 129 and 131 the brackets and 130 the only page
+# between them.
+_SEEK_TARGET = _SEEK_BASE - timedelta(hours=130)
+
+
+def _monotone_probe(page_no: int) -> PageProbe:
+    """One page per hour; page 130 spans three and pages past it are shifted older.
+
+    This map is not arbitrary -- it is the shape that reproduces the live probe
+    sequence exactly (see the test below), so it pins the failure rather than
+    describing a convenient one.
+    """
+    if page_no == 130:
+        older, newer = 131, 128
+    else:
+        off = page_no if page_no <= 130 else page_no + 1
+        older, newer = off, off - 1
+    return PageProbe(
+        page_no=page_no,
+        page_min_time=_SEEK_BASE - timedelta(hours=older),
+        page_max_time=_SEEK_BASE - timedelta(hours=newer),
+        source_count=_SEEK_SOURCE_COUNT,
+        page_size=_SEEK_PAGE_SIZE,
+    )
+
+
+def test_a_page_the_relocation_discards_can_still_be_probed_again():
+    """The seek must not abort on a page it relocated away from.
+
+    Live reproduction (603039, 2026-10-02), probe order
+
+        130 -> 131 -> 65 -> 98 -> 114 -> 122 -> 126 -> 128 -> 129
+
+    and then SeekFailure("time seek exhausted valid page candidates") after 9 of
+    the 20 allowed probes -- note, NOT the probe-limit message.
+
+    Page 130 is the anchor's page and the FIRST probe. The relocation branch
+    (`predicted = predict_page(...)`, applied before any bracket check on purpose
+    -- `test_case1_source_count_drift_predicts_without_page1` pins that) moves the
+    search to 131. What made it fatal is that 130 had already been added to
+    `visited`: the bisection converges on the adjacent pair 129/131, its next
+    midpoint is (129+131)//2 == 130, and the guard turns that probe into an abort.
+    130 spans the target, so re-probing it answers the question.
+    """
+    anchor = PageAnchor(
+        source="eastmoney_guba",
+        stock_code="603039",
+        observed_at=datetime(2026, 9, 30),
+        page_no=130,
+        page_min_time=_SEEK_BASE - timedelta(hours=131),
+        page_max_time=_SEEK_BASE - timedelta(hours=128),
+        # 80 fewer records than the live page reports -> predict_page shifts +1,
+        # i.e. to 131, which is what made the relocation branch fire.
+        source_count=_SEEK_SOURCE_COUNT - _SEEK_PAGE_SIZE,
+        page_size=_SEEK_PAGE_SIZE,
+    )
+    calls: list[int] = []
+
+    def probe(page_no: int) -> PageProbe:
+        calls.append(page_no)
+        return _monotone_probe(page_no)
+
+    proof = seek_historical_page(target_to=_SEEK_TARGET, anchors=[anchor], probe=probe)
+
+    # The first nine probes are the live sequence, verbatim. Before the fix the
+    # tenth was (129+131)//2 == 130 -> `page in visited` -> SeekFailure; now it
+    # is a real probe that brackets the target.
+    assert calls[:9] == [130, 131, 65, 98, 114, 122, 126, 128, 129], calls
+    assert calls[9] == 130, calls
+    assert proof.verified_page == 130
+    assert proof.verified_page_min_time <= _SEEK_TARGET <= proof.verified_page_max_time
+    assert proof.probe_count <= 20

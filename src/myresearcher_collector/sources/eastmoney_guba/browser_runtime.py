@@ -404,6 +404,26 @@ class ChromeCdpAttachTransport(ManagedChromiumTransport):
             flush=True,
         )
 
+    @staticmethod
+    def _exempt_loopback_from_proxy() -> None:
+        """Keep the DevTools endpoint off the HTTP proxy (2026-10-02).
+
+        This environment exports HTTP_PROXY/HTTPS_PROXY and no NO_PROXY, and
+        Playwright's driver honours them -- so `connect_over_cdp` asked the proxy
+        for `http://127.0.0.1:9222/json/version` and came back
+        `Unexpected status 502 ... This does not look like a DevTools server`,
+        which reads like a broken browser rather than a proxy. Loopback is never
+        supposed to be proxied, so make that explicit for this process instead of
+        asking every caller to remember `NO_PROXY=127.0.0.1`.
+        """
+        wanted = ("127.0.0.1", "localhost", "::1")
+        for key in ("NO_PROXY", "no_proxy"):
+            current = [h.strip() for h in os.environ.get(key, "").split(",") if h.strip()]
+            for host in wanted:
+                if host not in current:
+                    current.append(host)
+            os.environ[key] = ",".join(current)
+
     def _ensure_started(self) -> None:
         if self.delegate is not None:
             return
@@ -412,6 +432,7 @@ class ChromeCdpAttachTransport(ManagedChromiumTransport):
         except ImportError as exc:
             raise RuntimeError("chrome-cdp requires optional Playwright dependency") from exc
         self._playwright = sync_playwright().start()
+        self._exempt_loopback_from_proxy()
         try:
             self.browser = self._playwright.chromium.connect_over_cdp(self.endpoint)
         except Exception as exc:  # noqa: BLE001

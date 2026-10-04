@@ -22,10 +22,16 @@
 #   `plan_backfill` sets time_seek_eligible only when neither an explicit start
 #   page nor a resume row exists. Time-seek picks its first page from
 #   `backfill_page_anchors`, which are stale by however long collection was
-#   paused. With a ~2-week-old anchor it predicts a far page, then walks with an
-#   exponentially growing step whose direction is "toward lower page numbers",
-#   undershoots page 0 and raises `time seek exhausted valid page candidates`
-#   (observed 2026-09-16: 601888, status=COLLECTION_FAILED, pages_scanned=0).
+#   paused. Its implementation is a BRACKETED search over the page number
+#   (`page_anchor.seek_historical_page`) -- NOT a step walk, which is what this
+#   comment described until 2026-10-02 and what made a live failure hard to read.
+#   It probes the anchor's page first, relocates it by the count drift, then
+#   halves the interval between the known bounds, bounded by `max_probes=20`.
+#   It can still fail (`time seek exhausted valid page candidates`), which halts
+#   the stock: observed 2026-09-16 on 601888, and again 2026-10-02 on 603039
+#   after only 9 of its 20 probes (root cause -- a relocated page was marked
+#   visited without being recorded as a bound -- fixed in page_anchor.py that
+#   same day, with the reproduction pinned in tests/unit/test_page_anchor.py).
 #   For a range whose top is "now" the newest page IS page 1, so an explicit
 #   --start-page 1 skips the fragile seek AND still sets coverage_eligible=True
 #   (start_page == 1), which is what makes a completed run count as proof.

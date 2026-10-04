@@ -155,11 +155,7 @@ def seek_historical_page(
         if page < 1:
             raise SeekFailure("time seek exhausted valid page candidates")
         if page in visited:
-            # Unreachable through the bracketed search below; kept as a cheap
-            # invariant so a future edit that reintroduces free stepping fails
-            # loudly instead of quietly burning the probe budget.
             raise SeekFailure("time seek exhausted valid page candidates")
-        visited.add(page)
         current = probe(page)
         seen[page] = current
 
@@ -186,8 +182,27 @@ def seek_historical_page(
                 and predicted >= 1
                 and predicted not in visited
             ):
+                    # RELOCATED PAGES ARE NOT SEARCHED SQUARES (2026-10-02). This
+                # branch preempts the bracket check on purpose (see the comment
+                # above, pinned by test_case1_source_count_drift_predicts_without_page1),
+                # so the page's measurement is deliberately not used here -- but
+                # it must stay RE-PROBEABLE, because the bisection can compute
+                # its way back onto it and then has nothing else to try.
+                #
+                # It used to be added to `visited` before this branch, which made
+                # the returning midpoint an abort instead of a probe:
+                #   603039 -> 130 (anchor page, which DOES bracket the target)
+                #   -> 131 -> 65 -> 98 -> 114 -> 122 -> 126 -> 128 -> 129, then
+                #   (129+131)//2 == 130 was in `visited` -> SeekFailure after 9
+                #   of 20 probes, with the answer already measured once.
+                # Marking only the pages actually used as bounds also means
+                # `probe_count` counts searched squares rather than requests.
                 page = predicted
                 continue
+
+        # Only now is this page a searched square: it either proves the target
+        # or becomes one of the two bounds.
+        visited.add(current.page_no)
 
         if current.page_min_time <= target_to <= current.page_max_time:
             return proof_for(current, start_page=current.page_no - safety_pages)
