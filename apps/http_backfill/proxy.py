@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import base64
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import http.client
 import ipaddress
 import json
@@ -30,6 +30,11 @@ REQUEST_TIMEOUT = 25
 LEASE_MARGIN = REQUEST_TIMEOUT + 5
 PROVIDER_TIMEOUT = 10
 PROVIDER_MAX_BODY = 1024 * 1024
+PROVIDER_RETRY_SECONDS = 300
+FALLBACK_REASONS = {
+    "provider_budget", "provider_unavailable", "provider_no_ip", "provider_duplicate",
+    "provider_expiry", "provider_auth", "provider_schema",
+}
 DEFAULTS = {
     "mode": "direct", "endpoint": "", "username": "", "password": "", "api_url": "",
     "rotate_seconds": 0, "rotate_requests": 0, "daily_limit": 0,
@@ -154,7 +159,7 @@ class ProxyManager:
             "schema": SCHEMA, "config": dict(DEFAULTS), "generation": 0,
             "route_id": uuid.uuid4().hex, "lease": None, "quarantine": {},
             "daily": {"date": self._day(), "count": 0}, "recovery_attempts": 0,
-            "next_recovery_at": None, "last_error": None,
+            "next_recovery_at": None, "last_error": None, "fallback": None,
         }
         if self.path.exists() or self.path.is_symlink():
             if self.path.is_symlink() or not self.path.is_file():
@@ -188,6 +193,16 @@ class ProxyManager:
                 for row in state["quarantine"].values():
                     if not isinstance(row, dict) or not isinstance(row.get("until"), (float, int)):
                         raise ValueError
+                fallback = state.get("fallback")
+                if fallback is not None:
+                    if (not isinstance(fallback, dict) or fallback.get("reason") not in FALLBACK_REASONS
+                            or not isinstance(fallback.get("since"), (float, int))
+                            or type(fallback.get("manual_retry")) is not bool
+                            or type(fallback.get("blocked")) is not bool
+                            or (fallback.get("retry_at") is not None
+                                and not isinstance(fallback["retry_at"], (float, int)))):
+                        raise ValueError
+                    _clean_string(fallback.get("message"), "fallback message", 2000)
                 self._state.update(state)
                 self._remember(self._state["config"])
                 self._remember(self._state.get("lease") or {})
@@ -291,7 +306,7 @@ class ProxyManager:
         with self._lock:
             cfg = self._validate(partial_dict)
             self._remember(cfg)
-            if cfg != self._state["config"]:
+            if cfg != self._state["config"] or self._state.get("fallback"):
                 previous = copy.deepcopy(self._state)
                 self._state["config"] = cfg
                 self._invalidate("config_changed", exclude=False)
@@ -306,7 +321,7 @@ class ProxyManager:
                 self._save()
             return self.status()
 
-    def _invalidate(self, reason, *, exclude):
+    def _invalidate(self, reason, *, exclude, clear_fallback=True):
         lease = self._state.get("lease")
         if exclude and lease and lease.get("ip"):
             expiry = max(self.clock() + 60, lease.get("expires_at") or 0)
@@ -314,6 +329,8 @@ class ProxyManager:
         self._state["generation"] += 1
         self._state["route_id"] = uuid.uuid4().hex
         self._state["lease"] = None
+        if clear_fallback:
+            self._state["fallback"] = None
 
     def rotate(self):
         with self._lock:
@@ -327,6 +344,20 @@ class ProxyManager:
                 raise
             return self.status()
 
+    def prepare_manual_probe(self):
+        with self._lock:
+            fallback = self._state.get("fallback")
+            if not fallback or not fallback["blocked"]:
+                return
+            previous = copy.deepcopy(self._state)
+            self._invalidate("manual_direct_probe", exclude=False, clear_fallback=False)
+            fallback["blocked"] = False
+            try:
+                self._save()
+            except Exception:
+                self._state = previous
+                raise
+
     def status(self):
         with self._lock:
             cfg = self._state["config"]
@@ -334,6 +365,12 @@ class ProxyManager:
             settings.update(has_auth=bool(cfg["username"]), has_api_url=bool(cfg["api_url"]))
             daily = self._state["daily"] if self._state["daily"].get("date") == self._day() else {"date": self._day(), "count": 0}
             lease = self._state.get("lease")
+            fallback = self._state.get("fallback")
+            public_fallback = None
+            if fallback and cfg["mode"] == "mayi":
+                public_fallback = {k: fallback[k] for k in ("reason", "manual_retry", "blocked")}
+                public_fallback.update(message=self.sanitize(fallback["message"]),
+                                       since=_iso(fallback["since"]), retry_at=_iso(fallback["retry_at"]))
             public_lease = None
             if lease:
                 public_lease = {k: lease.get(k) for k in ("route_id", "endpoint", "ip", "port", "requests", "selection_reason", "recent_success_outcome")}
@@ -342,12 +379,41 @@ class ProxyManager:
                 public_lease["remaining_seconds"] = max(0, round(lease["expires_at"] - self.clock(), 1)) if lease.get("expires_at") else None
             return {
                 "settings": settings, "mode": cfg["mode"], "has_api_url": settings["has_api_url"], "has_auth": settings["has_auth"],
+                "effective_mode": "direct" if public_fallback else cfg["mode"], "fallback": public_fallback,
                 "daily_extractions": {"date": daily["date"], "count": daily["count"], "limit": cfg["daily_limit"], "remaining": max(0, cfg["daily_limit"] - daily["count"])},
                 "lease": public_lease, "recovery_attempts": self._state["recovery_attempts"],
                 "last_error": self._storage_error or (self.sanitize(self._state["last_error"]) if self._state["last_error"] else None),
                 "next_recovery_at": _iso(self._state["next_recovery_at"]),
                 "cooling_candidates": sum(v["until"] > self.clock() for v in self._state["quarantine"].values()),
             }
+
+    def _fallback_route(self):
+        fallback = self._state["fallback"]
+        if fallback["blocked"]:
+            raise _ProxyError("provider_fallback_blocked", "回退直连已遭来源验证/限流；需人工处理，未发送来源请求")
+        return {"mode": "direct", "route_id": self._state["route_id"], "configured_mode": "mayi",
+                "fallback_reason": fallback["reason"], "fallback_message": self.sanitize(fallback["message"]),
+                "fallback_since": _iso(fallback["since"])}
+
+    def _activate_fallback(self, reason, message):
+        # Called under the state lock, before any proxy/source dispatch.
+        cfg, now = self._state["config"], self.clock()
+        if cfg["mode"] != "mayi":
+            raise _ProxyError("proxy_config_changed", "代理设置已改变；未发送来源请求")
+        previous = self._state.get("fallback") or {}
+        manual = reason in {"provider_auth", "provider_schema"}
+        if reason == "provider_budget":
+            tomorrow = datetime.fromtimestamp(now, SHANGHAI).date() + timedelta(days=1)
+            retry_at = datetime.combine(tomorrow, datetime.min.time(), tzinfo=SHANGHAI).timestamp()
+        else:
+            retry_at = None if manual else now + max(PROVIDER_RETRY_SECONDS, cfg["recovery_cooldown_seconds"])
+        self._invalidate("provider_fallback", exclude=False, clear_fallback=False)
+        self._state["fallback"] = {"reason": reason, "message": self.sanitize(message),
+                                   "since": previous.get("since", now), "retry_at": retry_at,
+                                   "manual_retry": manual, "blocked": previous.get("blocked", False)}
+        self._state["last_error"] = self._state["fallback"]["message"]
+        self._save()
+        return self._fallback_route()
 
     def _provider(self, api_url):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
@@ -374,6 +440,9 @@ class ProxyManager:
                 obj = json.loads(body.decode("utf-8"))
             except (ValueError, UnicodeError):
                 raise _ProxyError("provider_schema", "供应商未返回有效 UTF-8 JSON") from None
+        if isinstance(obj, dict) and (obj.get("success") is False
+                or (obj.get("success") is True and obj.get("data") == [])):
+            raise _ProxyError("provider_no_ip", "供应商提取失败或没有可用 IP；响应消息不回显")
         if (not isinstance(obj, dict) or obj.get("success") is not True
                 or ("code" in obj and (type(obj["code"]) is not int or obj["code"] != 200))
                 or not isinstance(obj.get("data"), list) or len(obj["data"]) != 1):
@@ -420,6 +489,9 @@ class ProxyManager:
                              "recent_success_outcome": None}
                     self._state["lease"] = lease
                 return dict(lease)
+            fallback = self._state.get("fallback")
+            if fallback and (fallback["manual_retry"] or now < fallback["retry_at"]):
+                return self._fallback_route()
             lease = self._state.get("lease")
             reason = "initial_extraction"
             if lease:
@@ -431,7 +503,7 @@ class ProxyManager:
                     reason = "attempt_count_rotation"
                 else:
                     return dict(lease)
-                self._invalidate(reason, exclude=True)
+                self._invalidate(reason, exclude=True, clear_fallback=False)
             if not self._extract_lock.acquire(blocking=False):
                 raise _ProxyError("provider_busy", "已有供应商提取进行中；本次未发送来源请求")
             daily = self._state["daily"]
@@ -439,7 +511,7 @@ class ProxyManager:
                 daily = self._state["daily"] = {"date": self._day(), "count": 0}
             if daily["count"] >= cfg["daily_limit"]:
                 self._extract_lock.release()
-                raise _ProxyError("provider_budget", "mayi 今日提取预算已耗尽")
+                return self._activate_fallback("provider_budget", "mayi 今日提取上限已耗尽；使用节点原直连出口，次日再提取")
             daily["count"] += 1
             generation = self._state["generation"]
             self._state["last_error"] = None
@@ -449,7 +521,15 @@ class ProxyManager:
                 self._extract_lock.release()
                 raise
         try:
-            candidate = self._provider(cfg["api_url"])
+            try:
+                candidate = self._provider(cfg["api_url"])
+            except _ProxyError as exc:
+                with self._lock:
+                    if generation != self._state["generation"]:
+                        raise _ProxyError("proxy_config_changed", "提取期间代理设置已改变；未发送来源请求") from None
+                    if exc.kind in FALLBACK_REASONS:
+                        return self._activate_fallback(exc.kind, str(exc))
+                raise
             # Provider lease auth is authoritative; explicit account credentials
             # are only a fallback for a candidate without returned user/pass.
             if not candidate.get("username") and cfg["username"]:
@@ -460,14 +540,15 @@ class ProxyManager:
                     raise _ProxyError("proxy_config_changed", "提取期间代理设置已改变；候选未用于来源请求")
                 now = self.clock()
                 if candidate["expires_at"] <= now + LEASE_MARGIN:
-                    raise _ProxyError("provider_expiry", "代理租约剩余时间不足 30 秒；未发送来源请求")
+                    return self._activate_fallback("provider_expiry", "代理租约剩余不足 30 秒；使用节点原直连出口")
                 cooling = self._state["quarantine"].get(candidate["ip"])
                 if cooling and cooling["until"] > now:
-                    raise _ProxyError("provider_duplicate", "供应商重复返回冷却/待替换 IP；未发送来源请求")
+                    return self._activate_fallback("provider_duplicate", "供应商重复返回冷却/待替换 IP；使用节点原直连出口")
                 self._state["quarantine"] = {k: v for k, v in self._state["quarantine"].items() if v["until"] > now}
                 lease = {**candidate, "mode": "mayi", "route_id": uuid.uuid4().hex, "acquired_at": now, "requests": 0,
                          "selection_reason": reason, "recent_success_at": None, "recent_success_outcome": None}
                 self._state["lease"] = lease
+                self._state["fallback"] = self._state["last_error"] = None
                 self._save()
                 return dict(lease)
         finally:
@@ -475,7 +556,8 @@ class ProxyManager:
 
     @staticmethod
     def _public_route(route, started):
-        return {k: route[k] for k in ("mode", "route_id", "endpoint", "ip", "port") if k in route} | {
+        return {k: route[k] for k in ("mode", "route_id", "endpoint", "ip", "port", "configured_mode",
+                                     "fallback_reason", "fallback_message", "fallback_since") if k in route} | {
             "lease_expires_at": _iso(route.get("expires_at")), "exit_identity": "provider_candidate" if route.get("ip") else "unknown",
             "source_started_at": started,
         }
@@ -525,9 +607,24 @@ class ProxyManager:
             except Exception:
                 raise RuntimeError("来源请求台账写入失败；未发送来源请求") from None
         if route["mode"] == "mayi" and route["expires_at"] <= self.clock() + REQUEST_TIMEOUT:
-            public["source_attempted"] = False
-            return core.Response(None, b"", {}, url, "落盘期间代理租约余量不足；未发送来源请求", network_attempted=False,
-                                 proxy=public, proxy_error="provider_expiry")
+            try:
+                with self._lock:
+                    lease = self._state.get("lease")
+                    if not lease or lease["route_id"] != route["route_id"]:
+                        raise _ProxyError("proxy_config_changed", "落盘期间出口已改变；未发送来源请求")
+                    route = self._activate_fallback("provider_expiry", "落盘期间代理租约余量不足；使用节点原直连出口")
+            except Exception as exc:
+                public["source_attempted"] = False
+                return core.Response(None, b"", {}, url, self.sanitize(str(exc)), network_attempted=False,
+                                     proxy=public, proxy_error=exc.kind if isinstance(exc, _ProxyError) else "proxy_state")
+            public = self._public_route(route, self.clock())
+            if on_route is not None:
+                try:
+                    on_route(dict(public))
+                except Exception:
+                    public["source_attempted"] = False
+                    return core.Response(None, b"", {}, url, "回退来源请求台账写入失败；未发送来源请求",
+                                         network_attempted=False, proxy=public, proxy_error="proxy_state")
         if route["mode"] == "direct":
             response = core.fetch(url, client, referer=referer)
         elif client == "curl":
@@ -665,6 +762,10 @@ class ProxyManager:
             source_block = outcome in {"access_block", "blocked", "challenge", "http_block", "rate_limited"} or (response.status in {403, 429} and not pe)
             if not source_block and not pe:
                 return
+            fallback = self._state.get("fallback")
+            if (source_block and fallback and public.get("mode") == "direct"
+                    and public.get("configured_mode") == "mayi" and route_id == self._state["route_id"]):
+                fallback["blocked"] = True
             floor = now + max(60, cfg["recovery_cooldown_seconds"])
             until = max(floor, cooldown_until or 0)
             if public.get("ip"):
@@ -683,12 +784,11 @@ class ProxyManager:
                 return False
             if self._state["next_recovery_at"] and now < self._state["next_recovery_at"]:
                 return False
-            daily = self._state["daily"] if self._state["daily"].get("date") == self._day() else {"count": 0}
             error = None
             if self._state["recovery_attempts"] >= cfg["recovery_max_attempts"]:
                 error = "自动恢复尝试预算已耗尽；需人工处理"
-            elif daily["count"] >= cfg["daily_limit"]:
-                error = "mayi 今日提取预算已耗尽；自动恢复未发请求"
+            elif (self._state.get("fallback") or {}).get("blocked"):
+                error = "直连回退已遭来源验证/限流；自动恢复已暂停，需人工处理"
             if error:
                 if self._state["last_error"] != error:
                     self._state["last_error"] = error
@@ -696,6 +796,6 @@ class ProxyManager:
                 return False
             self._state["recovery_attempts"] += 1
             self._state["next_recovery_at"] = now + cfg["recovery_cooldown_seconds"]
-            self._invalidate("recovery_claim", exclude=True)
+            self._invalidate("recovery_claim", exclude=True, clear_fallback=False)
             self._save()
             return True

@@ -2,6 +2,46 @@
 
 Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: no-IP / extraction-cap direct fallback
+
+The user explicitly requires returning to the node's original direct exit when
+mayi cannot provide an IP. This supersedes older no-fallback and extraction-cap
+halt statements below. Configured mayi remains saved. proxy.py selects direct
+before any proxy/source attempt for local cap, provider failure/empty candidate,
+insufficient expiry or cooled duplicate; auth/schema failure also selects direct
+but pauses extraction until settings save/manual rotate. Local cap waits until
+the next Shanghai day; transient failures wait at least 300 seconds or the
+longer configured recovery cooldown, retaining counters across restart. Legacy
+proxy.json files need no migration. Storage/config/concurrency errors still
+prevent dispatch. Neither a proxy CONNECT attempt nor a source attempt is retried
+through direct in the same fetch.
+
+Status includes effective_mode and sanitized fallback state; request analysis
+records actual direct mode, configured mayi and fallback reason. H5 displays the
+direct fallback explicitly. Direct uses existing curl noproxy / urllib no-proxy
+transport and does not change host VPN/TUN/routing. Pacing, original targets,
+source validators and evidence remain. Engine allows an otherwise permitted
+bounded recovery probe despite exhausted extraction cap, but suspends automatic
+recovery if fallback direct encounters source verification/403/429. Explicit
+manual retry permits one original paced probe; it does not arm auto recovery or
+clear the original halt/evidence before source validation. Manual rotate or a
+configuration save can also prepare the next request. Provider auth/schema
+extraction suspension is re-armed only by rotate/save, not ordinary manual retry.
+
+Source/response changes are limited to proxy.py and Engine proxy scheduling;
+static app/index and SPEC/README/HANDOFF record the operator behavior. Verification
+passed Python AST/JavaScript syntax, diff whitespace, independent source review
+and isolated temporary-directory replays: cap/restart/day rollover, five-minute
+no-IP backoff, restored mayi candidate, auth extraction suspension/manual save,
+direct block suspension, generation race, no-send fallback ledger failure and
+storage lockout. An Engine replay verifies direct 429 stops automatic recovery,
+manual retry retains original evidence and the 120-second Retry-After floor,
+and only its two mocked source dispatches count as source requests. These checks
+use mocked transport and removed temporary state;
+no test suite, supplier/source network, training import or live-task change.
+Update mayi collector nodes and the H5 host using the existing git pull / compose
+rebuild command; the existing local container is not automatically restarted.
+
 ## Latest correction: official mayi success JSON without code
 
 The user provided the supplier's API example with success=true, message and a

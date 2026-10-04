@@ -794,7 +794,7 @@ class Engine(LifecycleMixin):
             self._event("paused", "人工暂停；不会发起后续请求")
         return self.status()
 
-    def retry(self):
+    def retry(self, *, automatic=False):
         with self._mutex:
             if self._get("storage_halt"):
                 self._sync_storage()
@@ -806,6 +806,8 @@ class Engine(LifecycleMixin):
                 raise RuntimeError("请先暂停任务再单次探测")
             if not self._target(probe_target=True):
                 raise RuntimeError("没有待请求目标")
+            if not automatic:
+                self.proxy.prepare_manual_probe()
             self._set("probe", True)
             self._suspend_proxy_recovery()
             self._set("state", "running")
@@ -858,8 +860,13 @@ class Engine(LifecycleMixin):
             if halt == "proxy_error" and self._get("last_proxy_error") not in {
                     "proxy_connect", "provider_unavailable", "provider_duplicate"}:
                 return
-            settings = self.proxy.status()["settings"]
+            proxy_status = self.proxy.status()
+            settings = proxy_status["settings"]
             if settings["mode"] != "mayi" or not settings["auto_recover"]:
+                return
+            if (proxy_status.get("fallback") or {}).get("blocked"):
+                self._suspend_proxy_recovery()
+                self._event("proxy_direct_fallback_blocked", "回退直连遭来源验证/限流，自动恢复已暂停；需要人工处理")
                 return
             target = self._target(probe_target=True)
             if (not target or self._get("halted_probe_only", False)
@@ -872,12 +879,11 @@ class Engine(LifecycleMixin):
                 return
             if not self.proxy.claim_recovery():
                 proxy_status = self.proxy.status()
-                if (proxy_status["recovery_attempts"] >= settings["recovery_max_attempts"]
-                        or proxy_status["daily_extractions"]["remaining"] == 0):
+                if proxy_status["recovery_attempts"] >= settings["recovery_max_attempts"]:
                     self._suspend_proxy_recovery()
-                    self._event("proxy_recovery_exhausted", "代理恢复/提取预算耗尽，自动恢复已暂停；需要人工处理")
+                    self._event("proxy_recovery_exhausted", "连续恢复尝试预算耗尽，自动恢复已暂停；需要人工处理")
                 return
-            self.retry()
+            self.retry(automatic=True)
             self._set("proxy_auto_suspended", False)
             self._set("proxy_auto_probe", True)
             self._event("proxy_recovery_scheduled", "动态代理单次恢复已排队；仍受原限速和来源冷却约束")

@@ -1,5 +1,32 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-04 no-IP fallback — explicitly authorized
+
+The user requires mayi extraction limits or unavailable candidates to fall back
+automatically to the collector node's original direct transport. This supersedes
+the earlier no-automatic-fallback and extraction-budget-halts-collection policy.
+Keep configured mayi mode and credentials so a later request can return to mayi.
+Existing usable leases are reused; fallback is selected only before any source
+or proxy CONNECT attempt, never as a second source attempt in the same tick.
+
+Local extraction cap exhaustion uses direct until the next Shanghai day.
+Provider failure/empty candidates, duplicate cooled candidates, or insufficient
+expiry use direct and delay the next extraction by at least five minutes (or the
+longer configured recovery cooldown). Provider auth/schema errors also use direct,
+but suspend extraction until explicit settings save or manual rotation. All
+extraction attempts, including failures, still count against the persisted cap.
+Storage, configuration races and extraction concurrency errors remain no-send
+failures, rather than being masked as provider unavailability.
+
+Public status and each source request record actual direct fallback separately
+from configured mayi mode, with sanitized reason and next extraction time. No
+proxy credentials are attached to the direct request. Use core.fetch's explicit
+environment-proxy bypass. Original global interval, Retry-After, halt evidence,
+task/anchor state and source validation apply. A direct fallback source block
+stops collection and suspends automatic recovery; only an explicit manual action
+may arrange another paced probe. Reaching the IP extraction cap alone does not
+prevent an otherwise permitted, bounded recovery probe through direct transport.
+
 ## 2026-10-04 compact output toolbar
 
 The user asks to merge database status and selected-node CSV/JSONL exports into
@@ -64,7 +91,8 @@ Accept success=true/data=[one candidate], including the user-provided official
 example without a code field. If code is present, require integer 200; an explicit
 contradictory or malformed code remains failure. Validate IP/port, optional
 user/pass and actual Shanghai expire_time. Missing or insufficient
-expiry is failure, not an invented lease. A new candidate remains source-
+expiry cannot become an invented lease; select direct fallback under the latest
+amendment. A new candidate remains source-
 unverified until the existing validators accept real_data or a validated
 unavailable-detail response; this dated reachability evidence does not imply
 that a detail body exists, that the exit IP caused a block, or future access.
@@ -82,7 +110,8 @@ source halt, Retry-After, queued target, resume anchors and interval are retaine
 Manual rotate affects the next request, leaving in-flight evidence on its old
 route. In blocked/error state it queues at most one existing paced manual probe;
 validated success leaves collection paused for manual continuation. Changing to
-direct/local mode is an explicit operator choice, with no automatic fallback.
+direct/local mode is an explicit operator choice; configured mayi can also use
+the authorized no-IP direct fallback without rewriting its settings.
 Changing local upstream then manually rotating allows a new source probe without
 assuming the endpoint identifies its external exit.
 
@@ -92,8 +121,9 @@ the daily extraction cap. After observed challenge/source 403/429, proxy connect
 failure, unavailable provider or duplicate cooled candidate, schedule exactly
 one existing-target probe after max(global next_due, Retry-After, configured
 cooldown). Source validation is required before continuing through the existing
-resume calibration. Authentication, malformed provider schema, insufficient
-expiry, parser/storage failures and exhausted budgets require manual handling.
+resume calibration. Authentication/schema failures suspend extraction while
+using direct; insufficient expiry and exhausted extraction budgets also use the
+authorized fallback. Parser/storage failures still require manual handling.
 Recovery attempts count consecutive recovery probes, persist across restart and
 configuration edits, and reset only after an accepted current-route source
 response. Exhaustion suspends automatic recovery until manual handling; midnight

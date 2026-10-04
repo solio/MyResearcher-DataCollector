@@ -378,7 +378,8 @@
     if (!data || !["direct", "http", "mayi"].includes(first(data.settings, ["mode"], data.mode))) return;
     proxyState = data; proxySupported = true;
     const settings = objectValue(data.settings), mode = first(settings, ["mode"], data.mode);
-    display("proxy-summary-state", { direct: "直连", http: "HTTP 代理", mayi: "动态 IP" }[mode]);
+    const fallback = mode === "mayi" && data.effective_mode === "direct" && data.fallback ? objectValue(data.fallback) : null;
+    display("proxy-summary-state", fallback ? "动态 IP · 已回退直连" : { direct: "直连", http: "HTTP 代理", mayi: "动态 IP" }[mode]);
     display("proxy-config-state", proxyDirty ? "页面修改尚未保存" : "已读取保存配置");
     display("proxy-node-note", `作用节点：${nodeName()}（${selectedNode}）。这里只改变该节点的来源请求出站，手机与主控的管理连接不使用此代理。`);
     display("proxy-capability-note", "保存只修改该节点的代理配置，不会清除已有阻断、冷却或响应证据。已保存的用户名、密码和完整提取 API 不回显。");
@@ -389,7 +390,17 @@
     const daily = objectValue(data.daily_extractions), lease = objectValue(data.lease), facts = $("proxy-facts"); facts.replaceChildren();
     for (const [label, value] of [["今日提取", number(daily.count)], ["每日上限", number(first(daily, ["limit"], settings.daily_limit))], ["今日剩余", number(daily.remaining)], ["连续恢复", number(data.recovery_attempts)]]) facts.append(el("span", "", `${label} ${value}`));
     if (daily.date) facts.append(el("span", "", `额度日期 ${daily.date}`));
-    if (data.lease) {
+    if (fallback) {
+      const reasons = { provider_budget: "每日提取额度已用完", provider_unavailable: "提取服务暂不可用", provider_no_ip: "提取接口未返回 IP", provider_duplicate: "返回的 IP 仍在隔离期", provider_expiry: "返回的 IP 有效期不足", provider_auth: "提取接口认证失败", provider_schema: "提取响应格式无法识别" };
+      const parts = [`当前使用 ${nodeName()} 的原直连出口，不走已配置的 HTTP 代理`, `回退原因：${reasons[fallback.reason] || "未取得可用动态 IP"}`];
+      const message = safeProxyMessage(fallback.message, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
+      if (message) parts.push(message);
+      if (fallback.since) parts.push(`开始回退 ${time(fallback.since)}`);
+      if (fallback.manual_retry === true) parts.push("自动提取已暂停；检查 API 配置后保存，或手动更换出站后再试");
+      else if (fallback.retry_at) parts.push(`下次最早提取 ${time(fallback.retry_at)}，仅在有采集请求时尝试`);
+      if (fallback.blocked === true) parts.push("来源已阻断直连，采集已暂停；不会自动用直连重试，检查证据后可安排单次探测");
+      display("proxy-lease-note", parts.join(" · "));
+    } else if (data.lease) {
       const parts = [`候选出站：${lease.endpoint || "尚未返回"}`, `租约剩余 ${lease.remaining_seconds == null ? "—" : duration(lease.remaining_seconds)}`, `候选来源尝试 ${number(lease.requests)}`];
       const reasons = { explicit_endpoint: "使用已配置端点", initial_extraction: "首次提取", lease_expiring: "租约即将到期", elapsed_rotation: "达到使用时间", attempt_count_rotation: "达到尝试次数", manual_rotation: "手动更换" };
       if (lease.selection_reason) parts.push(`选择原因：${reasons[lease.selection_reason] || textValue(lease.selection_reason)}`);
@@ -398,7 +409,7 @@
       display("proxy-lease-note", parts.join(" · "));
     } else display("proxy-lease-note", mode === "direct" ? "当前为直连，没有代理候选。" : "尚无候选租约。更换操作只安排下一次出站，来源结果仍须实际请求核实。");
     const suspended = first(data, ["auto_suspended"], status?.proxy?.auto_suspended) === true;
-    display("proxy-recovery-note", mode !== "mayi" || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${data.next_recovery_at ? "；下次最早 " + time(data.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
+    display("proxy-recovery-note", fallback ? "回退直连保留原采集间隔与来源冷却；遇到验证码或限流仍会暂停，不会自动重复直连请求。恢复动态 IP 后仍须由实际来源响应核实可用性。" : mode !== "mayi" || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${data.next_recovery_at ? "；下次最早 " + time(data.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
     const error = safeProxyMessage(data.last_error, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
     $("proxy-status-error").hidden = !error; display("proxy-status-error", error);
   }
@@ -427,7 +438,7 @@
     const locked = busy || !online || !authenticated;
     const pending = probePending();
     $("start").disabled = locked || !job || pending || status?.storage_halt || status?.active_halt || status?.request_inflight || !["paused", "idle"].includes(state);
-    const autoWaiting = ["blocked", "error"].includes(state) && status?.proxy?.settings?.auto_recover === true && status?.proxy?.auto_suspended === false;
+    const autoWaiting = ["blocked", "error"].includes(state) && status?.proxy?.settings?.auto_recover === true && status?.proxy?.auto_suspended === false && status?.proxy?.fallback?.blocked !== true;
     $("pause").disabled = locked || !(state === "running" || pending || autoWaiting);
     $("retry").disabled = locked || pending || status?.request_inflight || (status?.storage_halt ? state === "running" : ((!job && !status?.active_halt) || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state)));
     display("retry", status?.storage_halt ? "重试数据库写入" : "单次探测重试");
