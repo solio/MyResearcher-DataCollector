@@ -60,8 +60,10 @@ proxy's own rules may select DIRECT; actual exit identity remains unknown.
 Use the account-generated mayi HTTP extraction URL on mayihttp.com, with num=1,
 type=2 JSON and mode=1 HTTP. HTTPS is preferred; an account-generated HTTP URL is
 accepted. Do not hardcode account keys, product lifetime or a purchasing policy.
-Accept documented success=true/code=200/data=[one candidate], validate IP/port,
-optional user/pass and actual Shanghai expire_time. Missing or insufficient
+Accept success=true/data=[one candidate], including the user-provided official
+example without a code field. If code is present, require integer 200; an explicit
+contradictory or malformed code remains failure. Validate IP/port, optional
+user/pass and actual Shanghai expire_time. Missing or insufficient
 expiry is failure, not an invented lease. A new candidate remains source-
 unverified until the existing validators accept real_data or a validated
 unavailable-detail response; this dated reachability evidence does not imply

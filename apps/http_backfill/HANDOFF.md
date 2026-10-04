@@ -2,6 +2,27 @@
 
 Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest correction: official mayi success JSON without code
+
+The user provided the supplier's API example with success=true, message and a
+single candidate containing ip/port/expire_time/user/pass, but no code field.
+The previous implementation incorrectly required code=200 and would reject
+this successful envelope. The parser now accepts absent code, while an explicit
+code still must be integer 200. All single-candidate, authentication and actual
+expiry checks remain. SPEC and the deployment guide record this compatibility
+correction and panel instructions: change num=2 to num=1, retain the generated
+product/lifetime parameters, let candidate user/pass supply authentication,
+and use zero proactive-rotation thresholds when only expiry renewal is wanted.
+
+The user's example was explicitly non-live/unfunded; no account key, full
+account API URL, candidate credentials or IP were saved in repository artifacts.
+No supplier extraction or Guba request was made for this change. Python AST
+syntax, diff whitespace and independent read-only review passed; no test suite,
+real data import or collection-control action was performed. The running local
+Docker container remains on its existing image until the operator updates it.
+Collector nodes using mayi need the existing git pull / compose rebuild command
+to run the corrected parser; no database or proxy-config migration is needed.
+
 ## Latest H5 layout: compact output toolbar
 
 The user asks to place database status and selected-node exports on the same row

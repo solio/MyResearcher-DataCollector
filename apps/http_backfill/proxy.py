@@ -374,8 +374,9 @@ class ProxyManager:
                 obj = json.loads(body.decode("utf-8"))
             except (ValueError, UnicodeError):
                 raise _ProxyError("provider_schema", "供应商未返回有效 UTF-8 JSON") from None
-        if (not isinstance(obj, dict) or obj.get("success") is not True or type(obj.get("code")) is not int
-                or obj["code"] != 200 or not isinstance(obj.get("data"), list) or len(obj["data"]) != 1):
+        if (not isinstance(obj, dict) or obj.get("success") is not True
+                or ("code" in obj and (type(obj["code"]) is not int or obj["code"] != 200))
+                or not isinstance(obj.get("data"), list) or len(obj["data"]) != 1):
             # Never echo provider error/message, which can include credentials.
             raise _ProxyError("provider_schema", "供应商未返回单个成功的 JSON 代理候选")
         row = obj["data"][0]
