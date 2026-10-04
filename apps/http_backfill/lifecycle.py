@@ -228,6 +228,7 @@ class LifecycleMixin:
             job, old = self._editable_job()
             if config == old:
                 return self.status()
+            self._suspend_proxy_recovery()
             current_cutoff = self.db.execute("SELECT effective_to FROM job_lifecycle WHERE job=?", (job,)).fetchone()[0]
             cutoff = min(self._window_end(config), self.clock()) if config["to_date"] != old["to_date"] else current_cutoff
             start = datetime.fromisoformat(config["from_date"] + "T00:00:00+08:00").timestamp()
@@ -270,6 +271,7 @@ class LifecycleMixin:
     def delete_job(self):
         with self._mutex, self.db:
             job, config = self._editable_job()
+            self._suspend_proxy_recovery()
             before = self._lifecycle_snapshot(job)
             retained = self._retained_halt_target()
             self._detach_halt_probe(config, retained)

@@ -303,6 +303,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
                     return self.send(200, self.server.engine.status())
+                if path == "api/proxy":
+                    return self.send(200, self.server.engine.proxy_status())
                 if path == "api/requests":
                     return self.send(200, self.server.engine.requests(limit))
                 if path == "api/events":
@@ -345,6 +347,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "api/jobs":
                 self.server.engine.create_job(obj)
+            elif path == "api/proxy/config":
+                return self.send(200, self.server.engine.configure_proxy(obj))
+            elif path == "api/proxy/rotate":
+                if obj:
+                    raise ValueError("切换出口请求不接受额外参数")
+                return self.send(200, self.server.engine.rotate_proxy())
             elif path == "api/control":
                 action = obj.get("action")
                 if action not in ("start", "pause", "retry"):

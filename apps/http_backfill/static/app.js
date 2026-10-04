@@ -31,6 +31,11 @@
   let removingNode = null;
   let pendingSelection = null;
   let retryNodeEpoch = null;
+  let proxyState = null;
+  let proxyDirty = false;
+  let proxySupported = null;
+  let proxyLoading = false;
+  let proxyReadSerial = 0;
   const downloadBusy = new Set();
 
   function first(object, keys, fallback = null) {
@@ -105,6 +110,8 @@
     $("console").hidden = true;
     $("logout").hidden = true;
     $("node-token").value = "";
+    proxyReadSerial += 1; proxyLoading = false;
+    clearProxySecrets();
     authMessage(message || "输入密钥后进入控制台。");
   }
   function showConsole() {
@@ -118,7 +125,7 @@
   async function api(path, method = "GET", payload, node = selectedNode) {
     const options = { method, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } };
     if (payload !== undefined) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(payload); }
-    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
+    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts|proxy)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
     const response = await fetch(new URL(`api/${routed}`, document.baseURI), options);
     const contentType = response.headers.get("content-type") || "";
     const data = contentType.includes("application/json") ? await response.json() : null;
@@ -185,7 +192,7 @@
       const summary = el("div", "post-summary"); summary.append(el("strong", "", `已采集帖子 ${number(counts.unique_posts)}`));
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", counts.body_complete], ["待补详情", counts.pending], ["未触发补详情", counts.list_only]]) subsets.append(el("span", "", `${label} ${number(value)}`));
-      summary.append(subsets); card.append(summary, el("p", "node-sync", `源请求尝试 ${number(counts.attempts)} · 标题与详情属于同一条帖子`));
+      summary.append(subsets); card.append(summary, el("p", "node-sync", `${counts.source_attempts == null ? "请求台账（旧版）" : "实际来源请求"} ${number(first(counts, ["source_attempts", "attempts"]))} · 标题与详情属于同一条帖子`));
       const audit = objectValue(state.rate_audit);
       card.append(el("p", "node-sync", audit.confirmed_requests == null ? "源请求间隔审计：未可核验，需该实例实际台账。" : `近期网络尝试 ${number(audit.confirmed_requests)} · 已知间隔违规 ${number(audit.violations?.count)} · 仅此审计样本，帖子数不代表请求数`));
       const config = state.job?.config || state.config;
@@ -223,7 +230,7 @@
   function requestSelection(id) {
     $("selected-node").value = selectedNode;
     if (busy || id === selectedNode) return;
-    if (formDirty) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
+    if (formDirty || proxyDirty) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
     void switchNode(id);
   }
   async function switchNode(id, force = false) {
@@ -234,6 +241,7 @@
     pendingDeletion = null; retryNodeEpoch = null;
     for (const dialog of ["retry-dialog", "delete-dialog"]) if ($(dialog).open) { $(dialog).returnValue = "cancel"; $(dialog).close?.(); }
     clearForm();
+    clearProxyForm();
     for (const kind of ["requests", "events"]) {
       const previous = activityPages[kind]; activityPages[kind] = { ...previous, latest: true, index: 0, cursors: [null], snapshot: null, page: null, loading: false, generation: previous.generation + 1 };
       $(kind === "requests" ? "request-list" : "event-list").replaceChildren(el("div", "empty-state", "正在读取所选实例的记录…")); activityError(kind); display(kind === "requests" ? "request-count" : "event-count", "—");
@@ -314,13 +322,106 @@
   function probePending() {
     return !!first(status, ["retry_pending", "probe_pending", "retry_scheduled"], false);
   }
+  function clearProxySecrets() {
+    for (const id of ["proxy-username", "proxy-password", "proxy-api-url"]) $(id).value = "";
+  }
+  function proxyError(message = "") {
+    $("proxy-form-error").hidden = !message; display("proxy-form-error", message);
+  }
+  function proxyVisibility() {
+    const mode = $("proxy-mode").value;
+    for (const [id, visible] of [["proxy-http-fields", mode === "http"], ["proxy-mayi-fields", mode === "mayi"], ["proxy-auth-fields", mode !== "direct" || first(proxyState, ["has_auth"], proxyState?.settings?.has_auth) === true], ["proxy-rotation-fields", mode === "mayi"], ["proxy-auto-fields", mode === "mayi"]]) {
+      $(id).hidden = !visible; $(id).disabled = !visible;
+    }
+    const recovering = mode === "mayi" && $("proxy-auto-recover").checked;
+    $("proxy-recovery-limits").hidden = !recovering;
+    $("proxy-recovery-cooldown").disabled = !recovering;
+    $("proxy-recovery-max").disabled = !recovering;
+    $("proxy-username").disabled = $("proxy-clear-auth").checked;
+    $("proxy-password").disabled = $("proxy-clear-auth").checked;
+    $("proxy-api-url").disabled = $("proxy-clear-api").checked;
+    $("proxy-api-clear-row").hidden = mode !== "mayi" && first(proxyState, ["has_api_url"], proxyState?.settings?.has_api_url) !== true;
+  }
+  function loadProxyForm(data) {
+    if (proxyDirty) return;
+    const settings = objectValue(data.settings);
+    $("proxy-mode").value = first(settings, ["mode"], data.mode || "direct");
+    for (const [id, field] of [["proxy-endpoint", "endpoint"], ["proxy-rotate-seconds", "rotate_seconds"], ["proxy-rotate-requests", "rotate_requests"], ["proxy-daily-limit", "daily_limit"], ["proxy-recovery-cooldown", "recovery_cooldown_seconds"], ["proxy-recovery-max", "recovery_max_attempts"]]) $(id).value = settings[field] == null ? "" : String(settings[field]);
+    $("proxy-auto-recover").checked = settings.auto_recover === true;
+    $("proxy-clear-auth").checked = false; $("proxy-clear-api").checked = false;
+    clearProxySecrets(); proxyVisibility();
+  }
+  function clearProxyForm() {
+    proxyState = null; proxyDirty = false; proxySupported = null; proxyLoading = false; proxyReadSerial += 1;
+    $("proxy-panel").open = false;
+    for (const id of ["proxy-endpoint", "proxy-rotate-seconds", "proxy-rotate-requests", "proxy-daily-limit", "proxy-recovery-cooldown", "proxy-recovery-max"]) $(id).value = "";
+    for (const id of ["proxy-auto-recover", "proxy-clear-auth", "proxy-clear-api"]) $(id).checked = false;
+    $("proxy-mode").value = "direct"; clearProxySecrets(); proxyVisibility(); proxyError();
+    display("proxy-summary-state", "尚未读取"); display("proxy-config-state", "等待脱敏配置");
+    display("proxy-node-note", `作用节点：${nodeName()}（${selectedNode}）。手机与主控的管理连接不使用此代理。`);
+    display("proxy-capability-note", "展开后读取该节点的代理能力；旧节点需要升级。");
+    $("proxy-facts").replaceChildren(); display("proxy-lease-note", "尚无候选出站状态。"); display("proxy-recovery-note", ""); $("proxy-status-error").hidden = true;
+  }
+  function safeProxyMessage(message, secrets = []) {
+    let safe = textValue(message);
+    for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) safe = safe.split(secret).join("[已隐藏]");
+    return safe;
+  }
+  function renderProxy(data) {
+    if (!data || !["direct", "http", "mayi"].includes(first(data.settings, ["mode"], data.mode))) return;
+    proxyState = data; proxySupported = true;
+    const settings = objectValue(data.settings), mode = first(settings, ["mode"], data.mode);
+    display("proxy-summary-state", { direct: "直连", http: "HTTP 代理", mayi: "动态 IP" }[mode]);
+    display("proxy-config-state", proxyDirty ? "页面修改尚未保存" : "已读取保存配置");
+    display("proxy-node-note", `作用节点：${nodeName()}（${selectedNode}）。这里只改变该节点的来源请求出站，手机与主控的管理连接不使用此代理。`);
+    display("proxy-capability-note", "保存只修改该节点的代理配置，不会清除已有阻断、冷却或响应证据。已保存的用户名、密码和完整提取 API 不回显。");
+    const auth = first(data, ["has_auth"], settings.has_auth) === true, apiConfigured = first(data, ["has_api_url"], settings.has_api_url) === true;
+    for (const id of ["proxy-username", "proxy-password"]) $(id).placeholder = auth ? "已配置，留空保留" : "未配置，可留空";
+    $("proxy-api-url").placeholder = apiConfigured ? "已配置，留空保留" : "填写供应商生成的提取 API URL";
+    loadProxyForm(data);
+    const daily = objectValue(data.daily_extractions), lease = objectValue(data.lease), facts = $("proxy-facts"); facts.replaceChildren();
+    for (const [label, value] of [["今日提取", number(daily.count)], ["每日上限", number(first(daily, ["limit"], settings.daily_limit))], ["今日剩余", number(daily.remaining)], ["连续恢复", number(data.recovery_attempts)]]) facts.append(el("span", "", `${label} ${value}`));
+    if (daily.date) facts.append(el("span", "", `额度日期 ${daily.date}`));
+    if (data.lease) {
+      const parts = [`候选出站：${lease.endpoint || "尚未返回"}`, `租约剩余 ${lease.remaining_seconds == null ? "—" : duration(lease.remaining_seconds)}`, `候选来源尝试 ${number(lease.requests)}`];
+      const reasons = { explicit_endpoint: "使用已配置端点", initial_extraction: "首次提取", lease_expiring: "租约即将到期", elapsed_rotation: "达到使用时间", attempt_count_rotation: "达到尝试次数", manual_rotation: "手动更换" };
+      if (lease.selection_reason) parts.push(`选择原因：${reasons[lease.selection_reason] || textValue(lease.selection_reason)}`);
+      parts.push(lease.recent_success_at ? `最近来源核实 ${time(lease.recent_success_at)}（${outcomes[lease.recent_success_outcome] || "已核实响应"}）` : "尚未取得此候选的来源成功证据");
+      if (lease.expires_at) parts.push(`到期 ${time(lease.expires_at)}`);
+      display("proxy-lease-note", parts.join(" · "));
+    } else display("proxy-lease-note", mode === "direct" ? "当前为直连，没有代理候选。" : "尚无候选租约。更换操作只安排下一次出站，来源结果仍须实际请求核实。");
+    const suspended = first(data, ["auto_suspended"], status?.proxy?.auto_suspended) === true;
+    display("proxy-recovery-note", mode !== "mayi" || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${data.next_recovery_at ? "；下次最早 " + time(data.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
+    const error = safeProxyMessage(data.last_error, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
+    $("proxy-status-error").hidden = !error; display("proxy-status-error", error);
+  }
+  async function readProxy() {
+    if (!authenticated || busy || proxyLoading) return;
+    const target = selectedNode, selection = nodeEpoch, generation = statusGeneration, serial = ++proxyReadSerial;
+    proxyLoading = true; controls();
+    try {
+      const data = await api("proxy", "GET", undefined, target);
+      if (!authenticated || selection !== nodeEpoch || generation !== statusGeneration || serial !== proxyReadSerial) return;
+      const proxy = data?.proxy || data;
+      if (!["direct", "http", "mayi"].includes(first(proxy?.settings, ["mode"], proxy?.mode))) throw new Error("该节点返回的代理配置格式无法识别，需要更新节点。");
+      renderProxy(proxy); proxyError();
+    } catch (error) {
+      if (!authenticated || selection !== nodeEpoch || generation !== statusGeneration || serial !== proxyReadSerial) return;
+      if ([400, 404, 405].includes(error.status)) {
+        proxySupported = false; display("proxy-summary-state", "节点需更新");
+        display("proxy-capability-note", "所选节点尚未提供代理配置接口，请更新该节点和主控。不会回退到主控本机修改代理。");
+      }
+      proxyError(safeProxyMessage(error.message, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]));
+    } finally { if (selection === nodeEpoch && serial === proxyReadSerial) { proxyLoading = false; controls(); } }
+  }
   function controls() {
     const state = status ? status.state : "idle";
     const job = jobConfig();
     const locked = busy || !online || !authenticated;
     const pending = probePending();
     $("start").disabled = locked || !job || pending || status?.storage_halt || status?.active_halt || status?.request_inflight || !["paused", "idle"].includes(state);
-    $("pause").disabled = locked || !(state === "running" || pending);
+    const autoWaiting = ["blocked", "error"].includes(state) && status?.proxy?.settings?.auto_recover === true && status?.proxy?.auto_suspended === false;
+    $("pause").disabled = locked || !(state === "running" || pending || autoWaiting);
     $("retry").disabled = locked || pending || status?.request_inflight || (status?.storage_halt ? state === "running" : ((!job && !status?.active_halt) || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state)));
     display("retry", status?.storage_halt ? "重试数据库写入" : "单次探测重试");
     const awaitingStop = state === "running" || pending || status?.request_inflight;
@@ -342,12 +443,23 @@
     $("add-node").disabled = busy || !authenticated;
     $("sync-fleet").disabled = busy || !authenticated || !fleetData;
     $("save-node").disabled = busy;
+    $("proxy-fields").disabled = locked || proxySupported !== true;
+    $("proxy-refresh").disabled = busy || !authenticated || proxyLoading;
+    $("proxy-save").disabled = locked || proxySupported !== true || proxyLoading;
+    display("proxy-save", awaitingStop ? "暂停并保存代理配置" : "保存代理配置");
+    $("proxy-reset").hidden = !proxyDirty; $("proxy-reset").disabled = busy || !authenticated;
+    $("proxy-rotate").disabled = locked || proxySupported !== true || proxyDirty || pending || !!status?.storage_halt || (["blocked", "error"].includes(state) && status?.request_inflight);
+    const proxyMode = first(proxyState?.settings, ["mode"], proxyState?.mode);
+    const blockedProxy = ["blocked", "error"].includes(state);
+    display("proxy-rotate", proxyMode === "mayi" ? (blockedProxy ? "更换 IP 并单次探测" : "更换下一次出口") : (blockedProxy ? "重选出站并单次探测" : "重选下一次出站"));
+    proxyVisibility();
     updateDownloadLinks();
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
     else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
+    else if (autoWaiting) display("action-note", "动态 IP 自动恢复正在等待冷却与额度。点击暂停可挂起自动恢复；单次探测只做一次。");
     else if (["blocked", "error"].includes(state)) display("action-note", "已暂停后续请求。检查证据后，可手动安排一次探测。");
     else if (state === "completed") display("action-note", "请核对覆盖。可编辑当前窗口，或删除任务后新建。");
     else if (job) display("action-note", "点击开始后，按持久化的全局请求间隔调度。");
@@ -455,7 +567,9 @@
     } else display("current-target", target || (config ? "等待下一项" : "—"));
     const success = first(data, ["last_success_at", "last_success", "last_source_success"]);
     display("last-success", success ? time(success) : "—");
-    display("metric-attempts", number(counter("attempts", ["requests", "request_count"])));
+    const sourceAttempts = counter("source_attempts", ["network_attempts"]);
+    display("metric-attempt-label", sourceAttempts == null ? "请求台账（旧版）" : "实际来源请求");
+    display("metric-attempts", number(sourceAttempts == null ? counter("attempts", ["requests", "request_count"]) : sourceAttempts));
     display("metric-pages", number(counter("list_pages", ["list_pages_success", "pages"])));
     const forwardPages = counter("list_pages", ["list_pages_success", "pages"]);
     const calibrationPages = counter("calibration_pages");
@@ -473,6 +587,7 @@
     renderRecovery(data);
     renderStorage(data);
     renderRateAudit(data);
+    if (data.proxy) renderProxy(data.proxy);
     renderTiming();
     controls();
   }
@@ -869,7 +984,8 @@
     if (selection !== nodeEpoch) throw new Error("查看实例已变化，原操作已停止。");
     if (expectedJobId != null && String(snapshot.job?.id) !== String(expectedJobId)) throw new Error("当前任务已变化，请刷新配置后重新操作。");
     applyStatus(snapshot);
-    if (snapshot.state === "running" || snapshot.probe_pending || snapshot.request_inflight) {
+    const waitingAutoRecovery = ["blocked", "error"].includes(snapshot.state) && snapshot.proxy?.settings?.auto_recover === true && snapshot.proxy?.auto_suspended === false;
+    if (snapshot.state === "running" || snapshot.probe_pending || snapshot.request_inflight || waitingAutoRecovery) {
       notice("正在暂停采集并等待当前请求结束；已有响应将保留，之后不会自动开始。");
       snapshot = await api("control", "POST", { action: "pause" }, targetNode);
       applyStatus(snapshot);
@@ -897,12 +1013,16 @@
       if (authenticated && selection === nodeEpoch) {
         if (options.clearDraft) { formDirty = false; loadedConfig = false; }
         if (options.clearForm || (options.clearDraft && result && !result.job && !result.config)) clearForm();
+        if (options.clearProxyDraft) { proxyDirty = false; clearProxySecrets(); proxyError(); }
         applyStatus(result);
         notice(message); success = true;
       }
     } catch (error) {
-      if (authenticated) notice(error.message, true);
-    } finally { busy = false; controls(); if (authenticated) await poll(); }
+      if (authenticated) {
+        const message = options.proxyOperation ? safeProxyMessage(error.message, options.sensitiveValues || []) : error.message;
+        notice(message, true); if (options.proxyOperation) proxyError(message);
+      }
+    } finally { if (options.proxyOperation) clearProxySecrets(); busy = false; controls(); if (authenticated) await poll(); }
     return success;
   }
   async function prepareEdit() {
@@ -948,6 +1068,75 @@
     finally { busy = false; controls(); }
   });
   function markDirty() { formDirty = true; display("config-state", "未保存"); controls(); }
+  function markProxyDirty() { proxyDirty = true; display("proxy-config-state", "页面修改尚未保存"); proxyError(); controls(); }
+  function proxyInteger(id, label, minimum = 0, required = false) {
+    const raw = $(id).value.trim();
+    if (!raw && !required) return undefined;
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) < minimum) throw new Error(`${label}必须是至少 ${minimum} 的整数。`);
+    return Number(raw);
+  }
+  function proxyPayload() {
+    const mode = $("proxy-mode").value;
+    if (!["direct", "http", "mayi"].includes(mode)) throw new Error("请选择支持的出站方式。");
+    const payload = { mode, auto_recover: mode === "mayi" && $("proxy-auto-recover").checked };
+    if (mode === "http") {
+      const endpoint = $("proxy-endpoint").value.trim(); let url;
+      try { url = new URL(endpoint); } catch { throw new Error("请填写所选节点可访问的 HTTP 代理端点（http://）。"); }
+      if (url.protocol !== "http:" || url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)) throw new Error("代理端点应为 HTTP 地址（http://），不带路径、查询、用户名或密码；HTTPS 加密代理端点和 SOCKS 端口不适用，认证请在下方填写。");
+      payload.endpoint = endpoint;
+    }
+    if (mode === "mayi") {
+      const seconds = proxyInteger("proxy-rotate-seconds", "按使用时间更换的秒数");
+      if (seconds !== undefined && seconds > 0 && seconds < 60) throw new Error("按使用时间更换须为 0（关闭）或至少 60 秒。");
+      if (seconds !== undefined) payload.rotate_seconds = seconds;
+      const requests = proxyInteger("proxy-rotate-requests", "按来源尝试次数更换");
+      if (requests !== undefined) payload.rotate_requests = requests;
+    }
+    if (mode === "mayi") {
+      payload.daily_limit = proxyInteger("proxy-daily-limit", "每天最多提取次数", 1, true);
+      const apiURL = $("proxy-api-url").value.trim();
+      if ($("proxy-clear-api").checked) throw new Error("动态 IP 模式需要提取 API。要移除已有 API，请先切换为直连或 HTTP 代理再保存。");
+      if (apiURL) {
+        let url; try { url = new URL(apiURL); } catch { throw new Error("请填写供应商生成的有效 HTTP(S) 提取 API URL。"); }
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash) throw new Error("提取 API 必须是有效的 HTTP(S) URL，不带地址认证或片段。");
+        payload.api_url = apiURL;
+      } else if (first(proxyState, ["has_api_url"], proxyState?.settings?.has_api_url) !== true) throw new Error("首次使用动态 IP 需要填写提取 API URL；已有配置才可以留空保留。");
+      if (payload.auto_recover) {
+        payload.recovery_cooldown_seconds = proxyInteger("proxy-recovery-cooldown", "恢复冷却时间", 60, true);
+        payload.recovery_max_attempts = proxyInteger("proxy-recovery-max", "最大连续恢复次数", 1, true);
+      }
+    }
+    if ($("proxy-clear-auth").checked) payload.clear_auth = true;
+    else {
+      if (first(proxyState, ["has_auth"], proxyState?.settings?.has_auth) !== true && !!$("proxy-username").value !== !!$("proxy-password").value) throw new Error("首次配置代理认证需要同时填写用户名与密码；已有认证的空值会保留。");
+      if ($("proxy-username").value) payload.username = $("proxy-username").value;
+      if ($("proxy-password").value) payload.password = $("proxy-password").value;
+    }
+    if ($("proxy-clear-api").checked) payload.clear_api_url = true;
+    return payload;
+  }
+  $("proxy-panel").addEventListener("toggle", () => { if ($("proxy-panel").open) void readProxy(); });
+  $("proxy-refresh").addEventListener("click", () => { void readProxy(); });
+  $("proxy-form").addEventListener("input", markProxyDirty);
+  $("proxy-form").addEventListener("change", markProxyDirty);
+  $("proxy-clear-auth").addEventListener("change", () => { if ($("proxy-clear-auth").checked) { $("proxy-username").value = ""; $("proxy-password").value = ""; } proxyVisibility(); });
+  $("proxy-clear-api").addEventListener("change", () => { if ($("proxy-clear-api").checked) $("proxy-api-url").value = ""; proxyVisibility(); });
+  $("proxy-reset").addEventListener("click", () => {
+    if (busy || !proxyState) return;
+    proxyDirty = false; clearProxySecrets(); loadProxyForm(proxyState); display("proxy-config-state", "已读取保存配置"); proxyError(); controls();
+    notice("已撤销页面中尚未保存的代理修改，恢复当前节点的保存配置。");
+  });
+  $("proxy-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); if ($("proxy-save").disabled) return;
+    let payload; try { payload = proxyPayload(); } catch (error) { proxyError(error.message); return; }
+    const name = nodeName();
+    await post("proxy/config", payload, `${name} 的代理配置已保存。采集与自动恢复仍暂停；已有阻断、冷却和证据保留，点击开始或继续才运行。`, "POST", { pauseFirst: true, clearProxyDraft: true, proxyOperation: true, sensitiveValues: [payload.username, payload.password, payload.api_url] });
+  });
+  $("proxy-rotate").addEventListener("click", () => {
+    if ($("proxy-rotate").disabled) return;
+    const name = nodeName(), blocked = ["blocked", "error"].includes(status?.state);
+    void post("proxy/rotate", {}, blocked ? `${name} 已安排一次按间隔与冷却执行的探测；更换操作本身不请求来源，成功后仍暂停，继续采集须手动开始。` : `${name} 已安排在下一次来源尝试时重选出站；此操作不会单独发送探测，不改变当前请求或采集间隔。暂停中的任务仍需手动开始。`, "POST", { proxyOperation: true });
+  });
   $("config-form").addEventListener("input", markDirty);
   document.querySelectorAll("[data-years]").forEach((button) => button.addEventListener("click", () => { defaultDates(Number(button.dataset.years)); markDirty(); }));
   $("config-form").addEventListener("submit", async (event) => {
@@ -1044,6 +1233,7 @@
   document.addEventListener("visibilitychange", () => { if (!document.hidden) void poll(); });
   window.addEventListener("online", () => { void poll(); });
   defaultDates(1);
+  clearProxyForm();
   void (async () => {
     try {
       const session = await api("session");

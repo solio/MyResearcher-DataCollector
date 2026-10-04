@@ -555,8 +555,8 @@ class FleetManager:
         if not isinstance(path, str):
             raise ValueError("代理路径无效")
         path = path.lstrip("/")
-        allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts"})
-                   or (method == "POST" and path in {"api/jobs", "api/control"})
+        allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy"})
+                   or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate"})
                    or (method == "PATCH" and path == "api/jobs/current")
                    or (method == "DELETE" and (path == "api/jobs/current" or re.fullmatch(r"api/jobs/current/stocks/[0-9]{6}", path))))
         if not allowed:
@@ -591,6 +591,12 @@ class FleetManager:
             else:
                 if method == "POST" and path == "api/jobs":
                     self.engine.create_job(body)
+                elif method == "POST" and path == "api/proxy/config":
+                    self.engine.configure_proxy(body)
+                elif method == "POST" and path == "api/proxy/rotate":
+                    if body:
+                        raise ValueError("切换出口请求不接受额外参数")
+                    self.engine.rotate_proxy()
                 elif method == "POST":
                     action = body.get("action") if isinstance(body, dict) else None
                     if action not in {"start", "pause", "retry"}:
@@ -658,6 +664,8 @@ class FleetManager:
         values = {k: v if isinstance(v, list) else [str(v)] for k, v in query.items()}
         if path == "api/status":
             return self.engine.status()
+        if path == "api/proxy":
+            return self.engine.proxy_status()
         if path == "api/jobs":
             return self.engine.jobs()
         if path in {"api/requests", "api/events"} and "paged" in values:

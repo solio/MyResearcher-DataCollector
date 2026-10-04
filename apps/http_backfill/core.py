@@ -57,6 +57,9 @@ class Response:
     headers: dict
     url: str | None = None
     error: str | None = None
+    network_attempted: bool = True
+    proxy: dict | None = None
+    proxy_error: str | None = None
 
 
 def _dump(value):
@@ -245,7 +248,11 @@ class Engine(LifecycleMixin):
         self._mutex = threading.RLock()
         self._inflight = False
         self._closed = False
-        self.transport, self.clock = transport or fetch, clock or time.time
+        self.clock = clock or time.time
+        from proxy import ProxyManager
+        self.proxy = ProxyManager(self.data_dir, clock=self.clock)
+        self._managed_transport = transport is None
+        self.transport = transport or self.proxy.fetch
         try:
             inspect.signature(self.transport).bind("url", "curl", referer=None)
         except (TypeError, ValueError):
@@ -292,6 +299,7 @@ class Engine(LifecycleMixin):
                 last_observed = self.db.execute("SELECT MAX(COALESCE(finished,started)) FROM requests WHERE job=?", (self._get("job_id"),)).fetchone()[0]
                 self._end_segment("restart_paused", last_observed)
             self._set("probe", False)
+            self._suspend_proxy_recovery()
             self._migrate_content_policy()
             self._migrate_frontiers()
             if self._get("job_id") and self._get("state") != "completed":
@@ -387,6 +395,7 @@ class Engine(LifecycleMixin):
             except Exception as exc:
                 message = f"{type(exc).__name__}: {exc}"
                 with self.db:
+                    self._suspend_proxy_recovery()
                     halt = previous or {"previous_state": self._get("state"), "previous_reason": self._get("reason")}
                     halt.update({"kind": "local_storage_error", "error": message, "request_id": request_id, "at": _iso(self.clock())})
                     self._set("storage_halt", halt)
@@ -459,6 +468,7 @@ class Engine(LifecycleMixin):
             self._set("state", "paused")
             self._set("reason", "任务已创建，等待开始")
             self._set("probe", False)
+            self._suspend_proxy_recovery()
             self._set("effective_to_epoch", effective_to)
             self._set("segment_id", None)
             self._set("last_success", None)
@@ -765,6 +775,7 @@ class Engine(LifecycleMixin):
                 if self._get("active_halt"):
                     return self.status()
             self._set("state", "running")
+            self._set("proxy_auto_suspended", False)
             self._set("reason", "按全局间隔运行")
             self.db.execute("UPDATE jobs SET started=COALESCE(started,?) WHERE id=?", (self.clock(), self._get("job_id")))
             self._begin_segment()
@@ -773,6 +784,7 @@ class Engine(LifecycleMixin):
 
     def pause(self):
         with self._mutex, self.db:
+            self._suspend_proxy_recovery()
             self._set("probe", False)
             self._set("resume_recovery", True)
             self._end_segment("manual_pause")
@@ -795,6 +807,7 @@ class Engine(LifecycleMixin):
             if not self._target(probe_target=True):
                 raise RuntimeError("没有待请求目标")
             self._set("probe", True)
+            self._suspend_proxy_recovery()
             self._set("state", "running")
             self._set("reason", "单次探测已排队；遵守原有请求间隔和冷却，结束后暂停")
             self.db.execute("UPDATE jobs SET started=COALESCE(started,?) WHERE id=?", (self.clock(), self._get("job_id")))
@@ -802,8 +815,95 @@ class Engine(LifecycleMixin):
             self._event("probe_scheduled", self._get("reason"))
         return self.status()
 
+    def _suspend_proxy_recovery(self):
+        self._set("proxy_auto_suspended", True)
+        self._set("proxy_auto_probe", False)
+        self._set("proxy_control_generation", self._get("proxy_control_generation", 0) + 1)
+
+    def configure_proxy(self, settings):
+        with self._mutex, self.db:
+            if self._inflight or self._get("state") == "running" or self._get("probe"):
+                raise RuntimeError("请先暂停并等待当前请求结束，再保存出站配置")
+            try:
+                result = self.proxy.configure(settings)
+            except OSError:
+                raise RuntimeError("代理配置无法持久保存，请检查节点数据目录") from None
+            self._suspend_proxy_recovery()
+            self._event("proxy_configured", "更新来源出站设置；原任务、阻断和冷却保留", {"mode": result["mode"]})
+        return self.status()
+
+    def rotate_proxy(self):
+        with self._mutex, self.db:
+            try:
+                self.proxy.rotate()
+            except OSError:
+                raise RuntimeError("代理切换无法持久保存，请检查节点数据目录") from None
+            self._set("proxy_control_generation", self._get("proxy_control_generation", 0) + 1)
+            self._set("proxy_auto_probe", False)
+            self._event("proxy_rotation_requested", "更换下一次来源请求的出口；不改变原冷却和断点")
+            if not self._inflight and self._get("state") in {"blocked", "error"} and not self._get("storage_halt"):
+                self.retry()
+        return self.status()
+
+    def _maybe_proxy_recovery(self):
+        """Only schedule one existing target; never perform network I/O here."""
+        with self._mutex, self.db:
+            if (self._closed or self._inflight or self._get("storage_halt")
+                    or self._get("proxy_auto_suspended", True)
+                    or self._get("state") not in {"blocked", "error"}):
+                return
+            halt = self._get("active_halt")
+            if halt not in {"challenge", "http_403", "http_429", "proxy_error"}:
+                return
+            if halt == "proxy_error" and self._get("last_proxy_error") not in {
+                    "proxy_connect", "provider_unavailable", "provider_duplicate"}:
+                return
+            settings = self.proxy.status()["settings"]
+            if settings["mode"] != "mayi" or not settings["auto_recover"]:
+                return
+            target = self._target(probe_target=True)
+            if (not target or self._get("halted_probe_only", False)
+                    or not self._task_in_active_scope(target) or self._job_archived(target["job"])):
+                return
+            evidence = self._get("block_evidence") or {}
+            due = max(self._get("next_due", 0), (evidence.get("finished") or evidence.get("started") or self.clock())
+                      + settings["recovery_cooldown_seconds"])
+            if self.clock() < due:
+                return
+            if not self.proxy.claim_recovery():
+                proxy_status = self.proxy.status()
+                if (proxy_status["recovery_attempts"] >= settings["recovery_max_attempts"]
+                        or proxy_status["daily_extractions"]["remaining"] == 0):
+                    self._suspend_proxy_recovery()
+                    self._event("proxy_recovery_exhausted", "代理恢复/提取预算耗尽，自动恢复已暂停；需要人工处理")
+                return
+            self.retry()
+            self._set("proxy_auto_suspended", False)
+            self._set("proxy_auto_probe", True)
+            self._event("proxy_recovery_scheduled", "动态代理单次恢复已排队；仍受原限速和来源冷却约束")
+
+    def _record_proxy_dispatch(self, rid, route):
+        with self._mutex, self.db:
+            analysis = self._request_analysis(rid, {"proxy": route})
+            self.db.execute("UPDATE requests SET analysis=?,started=? WHERE id=?",
+                            (_dump(analysis), self.clock(), rid))
+
+    def proxy_status(self):
+        with self._mutex:
+            result = self.proxy.status()
+            result["auto_suspended"] = self._get("proxy_auto_suspended", True)
+            if (not result["auto_suspended"] and result["settings"]["auto_recover"]
+                    and self._get("state") in {"blocked", "error"}):
+                evidence = self._get("block_evidence") or {}
+                finished = evidence.get("finished") or evidence.get("started")
+                if finished is not None:
+                    result["next_recovery_at"] = _iso(max(
+                        self._get("next_due", 0), finished + result["settings"]["recovery_cooldown_seconds"]))
+            return result
+
     def tick(self):
         """Reserve durably, release control lock during I/O, then commit one outcome."""
+        self._maybe_proxy_recovery()
         with self._mutex, self.db:
             if self._closed or self._inflight or self._get("storage_halt") or self._get("state") != "running" or self.clock() < self._get("next_due", 0):
                 return {"attempted": False}
@@ -814,6 +914,9 @@ class Engine(LifecycleMixin):
             task = dict(task)
             config, now = self._config(), self.clock()
             probe = self._get("probe", False)
+            auto_probe = probe and self._get("proxy_auto_probe", False)
+            control_generation = self._get("proxy_control_generation", 0)
+            self._set("proxy_auto_probe", False)
             halted = self._halt_target() if self._get("active_halt") else None
             if halted and probe and halted["id"] == task["id"]:
                 config = self._get("halted_config") or self._get("halt_config") or json.loads(self.db.execute("SELECT config FROM jobs WHERE id=?", (task["job"],)).fetchone()[0])
@@ -829,18 +932,33 @@ class Engine(LifecycleMixin):
             self._inflight = True
         # A concurrent pause is now effective for the next request; this response
         # remains fully recorded. Transport never recursively requests a redirect.
+        dispatched = False
+        def record_route(route):
+            nonlocal dispatched
+            self._record_proxy_dispatch(rid, route)
+            dispatched = True
         try:
-            if self._transport_with_referer:
+            if self._managed_transport:
+                response = self.proxy.fetch(task["url"], config["client"], referer=profile["request_headers"]["Referer"],
+                                            on_route=record_route)
+            elif self._transport_with_referer:
                 response = self.transport(task["url"], config["client"], referer=profile["request_headers"]["Referer"])
             else:
                 response = self.transport(task["url"], config["client"])
             if not isinstance(response, Response):
                 raise ValueError("transport 必须返回 Response")
         except Exception as exc:
-            response = Response(None, b"", {}, task["url"], f"{type(exc).__name__}: {exc}")
+            response = Response(None, b"", {}, task["url"], self.proxy.sanitize(f"{type(exc).__name__}: {exc}"),
+                                network_attempted=dispatched if self._managed_transport else True)
         with self._mutex:
             try:
                 self._record_response(rid, task, response, config, probe, probe_only)
+                try:
+                    outcome = self.db.execute("SELECT outcome FROM requests WHERE id=?", (rid,)).fetchone()[0]
+                    self.proxy.observe(response, outcome, self._get("next_due", 0))
+                except Exception:
+                    with self.db:
+                        self._halt("error", "proxy_state_error", "代理运行状态保存失败；保留已取得数据，暂停后续请求", rid)
             except Exception as exc:
                 # Acquisition's body/state transaction may have rolled back,
                 # while the fsynced raw file is already durable. Link only an
@@ -855,18 +973,24 @@ class Engine(LifecycleMixin):
                 except OSError:
                     pass  # The original write error remains the stop reason.
                 with self.db:
-                    self.db.execute("UPDATE requests SET outcome='internal_error',finished=?,error=?,network_attempted=1 WHERE id=?",
-                                    (self.clock(), f"{type(exc).__name__}: {exc}", rid))
+                    self.db.execute("UPDATE requests SET outcome='internal_error',finished=?,error=?,network_attempted=? WHERE id=?",
+                                    (self.clock(), self.proxy.sanitize(f"{type(exc).__name__}: {exc}"), int(response.network_attempted), rid))
                     if retained is not None:
                         headers = {str(k).lower(): str(v) for k, v in response.headers.items() if str(k).lower() in SAFE_HEADERS} if isinstance(response.headers, dict) else {}
                         self.db.execute("UPDATE requests SET http_status=?,response_bytes=?,sha256=?,raw_ref=?,headers=?,final_url=? WHERE id=?",
                                         (response.status, *retained, _dump(headers), response.url or task["url"], rid))
                     self._set("next_due", max(self._get("next_due", 0), self.clock() + config["interval_seconds"]))
                     self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (task["id"],))
-                    self._halt("error", "internal_error", f"结果保存/解析错误，需要人工处理: {exc}", rid)
+                    self._halt("error", "internal_error", self.proxy.sanitize(f"结果保存/解析错误，需要人工处理: {exc}"), rid)
             finally:
                 self._inflight = False
             self._sync_storage(rid)
+            if (auto_probe and not probe_only and not self._get("proxy_auto_suspended", True)
+                    and self._get("proxy_control_generation", 0) == control_generation
+                    and not self._get("active_halt") and not self._get("storage_halt")
+                    and self._get("state") == "paused" and self._task_in_active_scope(task)
+                    and not self._job_archived(task["job"])):
+                self.start()
             return {"attempted": True, "request_id": rid, "state": self._get("state")}
 
     def _record_response(self, rid, task, response, config, probe, probe_only=False):
@@ -887,13 +1011,24 @@ class Engine(LifecycleMixin):
         headers = {str(k).lower(): str(v) for k, v in response.headers.items() if str(k).lower() in SAFE_HEADERS}
         final_url = response.url or task["url"]
         with self.db:
-            self.db.execute("UPDATE requests SET finished=?,http_status=?,response_bytes=?,sha256=?,raw_ref=?,headers=?,final_url=?,network_attempted=1 WHERE id=?",
+            if response.proxy is not None:
+                self.db.execute("UPDATE requests SET analysis=? WHERE id=?",
+                                (_dump(self._request_analysis(rid, {"proxy": response.proxy})), rid))
+            self.db.execute("UPDATE requests SET finished=?,http_status=?,response_bytes=?,sha256=?,raw_ref=?,headers=?,final_url=?,network_attempted=? WHERE id=?",
                             (self.clock(), response.status, len(response.body), hashlib.sha256(response.body).hexdigest(),
-                             str(raw.relative_to(self.data_dir)), _dump(headers), final_url, rid))
+                             str(raw.relative_to(self.data_dir)), _dump(headers), final_url, int(response.network_attempted), rid))
             # A conservative finish-to-next-start gap also prevents a slow fetch
             # from bunching up the next request immediately after it finishes.
             self._set("next_due", max(self._get("next_due", 0), self.clock() + config["interval_seconds"]))
             self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (task["id"],))
+            if response.proxy_error:
+                self._set("last_proxy_error", response.proxy_error)
+                if response.proxy_error not in {"proxy_connect", "provider_unavailable", "provider_duplicate"}:
+                    self._suspend_proxy_recovery()
+                self._outcome(rid, "proxy_error", self.proxy.sanitize(response.error or "代理出站失败"),
+                              {"proxy_error": response.proxy_error, "source_attempted": response.network_attempted})
+                self._halt("error", "proxy_error", self.proxy.sanitize("代理出站失败: " + (response.error or response.proxy_error)), rid)
+                return
             if response.status in {403, 429}:
                 due = self._retry_after(headers.get("retry-after"))
                 self._set("next_due", max(self._get("next_due"), due))
@@ -901,8 +1036,9 @@ class Engine(LifecycleMixin):
                 self._halt("blocked", "http_" + str(response.status), f"来源返回 HTTP {response.status}；已停止自动请求", rid)
                 return
             if response.error:
-                self._outcome(rid, "transport_error", response.error)
-                self._halt("error", "transport_error", "网络/传输失败: " + response.error, rid)
+                error = self.proxy.sanitize(response.error)
+                self._outcome(rid, "transport_error", error)
+                self._halt("error", "transport_error", "网络/传输失败: " + error, rid)
                 return
             if not _allowed(final_url) or final_url != task["url"]:
                 self._outcome(rid, "unexpected_final_url", "transport 不得自动重定向或请求外部地址")
@@ -1002,6 +1138,8 @@ class Engine(LifecycleMixin):
         self.db.execute("UPDATE requests SET outcome=?,error=?,analysis=? WHERE id=?", (outcome, error, _dump(combined) if combined else None, rid))
 
     def _halt(self, state, kind, reason, rid):
+        if kind not in {"challenge", "http_403", "http_429", "proxy_error"}:
+            self._suspend_proxy_recovery()
         self._set("state", state)
         self._set("active_halt", kind)
         self._set("reason", reason)
@@ -1021,6 +1159,7 @@ class Engine(LifecycleMixin):
     def _after_success(self, rid, probe):
         self._set("last_success", self.clock())
         if probe:
+            self._set("resume_recovery", True)
             self._set("active_halt", None)
             self._set("halted_task_id", None)
             self._set("halt_task_id", None)
@@ -1200,7 +1339,8 @@ class Engine(LifecycleMixin):
         with self._mutex:
             job_id, config = self._get("job_id"), self._config()
             job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-            counts = self.db.execute("SELECT COUNT(*) AS attempts,SUM(outcome='real_data' AND kind='list' AND purpose='forward') AS list_pages,"
+            counts = self.db.execute("SELECT COUNT(*) AS attempts,SUM(network_attempted=1) AS source_attempts,"
+                                     "SUM(outcome='real_data' AND kind='list' AND purpose='forward') AS list_pages,"
                                      "SUM(kind='list' AND purpose='recovery') AS calibration_requests,"
                                      "SUM(outcome='real_data' AND kind='list' AND purpose='recovery') AS calibration_pages,"
                                      "SUM(outcome NOT IN ('real_data','redirect','detail_unavailable','reserved')) AS failures FROM requests WHERE job=?", (job_id,)).fetchone()
@@ -1212,6 +1352,7 @@ class Engine(LifecycleMixin):
                                          "FROM http_posts WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1)", (job_id,)).fetchone()
             aggregate = {k: counts[k] or 0 for k in counts.keys()} | {k: post_counts[k] or 0 for k in post_counts.keys()}
             aggregate["total_attempts"] = self.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
+            aggregate["total_source_attempts"] = self.db.execute("SELECT COALESCE(SUM(network_attempted=1),0) FROM requests").fetchone()[0]
             coverage = []
             for row in self.db.execute("SELECT * FROM coverage WHERE job=? ORDER BY stock", (job_id,)).fetchall():
                 c = dict(row)
@@ -1264,6 +1405,7 @@ class Engine(LifecycleMixin):
                       "data_storage": self._get("data_storage"), "storage_halt": self._get("storage_halt"),
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
             result["rate_audit"] = tail_audit(self)
+            result["proxy"] = self.proxy_status()
             result["observed_work_complete"] = bool(coverage) and all(c["date_boundary_reached"] and c["details_complete"] and not c["gaps"] for c in coverage)
             result["recovery"] = [c["recovery"] for c in coverage if c["recovery"]]
             result["reconciliation_complete"] = bool(coverage) and all(c["reconciliation_complete"] for c in coverage)

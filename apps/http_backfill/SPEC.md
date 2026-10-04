@@ -1,5 +1,102 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-04 source proxy contract — implementation authorized
+
+The user explicitly authorizes implementation after clarifying dynamic mayihttp
+IPs, generic reuse of the node's existing local HTTP/mixed proxy, and replacement
+of blocked exits. This supersedes the preceding design-only restriction for the
+isolated HTTP app. Default direct mode and existing source validation, post
+identity, enrichment rules, data/import layout, selected-node control and global
+finish-to-next-start pacing remain the contract.
+
+### Selected-node configuration and routing
+
+Provide direct / generic HTTP endpoint / mayi dynamic extraction modes. The hub
+configures the selected node through authenticated GET api/proxy, POST
+api/proxy/config and POST api/proxy/rotate, with existing UUID verification for
+mutations. The node persists settings once in owner-only proxy.json outside job
+configurations and exported data. Public status exposes configured flags, leases,
+counters and sanitized failures, never username/password or the extraction URL.
+Blank credential inputs preserve existing secrets; explicit clear flags delete
+them. Save requires no in-flight/queued source request and retains pause. It
+must not request either provider or source, clear a halt, or arm background
+recovery after the operator paused. Start/continue arms an explicitly configured
+recovery policy. No extra Compose file, node SSH setup or global proxy variables.
+
+Only source curl/urllib transport uses the chosen route. Fleet, login, health,
+exports and mayi extraction retain explicit direct transport. Environment
+NO_PROXY must not bypass an explicitly selected source proxy. Both clients
+retain the existing headers, TLS checks, request timeout/body bound, and no
+transport-level origin redirects or retries. Distinguish proxy authentication,
+CONNECT refusal, candidate/provider failure and source blocking. Credentials
+must not appear in command arguments, errors, source analysis or exports.
+Each source dispatch freezes public route metadata in the durable request
+ledger before I/O. Provider failures are recorded as no source dispatch, with
+an empty source body; ledger rows are distinct from confirmed source attempts.
+
+The HTTP option accepts a generic HTTP/mixed endpoint and optional Basic proxy
+authentication. It does not control Clash's API/secret, subscriptions, selector,
+TUN or OS proxy. Local means local to the selected collector, not the hub or
+phone. Docker Desktop reaches a host service through host.docker.internal;
+native Python uses its host's loopback. Linux bridge requires a reachable host
+interface or an explicit host-gateway mapping in the existing Compose entry.
+Do not publish the host's proxy port or silently enable host networking. A local
+proxy's own rules may select DIRECT; actual exit identity remains unknown.
+
+### Dynamic extraction, rotation and budgets
+
+Use the account-generated mayi HTTP extraction URL on mayihttp.com, with num=1,
+type=2 JSON and mode=1 HTTP. HTTPS is preferred; an account-generated HTTP URL is
+accepted. Do not hardcode account keys, product lifetime or a purchasing policy.
+Accept documented success=true/code=200/data=[one candidate], validate IP/port,
+optional user/pass and actual Shanghai expire_time. Missing or insufficient
+expiry is failure, not an invented lease. A new candidate remains source-
+unverified until the existing validators accept real_data or a validated
+unavailable-detail response; this dated reachability evidence does not imply
+that a detail body exists, that the exit IP caused a block, or future access.
+
+Reuse a lease within its observed lifetime, refreshing before it cannot cover
+the source timeout. Optional rotate_seconds (0 disables; positive at least 60)
+and rotate_requests (0 disables) choose proactive replacement between requests.
+A daily_limit >0 is required for mayi; count every attempted extraction before
+network I/O, including failures and duplicates, persist across restart, and use
+Shanghai calendar days. No silent per-request extraction and no retry loops
+inside fetch. A blocked/cooled or explicitly replaced candidate cannot be
+reintroduced as fresh during its exclusion period. Original raw responses,
+source halt, Retry-After, queued target, resume anchors and interval are retained.
+
+Manual rotate affects the next request, leaving in-flight evidence on its old
+route. In blocked/error state it queues at most one existing paced manual probe;
+validated success leaves collection paused for manual continuation. Changing to
+direct/local mode is an explicit operator choice, with no automatic fallback.
+Changing local upstream then manually rotating allows a new source probe without
+assuming the endpoint identifies its external exit.
+
+Optional auto_recover applies only to mayi and is off by default. Enabling it
+requires explicit recovery_cooldown_seconds >=60, recovery_max_attempts >0 and
+the daily extraction cap. After observed challenge/source 403/429, proxy connect
+failure, unavailable provider or duplicate cooled candidate, schedule exactly
+one existing-target probe after max(global next_due, Retry-After, configured
+cooldown). Source validation is required before continuing through the existing
+resume calibration. Authentication, malformed provider schema, insufficient
+expiry, parser/storage failures and exhausted budgets require manual handling.
+Recovery attempts count consecutive recovery probes, persist across restart and
+configuration edits, and reset only after an accepted current-route source
+response. Exhaustion suspends automatic recovery until manual handling; midnight
+must not silently revoke this suspension. Manual pause/retry, restart, scope
+edit/archive, or settings save revoke recovery permission. A control generation
+and scope checks before scheduling and after response acceptance prevent an
+in-flight automatic probe from resuming after such a control action.
+
+### Evidence boundary
+
+Proxy support does not establish that dynamic/local/direct routes are immune to
+Guba challenges, improve long-run access, or explain a server blacklist. Keep
+source raw evidence and unknown facts. Existing training imports are unchanged;
+proxy settings are not part of posts exports. Verification for this change uses
+syntax checks and isolated local replays, not source/provider requests or test
+suites, and must not alter currently running jobs to infer proxy efficacy.
+
 ## 2026-10-03 selected collector posts download
 
 The user identifies that the local export button ignores the selected control

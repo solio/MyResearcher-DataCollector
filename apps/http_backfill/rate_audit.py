@@ -121,7 +121,7 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
     kinds, outcomes, classification = Counter(), Counter(), Counter()
     unknown = dict.fromkeys(("attempt_rows", "timing_rows", "unfinished_rows", "pairs", "overlaps", "clock_anomalies"), 0)
     violations, policy_violations = [], []
-    count = confirmed = checked = violation_count = policy_checked = policy_count = policy_unknown = 0
+    count = confirmed = non_source_attempts = checked = violation_count = policy_checked = policy_count = policy_unknown = 0
     minimum = start_minimum = first_started = last_started = None
     first_id = last_id = None
     previous, between = None, 0
@@ -131,6 +131,9 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
         first_id = row["id"] if first_id is None else first_id
         last_id = row["id"]
         if row["network_attempted"] != 1:
+            if row["network_attempted"] == 0 and row["outcome"] == "proxy_error" and row["finished"] is not None:
+                non_source_attempts += 1
+                continue  # Confirmed provider/CONNECT failure before an origin request.
             unknown["attempt_rows"] += 1
             if row["outcome"] in {"reserved", "interrupted_unknown"} or row["finished"] is None:
                 unknown["unfinished_rows"] += 1
@@ -214,7 +217,8 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
             "verdict": verdict, "verdict_scope": "recorded_confirmed_requests_in_scope",
             "scope": {"mode": "all" if limit is None else "tail", "limit": limit, "first_request_id": first_id,
                       "last_request_id": last_id, "truncated": truncated},
-            "ledger_rows": count, "confirmed_requests": confirmed, "by_kind": dict(kinds), "by_outcome": dict(outcomes),
+            "ledger_rows": count, "confirmed_requests": confirmed, "non_source_attempts": non_source_attempts,
+            "by_kind": dict(kinds), "by_outcome": dict(outcomes),
             "classification": {name: classification[name] for name in ("list_forward", "list_recovery", "detail", "redirect", "probe")},
             "first_started_at": _iso(first_started), "last_started_at": _iso(last_started),
             "min_finish_to_start_seconds": minimum, "min_start_to_start_seconds": start_minimum,
@@ -225,7 +229,7 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
             "config_history": policies.history,
             "evidence_notes": ["帖子数不等于来源请求数；列表一次可返回多条帖子，列表回扫/详情/重定向/人工探测都计来源请求。",
                                "network_attempted=1 是台账确认的尝试；其他标记包括预留或中断，不能假定从未到达来源。",
-                               "间隔使用前次完成到下次预留开始的墙上时钟记录；不能证明包级时间，负间隔/时钟异常单独视为未知。",
+                               "间隔使用前次完成到下次台账开始的墙上时钟记录；新版记录来源发送前的开始，不能证明包级时间，负间隔/时钟异常单独视为未知。",
                                "固定 interval 阈值与历史任务配置分开；配置推断采用前次请求开始时的已保存修订，旧版回填的初始配置不证明全部旧历史。",
                                "人工探测可能使用旧阻断配置；配置间隔曾变化时不猜其实际策略。范围之外的历史不由尾样本证明。"]}
 

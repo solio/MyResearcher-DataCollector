@@ -1,6 +1,67 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-03, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest change: dynamic mayi and generic local source proxy
+
+The user authorized implementation after clarifying dynamic mayi IPs, local
+HTTP/mixed proxy reuse, arbitrary replacement of blocked candidates, and
+selected-node central configuration. Developer work by Codex updates the frozen
+SPEC and implements proxy.py, Engine scheduling/ledger integration, authenticated
+node/fleet API routes and the existing mobile console. No extra deployment file,
+package/apt dependency or storage migration is introduced. Other browser/backfill
+working-tree changes are unrelated and must remain outside this commit.
+
+Default direct mode remains. Settings save pauses/waits and remains suspended;
+start/continue arms explicitly configured mayi recovery. Source-only curl and
+urllib support explicit HTTP/mixed endpoints, Basic proxy auth, environment
+bypass prevention and separate CONNECT/auth/provider failures. Public route
+metadata is recorded before dispatch; no-origin provider/CONNECT failures are
+not counted as source requests. Existing source validators, raw evidence, post
+identity, enrichment threshold, training imports and global pacing remain.
+
+Mayi uses the account-generated num=1/type=2/mode=1 JSON extraction URL, actual
+Shanghai expire_time and one candidate at a time. Reuse a lease, refresh before
+expiry, or rotate by explicit elapsed/count thresholds. Daily extraction cap is
+mandatory and durable; failed extraction/duplicates count. Optional auto recovery
+is off by default, requires explicit cooldown >=60 and max consecutive attempts
+>0, and schedules at most one paced existing-target probe after source/proxy
+block. Validated success permits existing resume calibration, not a direct jump
+to an assumed page. Authentication/schema/expiry/storage errors are manual.
+Exhaustion suspends automatic recovery across midnight/restart; manual controls
+and scope changes revoke permission. Current-route source success resets the
+consecutive recovery counter. In-flight pause/rotate cannot reactivate a revoked
+control generation. Old/archived scope probes never auto-resume collection.
+
+Node runtime proxy.json is owner-only 0600; credentials/API are not returned,
+exported, included in jobs or process arguments. Blank fields preserve secrets,
+explicit clear flags delete. Settings are managed once on the selected collector;
+fleet/health/login/export routes remain direct. Generic local proxies do not
+control Clash or OS/TUN/routing. Local port and actual external IP differ.
+
+Read-only local checks before implementation found macOS proxy port 7890 and
+container host.docker.internal:7890 TCP reachable. TCP reachability does not prove
+proxy authentication, exit identity or Guba availability. New code has not been
+enabled on the live collector or deployed to remote nodes in this change. No
+source/provider network requests, real data import, live-job change or test suite
+was used for implementation verification. Required nodes and main H5 host update
+through existing git pull && docker compose up -d --build; startup retains the
+existing safe pause/block rule. Remote nodes need this code to use source proxies.
+
+Verification completed so far: Python AST/syntax and diff checks; isolated
+temporary-directory Engine replays confirm Retry-After floor, one validated
+recovery with anchor calibration, manual pause plus config save staying stopped,
+recovery budget exhaustion remaining suspended after day rollover, private API
+absence from public status, 0600 file mode, and provider failure creating no
+source dispatch/count. Final module/UI syntax and diff checks passed. Independent source review
+confirmed source validation, CONNECT isolation, pause/scope generation, budget
+suspension and send-time lease expiry checks. A real loopback-only denial server
+received exactly one authenticated CONNECT from each of curl and urllib; both
+classified 407 as proxy_auth with no origin dispatch/body. Module-level isolated
+replays also covered documented JSON/Shanghai expiry, secret redaction, durable
+budgets, cooling duplicates, late responses after rotate, extraction/control
+races, save rollback/lockout, provider interruption and pre-send expiry. No
+verification files were added to the repository.
 
 ## Latest correction: download follows the selected collector
 
