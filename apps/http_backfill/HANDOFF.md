@@ -2,6 +2,26 @@
 
 Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest H5 layout: compact output toolbar
+
+The user asks to place database status and selected-node exports on the same row
+as the isolated-output heading. The static H5 toolbar now shows title, database
+state/path/brief sync and current-node CSV/JSONL links together, wrapping on
+narrow screens. Full path, timestamp/format and storage explanation are in a
+default-collapsed database disclosure. Storage errors remain always visible
+outside it. Download routing, all-task node export scope and frozen click-time
+identity remain; exports are outside the metadata-dependent hidden element.
+Switching nodes closes the disclosure and removes stale storage errors.
+
+Only static index/app/styles and documentation changed. JavaScript syntax,
+unique HTML IDs, diff whitespace and independent source review passed; no test
+suite or origin request was used. The existing local Docker container received
+only these three static assets, with no restart or collection-control action.
+Public localhost asset bytes match the workspace, healthz returns 200, and the
+container remains healthy. Refresh the local page to see it. The image can be
+rebuilt normally from this commit; remote H5 hosts use the existing update
+command. Collector nodes need no backend update for this layout change.
+
 ## Latest change: dynamic mayi and generic local source proxy
 
 The user authorized implementation after clarifying dynamic mayi IPs, local

@@ -1,5 +1,17 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-04 compact output toolbar
+
+The user asks to merge database status and selected-node CSV/JSONL exports into
+the same row as the isolated-output heading. Use a wrapping toolbar: title,
+database state/path/recent sync and current-node exports. Full storage layout,
+format and explanatory text remain available in a default-collapsed disclosure;
+storage failures stay visibly expanded outside that disclosure. Narrow screens
+wrap without horizontal scrolling. Preserve selected-node routing, click-time
+identity, all-task export scope, storage-error handling and old-node exports
+when storage metadata is absent. This changes only H5 layout/text, not acquisition
+or data. No test suite or source request is needed.
+
 ## 2026-10-04 source proxy contract — implementation authorized
 
 The user explicitly authorizes implementation after clarifying dynamic mayihttp

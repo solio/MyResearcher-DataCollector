@@ -160,7 +160,14 @@
       link.setAttribute("download", "");
       link.setAttribute("aria-disabled", String(!authenticated || downloadBusy.has(downloadKey(scope, format))));
     }
-    display("download-node-description", `当前导出节点：${nodeName()}（${selectedNode}）。下载该节点全部已采集帖子，涵盖已留存的所有任务；与主控的“导出合并帖子”分开。导出不启动采集或同步。`);
+    const description = `当前导出节点：${nodeName()}（${selectedNode}）。下载该节点全部已采集帖子，涵盖已留存的所有任务；与主控的“导出合并帖子”分开。导出不启动采集或同步。`;
+    display("download-node-description", `导出：${nodeName()}`);
+    $("download-node-description").title = description;
+    for (const format of ["csv", "jsonl"]) {
+      const label = `导出 ${nodeName()}（${selectedNode}）全部已采集帖子 ${format.toUpperCase()}`;
+      $(`download-local-${format}`).title = description;
+      $(`download-local-${format}`).setAttribute("aria-label", label);
+    }
   }
   async function refreshFleet() {
     if (!authenticated || fleetLoading) return;
@@ -251,7 +258,7 @@
     for (const field of ["metric-attempts", "metric-pages", "metric-posts", "metric-list-only", "metric-bodies", "metric-pending", "run-duration", "current-target", "last-success"]) display(field, "—");
     for (const field of ["metric-failures", "metric-calibration", "metric-list-total", "metric-removed", "metric-body-breakdown", "observed-rate", "next-request", "next-request-time"]) display(field, "等待所选实例状态");
     $("block-panel").hidden = true; $("block-history").hidden = true; $("block-history").open = false; display("block-history-evidence", "");
-    $("storage-panel").hidden = true; display("recovery-reason", "等待所选实例的校准状态。"); display("recovery-phase", "等待状态"); $("recovery-facts").replaceChildren();
+    $("storage-panel").hidden = true; $("storage-panel").open = false; $("storage-error").hidden = true; display("recovery-reason", "等待所选实例的校准状态。"); display("recovery-phase", "等待状态"); $("recovery-facts").replaceChildren();
     renderRateAudit({});
     display("run-title", `正在读取 ${nodeName()} 的状态`); display("run-reason", "切换实例不会发出任何来源请求或采集控制命令。"); display("job-window", "等待配置"); display("run-start", "等待状态"); display("state-label", "等待状态");
     notice(""); setConnection(false); display("updated-at", "—");
@@ -807,13 +814,17 @@
   function renderStorage(data) {
     const storage = objectValue(data.data_storage);
     $("storage-panel").hidden = !data.data_storage && !data.storage_halt;
-    if ($("storage-panel").hidden) return;
+    if ($("storage-panel").hidden) { $("storage-error").hidden = true; return; }
     const failed = !!data.storage_halt || storage.status === "error";
     display("storage-state", failed ? "写入异常 · 已暂停" : storage.status === "ready" ? "可用" : "等待状态");
     $("storage-state").className = `tag ${failed ? "warning" : "success"}`;
     display("storage-path", storage.db_path || "采集数据库路径尚未返回");
+    display("storage-path-full", storage.db_path || "采集数据库路径尚未返回");
+    $("storage-path").title = storage.db_path || "采集数据库路径尚未返回";
     display("storage-note", storage.single_runtime_database === true || /^unified\./.test(storage.storage_layout || "") ? "本实例使用一份 collector.db 保存现有 posts / backfill 格式、请求记录和任务状态。采集数据的覆盖仍需核实，不会自动进入生产模型。" : "该实例尚未返回单库布局标记。升级并迁移后可将帖子、请求记录和任务状态统一保存到 collector.db；现有采集数据的覆盖仍需核实，不会自动进入生产模型。");
     display("storage-sync", `最近本地同步 ${time(storage.last_synced_at)}${storage.storage_version ? " · 格式 " + textValue(storage.storage_version) : ""}`);
+    display("storage-sync-brief", `同步 ${time(storage.last_synced_at, false)}`);
+    $("storage-sync-brief").title = $("storage-sync").textContent;
     const error = first(storage, ["last_error"], data.storage_halt);
     $("storage-error").hidden = !error;
     display("storage-error", error ? `${textValue(error)}。已取得的原始记录保留，重试本地写入不会重新请求来源。` : "");

@@ -91,15 +91,21 @@
       </section>
 
       <section class="metrics-section" aria-labelledby="metrics-title">
-        <div class="section-heading compact"><h2 id="metrics-title">隔离数据产出</h2><span class="quiet-text">本任务统计 · 尚未导入训练库</span></div>
+        <div class="section-heading compact output-toolbar">
+          <div class="output-title"><h2 id="metrics-title">隔离数据产出</h2><span class="quiet-text">本任务统计 · 尚未导入训练库</span></div>
+          <details id="storage-panel" class="storage-panel" hidden>
+            <summary class="storage-summary"><span>数据库</span><span id="storage-state" class="tag">—</span><code id="storage-path" class="storage-path"></code><span id="storage-sync-brief" class="quiet-text"></span></summary>
+            <div class="storage-details"><p id="storage-path-full" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-note" class="small-note">等待该实例返回存储布局。</p></div>
+          </details>
+          <div class="download-actions output-downloads"><span id="download-node-description" class="quiet-text">导出：本机采集实例</span><a id="download-local-csv" class="button secondary small" href="api/download/posts?scope=local&amp;format=csv" download title="导出当前节点全部已采集帖子 CSV" aria-label="导出当前节点全部已采集帖子 CSV">CSV</a><a id="download-local-jsonl" class="button secondary small" href="api/download/posts?scope=local&amp;format=jsonl" download title="导出当前节点全部已采集帖子 JSONL" aria-label="导出当前节点全部已采集帖子 JSONL">JSONL</a></div>
+        </div>
+        <p id="storage-error" class="storage-error" role="status" hidden></p>
         <div class="metrics-grid">
           <article class="metric"><span id="metric-attempt-label">实际来源请求</span><strong id="metric-attempts">—</strong><small id="metric-failures">失败 / 异常 —</small></article>
           <article class="metric"><span>前进列表成功</span><strong id="metric-pages">—</strong><small id="metric-calibration">校准成功 — / 尝试 —</small><small id="metric-list-total">列表成功合计 — 次</small></article>
           <article class="metric post-metric"><span>已采集帖子</span><strong id="metric-posts">—</strong><small>窗口内标准帖总数 · 每条保留列表记录与标题</small><div class="post-subsets"><div><span>其中已补详情</span><strong id="metric-bodies">—</strong><small id="metric-body-breakdown">非空 — · 有效空正文 —</small></div><div><span>其中待补详情</span><strong id="metric-pending">—</strong><small id="metric-removed">详情不可访问 —</small></div><div><span>其中未触发补详情</span><strong id="metric-list-only">—</strong><small>按默认标题长度规则未触发</small></div></div></article>
         </div>
         <div class="data-boundary"><span aria-hidden="true">◈</span><p><strong>一条帖子对应一条记录；标题和正文是同一记录的字段，补详情不另计帖子数。</strong>默认仅标题去首尾空白后长度至少 40 字符的标准帖子补详情。未触发补详情的帖子已保留列表记录与标题，这不代表已取得完整详情。局部产出不代表日期窗口完整覆盖。</p></div>
-        <div id="storage-panel" class="storage-panel" hidden><div class="recovery-heading"><strong>采集数据库</strong><span id="storage-state" class="tag">—</span></div><p id="storage-path" class="storage-path"></p><p id="storage-sync" class="field-note"></p><p id="storage-error" class="storage-error" role="status" hidden></p><p id="storage-note" class="small-note">等待该实例返回存储布局。</p></div>
-        <div class="download-actions"><a id="download-local-csv" class="button secondary small" href="api/download/posts?scope=local&amp;format=csv" download>导出当前节点帖子 CSV</a><a id="download-local-jsonl" class="button secondary small" href="api/download/posts?scope=local&amp;format=jsonl" download>导出当前节点帖子 JSONL</a></div><p id="download-node-description" class="field-note">当前导出节点：本机采集实例（local）。下载当前节点全部已采集帖子，涵盖已留存的所有任务，与主控“导出合并帖子”分开；导出不启动采集或同步。</p>
       </section>
 
       <div class="workspace-grid">
