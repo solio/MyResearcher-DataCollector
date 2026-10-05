@@ -54,6 +54,12 @@ BAIDU_REFERER = "https://www.baidu.com/"
 REDIRECTS = {301, 302, 303, 307, 308}
 SAFE_HEADERS = {"content-type", "content-length", "content-encoding", "location", "retry-after", "date", "server"}
 NETWORK_RETRY_KINDS = {"network_timeout", "tls_error", "network_connect", "network_io"}
+ORDINARY_RECHECKS = {"list_delay_recheck", "manual_resume", "process_restart", "config_updated", "periodic_recheck"}
+MAX_RECOVERY_REQUESTS, MAX_RECOVERY_PASSES = 64, 6
+
+
+class RecoveryLimitError(ValueError):
+    pass
 
 
 @dataclass
@@ -780,6 +786,14 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                     self._begin_recovery(job, stock, frontier, reason, force_first=True,
                                          original=old if old and old.get("phase") != "complete" else None)
                 except ValueError as exc:
+                    if isinstance(exc, RecoveryLimitError):
+                        if not self._get("active_halt"):
+                            request = self.db.execute("SELECT id FROM requests WHERE job=? AND stock=? AND kind='list' ORDER BY id DESC LIMIT 1", (job, stock)).fetchone()
+                            if request:
+                                self._halt("error", "calibration_limit", str(exc), request[0])
+                                self._set("halted_probe_only", True)
+                        self._event("calibration_limit", "校准预算仍已耗尽；原来源阻断保留，需人工探测后继续", {"stock": stock})
+                        continue
                     # A valid but unusable frontier (for example only pinned
                     # rows) must not prevent the control server from starting.
                     # Retain any existing halt/target and never guess a page.
@@ -822,16 +836,49 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                    "drift_count": 0, "new_posts": 0, "rechecks": 0, "time_fallback": False}
         self.db.execute("UPDATE tasks SET status='superseded' WHERE job=? AND stock=? AND kind='list' AND status='pending' AND id!=COALESCE(?, -1)",
                         (job, stock, self._get("halted_task_id")))
-        rec.update({"generation": generation, "phase": "seek", "reason": reason, "current_page": rec["anchor_page"],
+        trigger = (original.get("trigger_reason", original.get("reason")) if original else reason)
+        signature = self._stable_page_signature(frontier["rows"])
+        source_count = frontier.get("source_count")
+        if source_count is None:
+            observed = self.db.execute("SELECT source_count FROM page_observations WHERE request_id=?", (frontier.get("request_id"),)).fetchone()
+            source_count = observed[0] if observed else None
+        cheap = (reason in ORDINARY_RECHECKS and trigger in ORDINARY_RECHECKS and not rec["terminal"]
+                 and signature is not None and type(source_count) is int
+                 and rec.get("time_order_verified", True)
+                 and not rec["time_fallback"] and not rec["drift_count"]
+                 and not (original and original.get("strategy") == "two_pass"))
+        rec.update({"generation": generation, "phase": "verify_frontier" if cheap else "seek", "reason": reason,
+                    "trigger_reason": trigger, "strategy": "stable_frontier" if cheap else "two_pass",
+                    "validated_requests": rec.get("validated_requests", 0), "max_requests": MAX_RECOVERY_REQUESTS,
+                    "completed_passes": rec.get("completed_passes", rec.get("passes", 0)), "max_passes": MAX_RECOVERY_PASSES,
+                    "check_page": frontier["page"], "check_signature": signature, "check_source_count": source_count,
+                    "current_page": frontier["page"] if cheap else rec["anchor_page"],
                     "force_first": force_first, "passes": 0, "last_signature": None, "pass_members": [],
                     "pass_pages": [], "visited": {}, "anchor_seen": False, "started_at": _iso(self.clock())})
         self._save_recovery(rec)
         if not rec.get("time_order_verified", True):
             self._recovery_gap(rec, "time_order_unverified", "当前锚点区间含全非标准帖页面，只核对来源 ID，不能用其发布时间证明历史次序")
-        self._enqueue_recovery(rec, rec["anchor_page"])
-        self._event("recovery_started", "重新定位 ID/发布时间锚点；核对前不推进历史页", {"stock": stock, "reason": reason, "anchor_page": rec["anchor_page"]})
+        self._enqueue_recovery(rec, rec["current_page"])
+        self._event("recovery_started", "先核对末次前进页，变化时才回扫区间" if cheap else "重新定位 ID/发布时间锚点；核对前不推进历史页",
+                    {"stock": stock, "reason": reason, "trigger_reason": trigger, "strategy": rec["strategy"], "anchor_page": rec["anchor_page"]})
+
+    @staticmethod
+    def _stable_page_signature(rows):
+        standard = [r for r in rows if r.get("post_type") == 0 and not (type(r.get("post_top_status")) is int and r["post_top_status"] != 0)]
+        if not standard or any(type(r.get("post_top_status")) is not int or r["post_top_status"] != 0 for r in standard):
+            return None
+        members = [(str(r["post_id"]), r["post_publish_time"]) for r in standard]
+        times = [time for _, time in members]
+        if times != sorted(times, reverse=True):
+            return None
+        return hashlib.sha256(_dump(members).encode()).hexdigest()
 
     def _enqueue_recovery(self, rec, page):
+        if rec.get("validated_requests", 0) >= MAX_RECOVERY_REQUESTS or rec.get("completed_passes", 0) >= MAX_RECOVERY_PASSES:
+            rec["phase"] = "error"
+            self._save_recovery(rec)
+            self._recovery_gap(rec, "calibration_limit", "校准预算已用完，保留缺口并停止自动回扫")
+            raise RecoveryLimitError("校准预算已用完，需人工核对；不会继续反复翻页")
         rec["current_page"] = page
         self._save_recovery(rec)
         url = f"https://guba.eastmoney.com/list,{rec['stock']},f" + (f"_{page}" if page > 1 else "") + ".html"
@@ -853,6 +900,31 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             return {"superseded": True}
         rec["force_first"] = False
         rec["new_posts"] += stats["new_eligible_posts"]
+        rec["validated_requests"] = rec.get("validated_requests", 0) + 1
+        rec.setdefault("max_requests", MAX_RECOVERY_REQUESTS)
+        rec.setdefault("max_passes", MAX_RECOVERY_PASSES)
+        self._save_recovery(rec)
+        if rec["phase"] == "verify_frontier":
+            matched = (task["page"] == rec["check_page"] and self._stable_page_signature(rows) == rec["check_signature"]
+                       and type(stats["source_count"]) is int and stats["source_count"] >= rec["check_source_count"])
+            if matched:
+                rec.update({"phase": "complete", "end_page": task["page"], "completed_at": _iso(self.clock()),
+                            "proof_level": "last_forward_page_stable", "verified_requests": {"stable_page": stats["request_id"]}})
+                self._save_recovery(rec)
+                frontier = self._frontier(task["job"], task["stock"])
+                frontier.update({"page": task["page"], "rows": rows, "request_id": stats["request_id"], "source_count": stats["source_count"],
+                                 "anchor_page": task["page"], "anchor_rows": rows, "checked_at": self.clock(),
+                                 "reconciled": False, "navigation_stable": True,
+                                 "reconciliation": {"proof_level": rec["proof_level"], "request_id": stats["request_id"]}})
+                self._save_frontier(task["job"], task["stock"], frontier)
+                self._enqueue_list(task["job"], task["stock"], task["page"] + 1)
+                self._event("frontier_stable", "末次前进页的有序 ID／发布时间未变，从下一页继续；仅核实导航锚点",
+                            {"stock": task["stock"], "page": task["page"], "next_page": task["page"] + 1, "request_id": stats["request_id"]})
+                return {"phase": "complete", "proof_level": rec["proof_level"]}
+            rec.update({"phase": "seek", "strategy": "two_pass", "fallback_reason": "末次前进页变化或核对条件不足，改为区间两轮校准"})
+            self._enqueue_recovery(rec, rec["anchor_page"])
+            self._event("frontier_check_changed", rec["fallback_reason"], {"stock": task["stock"], "page": task["page"]})
+            return {"phase": "seek", "stable_check": False}
         items = self._navigation_rows(rows)
         if not items:
             rec["phase"] = "error"
@@ -897,8 +969,9 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         unique = sorted(set(map(tuple, rec["pass_members"])), key=lambda x: (x[1], x[0]), reverse=True)
         signature = hashlib.sha256(_dump(unique).encode()).hexdigest()
         rec["passes"] += 1
+        rec["completed_passes"] = rec.get("completed_passes", rec["passes"] - 1) + 1
         if signature == rec["last_signature"] and (rec["anchor_seen"] or rec["time_fallback"]):
-            if rec["reason"] == "forward_no_progress" and task["page"] <= rec["forward_page"] and not rec["new_posts"]:
+            if rec.get("trigger_reason", rec["reason"]) == "forward_no_progress" and task["page"] <= rec["forward_page"] and not rec["new_posts"]:
                 rec["phase"] = "error"
                 self._save_recovery(rec)
                 raise ValueError("分页无进展：重新定位后仍未发现更深历史，不能反复猜测下一页")
@@ -907,7 +980,8 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                         "proof_level": "id_interval_time_order_unverified" if not temporal else "time_boundary_with_gap" if rec["time_fallback"] else "two_matching_anchor_interval_observations"})
             self._save_recovery(rec)
             frontier = self._frontier(task["job"], task["stock"])
-            frontier.update({"page": task["page"], "rows": rows, "anchor_page": rec["scan_start_page"],
+            frontier.update({"page": task["page"], "rows": rows, "request_id": stats["request_id"], "source_count": stats["source_count"],
+                             "anchor_page": rec["scan_start_page"], "navigation_stable": False,
                              "anchor_rows": rec["start_rows"], "reconciled": True, "reconciliation": {"signature": signature, "passes": rec["passes"], "proof_level": rec["proof_level"]}})
             frontier["checked_at"] = self.clock()
             self._save_frontier(task["job"], task["stock"], frontier)
@@ -1323,6 +1397,15 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 validated = json.loads(saved[0]) if saved and saved[0] else {}
                 if validated.get("list_structure_validated"):
                     evidence.update(validated)
+                if isinstance(exc, RecoveryLimitError):
+                    # The list was fully validated and its posts retained. The
+                    # limit stops navigation, not source-data acquisition.
+                    self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+                    self._outcome(rid, "real_data", None, evidence | {"calibration_limit": str(exc)})
+                    self._set("last_success", self.clock())
+                    self._halt("error", "calibration_limit", str(exc), rid)
+                    self._set("halted_probe_only", True)
+                    return
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
                 return
@@ -1423,6 +1506,14 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         self._set("network_retry", None)
         self._set("last_success", self.clock())
         if probe:
+            if self._get("active_halt") == "calibration_limit":
+                request = self.db.execute("SELECT job,stock FROM requests WHERE id=?", (rid,)).fetchone()
+                rec = self._recovery(request["job"], request["stock"])
+                if rec:
+                    usage = {"validated_requests": rec.get("validated_requests", 0), "completed_passes": rec.get("completed_passes", 0)}
+                    rec.update({"previous_budget": usage, "validated_requests": 0, "completed_passes": 0, "passes": 0, "strategy": "two_pass"})
+                    self._save_recovery(rec)
+                    self._event("calibration_budget_reviewed", "人工单次探测有效；保留原缺口，继续时允许新一轮有界校准", usage | {"request_id": rid})
             self._set("resume_recovery", True)
             self._clear_active_halt()
             self._set("state", "paused")
@@ -1725,7 +1816,8 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
                       "window_seek": [c["window_seek"] for c in coverage if c.get("window_seek")],
                       "calibration_policy": {"every_forward_pages": 25, "list_delay_seconds": 300,
-                                             "proof_scope": "recent_anchor_interval_only"},
+                                             "ordinary_check": "stable_last_forward_page", "max_validated_requests": MAX_RECOVERY_REQUESTS,
+                                             "max_completed_passes": MAX_RECOVERY_PASSES, "proof_scope": "navigation_or_recent_anchor_interval_only"},
                       "content_policy": self._get("content_policy"),
                       "http_request_profile": {"version": REQUEST_PROFILE, "user_agent": UA,
                                                "list_first_page_referer": GOOGLE_REFERER,
@@ -1773,7 +1865,8 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         if not rec:
             return None
         keys = ("job", "stock", "phase", "reason", "anchor_page", "current_page", "passes", "drift_count", "new_posts", "proof_level",
-                "anchor_min", "anchor_max", "target_time", "time_fallback", "time_order_verified", "started_at", "completed_at", "verified_requests")
+                "anchor_min", "anchor_max", "target_time", "time_fallback", "time_order_verified", "started_at", "completed_at", "verified_requests",
+                "strategy", "trigger_reason", "fallback_reason", "validated_requests", "completed_passes", "max_requests", "max_passes")
         return {k: rec.get(k) for k in keys}
 
     def requests(self, limit=50):

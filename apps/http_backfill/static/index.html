@@ -58,7 +58,7 @@
           <div class="recovery-heading"><strong>分页恢复校准</strong><span id="recovery-phase" class="tag">等待校准</span></div>
           <div id="recovery-facts" class="coverage-counts"></div>
           <p id="recovery-reason" class="field-note"></p>
-          <p class="small-note">源页码会随新帖移动，不是可靠的历史锚点。校准列表请求也计入请求统计；校准结束仍需核对覆盖。</p>
+          <p class="small-note">普通恢复先检查末次前进页，变化时转为区间两轮校准；风险或末端检查直接进行区间校准。源页码会随新帖移动，末页稳定只确认导航锚点。校准请求计入全局间隔，预算耗尽仍未完成时停止并保留异常，覆盖仍需核对。</p>
         </div>
       </section>
 
@@ -131,7 +131,7 @@
           <div class="section-heading"><div><div class="eyebrow">范围与缺口</div><h2 id="coverage-title">股票覆盖</h2></div><span id="coverage-count" class="tag">未配置</span></div>
           <p class="section-intro">逐股展示目标窗口、已发现窗口内帖子的时间范围，以及日期定位和仍未取得的正文。</p>
           <div id="coverage-list" class="coverage-list"><div class="empty-state">保存股票和日期窗口后，这里会显示覆盖进度。</div></div>
-          <p class="small-note">窗口内帖子按当前配置日期统计。定位／列表观察可能包含窗口外日期，用于定位和核对，不能当作采集覆盖。日期定位跳页不表示中间页面已采集。移动分页通过源 ID 与发布时间做局部区间两轮校准；旧 ID 不可见或时间次序未核实会保留缺口。校准通过和已发现项完成，仍不能证明目标窗口无遗漏。</p>
+          <p class="small-note">窗口内帖子按当前配置日期统计。定位／列表观察可能包含窗口外日期，用于定位和核对，不能当作采集覆盖。日期定位跳页不表示中间页面已采集。移动分页通过末页稳定检查或源 ID 与发布时间的局部区间两轮校准核对；旧 ID 不可见或时间次序未核实会保留缺口。校准通过和已发现项完成，仍不能证明目标窗口无遗漏。</p>
         </section>
       </div>
 

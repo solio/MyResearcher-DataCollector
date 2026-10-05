@@ -1,5 +1,39 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 cheap stable-frontier checks and bounded recalibration — authorized
+
+Read-only local evidence for 002353 requests 2230..2237 shows generation 145
+scanning 140/141 twice with identical IDs, zero drift and zero discoveries.
+Eight paced detail tasks plus retries caused the 300-second list-delay trigger;
+normal detail work does not itself demonstrate pagination drift. For ordinary
+delay/resume/restart/periodic checks, first reread the last acquired forward page.
+An exact full ordered match of explicit non-pinned standard IDs and publication
+times, valid descending order and a known source count with no decrease permit
+continuation at that physical page+1. Record proof only as last_forward_page_stable,
+never as two-pass interval reconciliation or complete window coverage.
+
+If that page changes or a baseline is unavailable, retain the response and fall
+back within the same generation to the existing fixed-anchor two-pass scan.
+Observed drift/count loss, nonstandard/unknown anchors and terminal date/tail
+checks still require that scan directly. Preserve the original trigger across
+pause/restart so risk recovery cannot become an ordinary cheap check. Successful
+checks update the exact frontier request/count/rows and checked time. Previously
+started ordinary recovery may use the cheap check on upgrade only without known
+drift/fallback. Transient failures retain their target and original paced retry.
+
+Bound successful calibration responses to 64 and complete scan passes to 6 per
+recovery; persist counters across resume/restart and fallback. Exhaustion keeps
+an explicit gap/error instead of scanning forever. Source challenges, one-shot
+probe exceptions and restart cannot silently renew the budget. Only a successful
+user-requested one-shot probe after calibration-limit halt authorizes a fresh
+budget for subsequent manual continuation; record previous usage and retain gaps.
+The response that exhausts navigation budget remains real_data when fully
+validated, with calibration_limit recorded separately; retained posts must still
+have successful source evidence for compatible projection and exports.
+Original pacing, retained raw/observations, window/detail
+filters, exports and training data boundaries remain unchanged. H5 shows the
+trigger, cheap-check or two-pass mode and budget use without mislabelling proof.
+
 ## 2026-10-05 task-window statistics and observation labels — authorized
 
 The user reports a historical task whose seek found its May upper cutoff while

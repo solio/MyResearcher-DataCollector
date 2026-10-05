@@ -826,19 +826,31 @@
     else if (reason) facts.push(reasons[reason] || textValue(reason));
     return facts.join(" · ");
   }
-  const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
-  const recoveryReasons = { process_restart: "进程重启后重新定位", manual_resume: "暂停恢复后重新定位", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后核对列表偏移", forward_no_progress: "前进列表没有新增 ID，重新定位", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
+  const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", verify_frontier: "检查末次前进页", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
+  const recoveryReasons = { process_restart: "进程重启后检查列表位置", manual_resume: "暂停恢复后检查列表位置", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后检查列表位置", list_delay_recheck: "距上次列表已达校准间隔", periodic_recheck: "定期检查列表位置", forward_no_progress: "前进列表没有新增 ID，重新定位", source_count_decrease: "来源计数下降，核对局部区间", forward_time_shift: "前进页时间发生偏移，核对局部区间", nonstandard_page_recheck: "页面锚点不能直接确认，核对局部区间", terminal_recheck: "到达日期或来源尾页边界，核对局部区间", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
   function recoveryProof(info) {
     if (info.time_fallback || info.proof_level === "time_boundary_with_gap") return "旧 ID 不可见，仅按时间回扫，缺口保留。";
     if (info.time_order_verified === false || info.proof_level === "id_interval_time_order_unverified") return "发布时间次序尚未核实，局部覆盖不能确认。";
     if (info.proof_level === "two_matching_anchor_interval_observations") return "已观察的 ID 与时间局部区间两轮一致；整体覆盖仍未确认。";
+    if (info.proof_level === "last_forward_page_stable") return "末次前进页的 ID 与发布时间一致、来源计数未下降；仅确认导航锚点稳定，窗口覆盖仍未确认。";
     return "";
+  }
+  function recoveryUsage(info) {
+    const facts = [];
+    if (info.validated_requests != null) facts.push(`有效校准响应 ${number(info.validated_requests)}${info.max_requests == null ? "" : " / " + number(info.max_requests)}`);
+    if (info.completed_passes != null) facts.push(`已完成扫描 ${number(info.completed_passes)}${info.max_passes == null ? " 轮" : " / " + number(info.max_passes) + " 轮"}`);
+    return facts;
+  }
+  function recoveryStrategy(info) {
+    return { stable_frontier: "末页单次检查", two_pass: "区间两轮校准" }[info.strategy] || "";
   }
   function recoveryDescription(recovery) {
     const info = objectValue(recovery);
     const phase = first(info, ["phase"], "pending");
-    const facts = [recoveryPhases[phase] || phase, info.anchor_page == null ? "" : `原始源页码 ${number(info.anchor_page)}`, info.current_page == null ? "" : `当前源页码 ${number(info.current_page)}`, info.passes == null ? "" : `校准轮次 ${number(info.passes)}`, info.new_posts == null ? "" : `新增发现 ${number(info.new_posts)} 帖`].filter(Boolean);
-    if (info.reason) facts.push(recoveryReasons[info.reason] || textValue(info.reason));
+    const facts = [recoveryPhases[phase] || phase, recoveryStrategy(info), info.anchor_page == null ? "" : `原始源页码 ${number(info.anchor_page)}`, info.current_page == null ? "" : `当前源页码 ${number(info.current_page)}`, info.passes == null ? "" : `当前校准轮次 ${number(info.passes)}`, ...recoveryUsage(info), info.new_posts == null ? "" : `新增发现 ${number(info.new_posts)} 帖`].filter(Boolean);
+    const trigger = first(info, ["trigger_reason", "reason"]);
+    if (trigger) facts.push("触发原因：" + (recoveryReasons[trigger] || textValue(trigger)));
+    if (info.fallback_reason) facts.push("转为区间校准：" + textValue(info.fallback_reason));
     if (recoveryProof(info)) facts.push(recoveryProof(info));
     return facts.join(" · ");
   }
@@ -858,9 +870,13 @@
     }
     const phase = first(info, ["phase"], "pending");
     display("recovery-phase", recoveryPhases[phase] || phase);
-    const values = [["股票", first(info, ["stock", "stock_code"], data.current?.stock)], ["原始源页码", info.anchor_page], ["当前源页码", info.current_page], ["校准轮次", info.passes], ["偏移观察", info.drift_count], ["新增发现帖", info.new_posts]];
+    const strategy = recoveryStrategy(info);
+    if (strategy) facts.append(el("span", "", `校准方式 ${strategy}`));
+    const values = [["股票", first(info, ["stock", "stock_code"], data.current?.stock)], ["原始源页码", info.anchor_page], ["当前源页码", info.current_page], ["当前校准轮次", info.passes], ["偏移观察", info.drift_count], ["新增发现帖", info.new_posts]];
     values.forEach(([label, value]) => { if (value != null) facts.append(el("span", "", `${label} ${label === "股票" ? textValue(value) : number(value)}`)); });
-    display("recovery-reason", [recoveryReasons[info.reason] || info.reason || "校准进度由服务端保存。暂停、编辑和刷新不会自动开始采集。", recoveryProof(info)].filter(Boolean).join(" · "));
+    recoveryUsage(info).forEach((value) => facts.append(el("span", "", value)));
+    const trigger = first(info, ["trigger_reason", "reason"]);
+    display("recovery-reason", [trigger ? "触发原因：" + (recoveryReasons[trigger] || textValue(trigger)) : "校准进度由服务端保存。暂停、编辑和刷新不会自动开始采集。", info.fallback_reason ? "转为区间校准：" + textValue(info.fallback_reason) : "", recoveryProof(info)].filter(Boolean).join(" · "));
   }
   function renderJobs(data) {
     const items = unpack(data, "jobs");

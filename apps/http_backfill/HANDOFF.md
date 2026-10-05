@@ -2,6 +2,56 @@
 
 Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: stable-frontier checks instead of routine four-read recovery
+
+Read-only snapshot of local runtime confirms 002353 requests 2230..2236 are
+one generation 145, triggered by list_delay_recheck, scanning 140/141 twice.
+Eight details plus two transport retries after forward request 2219 consumed
+more than 300 seconds. TLS/timeout retries preserved their calibration target;
+the four successful page reads had identical per-page ordered ID hashes,
+passes=2, drift_count=0, new_posts=0. Recovery completed at 15:07:43 Shanghai;
+request 2237 at 15:08:44 advanced to 142 with 75 new eligible posts. It was a
+costly ordinary delay check, not observed pagination drift or restart looping.
+Prior groups at 138/139 and 139/140 behaved similarly after detail batches.
+The inspected current frontier has explicit source_count=101747, 75 standard
+non-pinned rows, no missing IDs/times or unknown top flags, so it has usable
+facts for the new strategy. These are local retained records, not a new source
+availability experiment.
+
+Ordinary delay/resume/restart/config/periodic checks now first reread the last
+forward page once. Complete ordered standard/non-pinned IDs and publication
+times, descending order and a known nondecreasing source count must match.
+Unchanged page continues at page+1, records last_forward_page_stable and
+navigation_stable only, and keeps reconciled=False. Different or insufficient
+facts fall back within the same generation to the existing fixed-anchor
+two-pass algorithm. Known drift/no-progress/count loss, ambiguous anchors and
+terminal date/tail confirmation keep that strict algorithm directly. Original
+trigger/strategy survive restart; forward_no_progress protection uses trigger,
+not the newer restart label. Both success paths refresh request/count/rows and
+checked_at; full interval proof remains limited to that actual interval.
+
+Recovery persists validated_requests (max64) and completed_passes (max6) across
+pause/restart/fallback. Exhaustion records calibration_limit gap/halt, retains
+valid source data as real_data and stops further scans. It is not a source
+schema error and must not break compatible projection/export. Only a valid
+explicit one-shot probe after that limit grants a fresh budget for subsequent
+manual continuation, with prior usage/event/gaps retained. A challenge during
+that probe stays protective; after resolving it, exhausted budget is classified
+again as calibration_limit rather than an unrecoverable anchor error.
+
+H5 displays verify_frontier, strategy, original trigger, fallback reason and
+separate response/scan use; old nodes do not invent budget values or cheap proof.
+SPEC amended before implementation. Independent review and isolated mocked
+transport/clock replays cover one-read stable resume, eight actual fixture
+details then single delay check, changed-page fallback (two actual scan passes),
+updating latest frontier evidence, terminal two-pass, pinned TLS retry without
+budget cost, restart retaining risk/usage, budget stop with valid compatible
+source data, and limit->challenge->successful probe->manual budget continuation.
+Python AST, JS syntax and diff checks passed. No test suite, real Guba/provider
+request, live DB write, proxy change, training import or live collector restart.
+Committed change requires existing git pull / compose rebuild on affected
+nodes and H5 host, then manual continuation; no data migration.
+
 ## Latest change: current-window counts and separate observation ranges
 
 The user reports 601012 configured for 2025-07-31..2026-05-06 while its card
