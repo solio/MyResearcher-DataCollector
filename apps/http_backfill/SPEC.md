@@ -1,5 +1,31 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 task-window statistics and observation labels — authorized
+
+The user reports a historical task whose seek found its May upper cutoff while
+the card still labels September/October prefix observations as actual coverage.
+Separate requested_window, post_time_range (current active window), and
+navigation_time_range (all successful list observations, including seek and
+retained prefix) in status/H5. Existing coverage earliest/latest remain raw
+forward/recovery list facts for compatibility, exposed as forward_time_range;
+never reinterpret them as window post bounds. A seek can discover valid window
+posts before sequential coverage begins; labels must disclose this distinction.
+
+Current job/stock post and detail counts and the active api/posts preview require
+current configured stocks, eligible associations and publication epoch within
+Shanghai start-of-day and inclusive effective upper cutoff. Recheck dates in
+queries, not just stored eligible=1. Source times have second precision; use
+integer epochs so end-of-day microsecond rounding cannot admit next midnight.
+Operational item times must be complete ISO timestamps with an explicit offset;
+naive, missing or invalid values are excluded rather than assumed to be UTC.
+Deduplicate the aggregate across stock associations. Preserve historical raw,
+posts, flags and all-retained node exports; do not delete or rewrite dates to
+make the card match. Report excluded old/invalid flagged records as diagnostics.
+Ordinary dispatch skips stale out-of-scope tasks without deleting evidence;
+original blocked one-shot probes retain their authorized exception. Older node
+APIs lacking these fields remain explicitly labelled with their old list/count
+semantics, never silently advertised as current-window post coverage.
+
 ## 2026-10-05 historical-window seek and calibration cost — authorized
 
 The user supplies a live request ledger showing a historic-window task still

@@ -614,6 +614,10 @@
     const calibrationPages = counter("calibration_pages");
     display("metric-calibration", `校准成功 ${number(calibrationPages)} / 尝试 ${number(counter("calibration_requests"))}`);
     display("metric-list-total", `列表成功合计 ${number(forwardPages == null || calibrationPages == null ? null : Number(forwardPages) + Number(calibrationPages))} 次`);
+    const coverageRecords = first(data, ["coverage", "stock_coverage", "per_stock"], []);
+    const currentWindowCounts = (Array.isArray(coverageRecords) ? coverageRecords : Object.values(objectValue(coverageRecords))).some((entry) => entry && Object.hasOwn(entry, "post_time_range"));
+    display("metric-post-label", currentWindowCounts ? "已发现窗口内帖子" : config ? "帖子记录（旧节点口径）" : "已采集帖子");
+    display("metric-post-note", currentWindowCounts ? "含定位采样与顺序采集 · 不代表连续覆盖" : config ? "需更新节点以核对当前窗口统计" : "每条保留列表记录与标题");
     display("metric-posts", number(counter("unique_posts", ["posts", "posts_count"])));
     display("metric-list-only", number(counter("list_only", ["list_only_posts"])));
     display("metric-bodies", number(counter("body_complete", ["bodies_complete", "detail_success", "complete_posts"])));
@@ -752,9 +756,19 @@
       }
       header.append(el("strong", "", stock), actions);
       row.append(header);
-      const earliest = first(item, ["earliest_publish_time", "earliest_published_at", "earliest", "min_published_at", "oldest"]);
-      const latest = first(item, ["latest_publish_time", "latest_published_at", "latest", "max_published_at", "newest"]);
-      row.append(el("div", "coverage-range", earliest || latest ? `实际观察：${dateOnly(earliest)} 至 ${dateOnly(latest)}` : "尚未取得有效列表时间范围。"));
+      const requested = objectValue(item.requested_window);
+      const requestedFrom = requested.from_date || config?.from_date;
+      const requestedTo = requested.to_date || config?.to_date;
+      if (requestedFrom || requestedTo) row.append(el("p", "field-note", `目标窗口：${requestedFrom || "—"} 至 ${requestedTo || "—"}`));
+      const windowScoped = Object.hasOwn(item, "post_time_range");
+      const postRange = objectValue(item.post_time_range);
+      row.append(el("div", "coverage-range", windowScoped ? postRange.earliest || postRange.latest ? `窗口内帖子：${dateOnly(postRange.earliest)} 至 ${dateOnly(postRange.latest)}` : "尚未取得窗口内帖子。" : "旧节点尚未提供窗口内帖子时间范围。"));
+      const navigation = objectValue(item.navigation_time_range);
+      const navigationEarliest = first(navigation, ["earliest"], windowScoped ? null : first(item, ["earliest_publish_time", "earliest_published_at", "earliest", "min_published_at", "oldest"]));
+      const navigationLatest = first(navigation, ["latest"], windowScoped ? null : first(item, ["latest_publish_time", "latest_published_at", "latest", "max_published_at", "newest"]));
+      if (navigationEarliest || navigationLatest) row.append(el("p", "stock-recovery", `${windowScoped ? "定位／列表观察" : "列表观察（旧节点口径）"}：${dateOnly(navigationEarliest)} 至 ${dateOnly(navigationLatest)} · 不代表采集覆盖`));
+      const forward = objectValue(item.forward_time_range);
+      if (forward.earliest || forward.latest) row.append(el("p", "stock-recovery", `顺序列表页观察：${dateOnly(forward.earliest)} 至 ${dateOnly(forward.latest)} · 页面可能跨越目标窗口`));
       if (seek) row.append(el("p", "stock-recovery", windowSeekDescription(seek, data.state)));
       const counters = el("div", "coverage-counts");
       const pages = first(item, ["list_pages", "pages", "pages_completed"]);
@@ -764,10 +778,11 @@
       const listOnly = first(details, ["list_only"], first(item, ["list_only"]));
       const posts = first(details, ["observed"], first(item, ["unique_posts", "posts", "total_posts"], required == null || listOnly == null ? null : Number(required) + Number(listOnly)));
       const pending = first(item, ["pending", "pending_details"], first(details, ["pending"]));
-      const summary = el("div", "post-summary"); summary.append(el("strong", "", `已采集帖子 ${number(posts)}`));
+      const summary = el("div", "post-summary"); summary.append(el("strong", "", `${windowScoped ? "已发现窗口内帖子" : "帖子记录（旧节点口径）"} ${number(posts)}`));
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", bodies], ["待补详情", pending], ["未触发补详情", listOnly]]) subsets.append(el("span", "", `${label} ${number(value)}`));
-      summary.append(subsets, el("p", "post-record-note", "每条帖子保留列表记录与标题，详情补到同一条帖子。")); row.append(summary);
+      summary.append(subsets, el("p", "post-record-note", windowScoped ? "含定位采样与顺序采集发现的窗口内帖子，不代表连续覆盖。每条帖子保留标题，详情补到同一条帖子。" : "旧节点统计尚未核对当前窗口。每条帖子保留标题，详情补到同一条帖子。")); row.append(summary);
+      if (Number(item.excluded_posts) > 0) row.append(el("p", "field-note activity-detail", `另有 ${number(item.excluded_posts)} 条历史记录因不在当前窗口或发布时间无法核实，已从本任务统计排除。记录仍保留，节点导出范围不变。`));
       const counts = [["前进列表", pages], ["原始列表观察行", first(item, ["rows"])]];
       counts.forEach(([label, value]) => counters.append(el("span", "", `${label} ${number(value)}`)));
       row.append(counters);

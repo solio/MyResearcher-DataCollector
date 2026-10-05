@@ -680,8 +680,15 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             row = self.db.execute("SELECT item FROM http_posts WHERE post_id=?", (task["post_id"],)).fetchone()
             if not row:
                 return False
-            item = _item_load(row[0])
-            return cfg["from_date"] <= item.published_at.date().isoformat() <= cfg["to_date"] and item.published_at.timestamp() <= self._get("effective_to_epoch")
+            try:
+                published = _item_load(row[0]).published_at
+                if published is None or published.tzinfo is None:
+                    return False
+                epoch = math.floor(published.timestamp())
+            except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                return False
+            start_epoch, end_epoch = self._window_epochs(cfg)
+            return start_epoch <= epoch <= end_epoch
         return True
 
     @staticmethod
@@ -1082,6 +1089,17 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             if self._get("network_retry") and not self._network_retry_target():
                 self._set("network_retry", None)
             task = self._target(probe_target=self._get("probe", False))
+            if not self._get("probe", False) and not self._get("active_halt"):
+                skipped = []
+                while task and not self._task_in_active_scope(task) and len(skipped) < 100:
+                    self.db.execute("UPDATE tasks SET status='superseded' WHERE id=?", (task["id"],))
+                    skipped.append(task["id"])
+                    task = self._target()
+                if skipped:
+                    self._event("out_of_scope_tasks_skipped", "跳过已不属于当前股票／日期窗口的待执行任务，历史记录仍保留",
+                                {"count": len(skipped), "task_ids": skipped})
+                if task and not self._task_in_active_scope(task):
+                    return {"attempted": False}
             if not task:
                 self._finish_job()
                 return {"attempted": False}
@@ -1624,6 +1642,10 @@ class Engine(LifecycleMixin, WindowSeekMixin):
     def status(self):
         with self._mutex:
             job_id, config = self._get("job_id"), self._config()
+            stocks = config["stocks"] if config else []
+            stock_args = ",".join("?" for _ in stocks) or "NULL"
+            start_epoch, end_epoch = self._window_epochs(config)
+            pub_epoch = self._publication_epoch_sql()
             job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             counts = self.db.execute("SELECT COUNT(*) AS attempts,SUM(network_attempted=1) AS source_attempts,"
                                      "SUM(outcome='real_data' AND kind='list' AND (purpose='forward' OR (purpose='seek' AND json_extract(analysis,'$.list_observation.head_reused_as_forward')=1))) AS list_pages,"
@@ -1636,20 +1658,34 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                                          "SUM(status='list_only') AS list_only,SUM(status IN ('pending','complete','removed')) AS detail_required,"
                                          "SUM(json_extract(item,'$.source_metadata.list_title_length')>=40) AS detail_policy_required,"
                                          "SUM(status='complete' AND content!='') AS nonempty_body,SUM(status='complete' AND content='') AS source_empty_body "
-                                         "FROM http_posts WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1)", (job_id,)).fetchone()
+                                         f"FROM http_posts p WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1 AND stock IN ({stock_args})) "
+                                         f"AND {pub_epoch} BETWEEN ? AND ?", (job_id, *stocks, start_epoch, end_epoch)).fetchone()
             aggregate = {k: counts[k] or 0 for k in counts.keys()} | {k: post_counts[k] or 0 for k in post_counts.keys()}
+            flagged_posts = self.db.execute(f"SELECT COUNT(DISTINCT post_id) FROM associations WHERE job=? AND eligible=1 AND stock IN ({stock_args})",
+                                           (job_id, *stocks)).fetchone()[0]
+            aggregate["excluded_posts"] = max(0, flagged_posts - aggregate["unique_posts"])
             aggregate["total_attempts"] = self.db.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
             aggregate["total_source_attempts"] = self.db.execute("SELECT COALESCE(SUM(network_attempted=1),0) FROM requests").fetchone()[0]
             coverage = []
-            for row in self.db.execute("SELECT * FROM coverage WHERE job=? ORDER BY stock", (job_id,)).fetchall():
+            for row in self.db.execute(f"SELECT * FROM coverage WHERE job=? AND stock IN ({stock_args}) ORDER BY stock", (job_id, *stocks)).fetchall():
                 c = dict(row)
                 c["gaps"] = json.loads(c["gaps"])
                 c["list_complete"], c["date_boundary_reached"] = bool(c["list_complete"]), bool(c.pop("boundary"))
                 n = self.db.execute("SELECT SUM(p.status IN ('pending','complete','removed')) AS required,COUNT(*) AS observed,"
                                     "SUM(p.status='list_only') AS list_only,SUM(json_extract(p.item,'$.source_metadata.list_title_length')>=40) AS policy_required,"
-                                    "SUM(p.status='complete' AND typeof(p.content)='text') AS complete,SUM(p.status='pending') AS pending,SUM(p.status='removed') AS removed,SUM(p.status='complete' AND typeof(p.content)!='text') AS missing_body "
-                                    "FROM associations a JOIN http_posts p ON p.post_id=a.post_id WHERE a.job=? AND a.stock=? AND a.eligible=1", (job_id, c["stock"])).fetchone()
-                c["details"] = {k: n[k] or 0 for k in n.keys()}
+                                    "SUM(p.status='complete' AND typeof(p.content)='text') AS complete,SUM(p.status='pending') AS pending,SUM(p.status='removed') AS removed,SUM(p.status='complete' AND typeof(p.content)!='text') AS missing_body,"
+                                    f"MIN({pub_epoch}) AS earliest_epoch,MAX({pub_epoch}) AS latest_epoch "
+                                    "FROM associations a JOIN http_posts p ON p.post_id=a.post_id WHERE a.job=? AND a.stock=? AND a.eligible=1 "
+                                    f"AND {pub_epoch} BETWEEN ? AND ?", (job_id, c["stock"], start_epoch, end_epoch)).fetchone()
+                c["details"] = {k: n[k] or 0 for k in n.keys() if k not in {"earliest_epoch", "latest_epoch"}}
+                c["requested_window"] = {"from_date": config["from_date"], "to_date": config["to_date"]} if config else None
+                c["post_time_range"] = {"earliest": self._source_epoch_time(n["earliest_epoch"]), "latest": self._source_epoch_time(n["latest_epoch"])}
+                c["forward_time_range"] = {"earliest": c["earliest"], "latest": c["latest"]}
+                nav = self.db.execute("SELECT MIN(earliest) AS earliest,MAX(latest) AS latest FROM page_observations WHERE job=? AND stock=?",
+                                      (job_id, c["stock"])).fetchone()
+                c["navigation_time_range"] = {"earliest": nav["earliest"], "latest": nav["latest"]}
+                flagged = self.db.execute("SELECT COUNT(*) FROM associations WHERE job=? AND stock=? AND eligible=1", (job_id, c["stock"])).fetchone()[0]
+                c["excluded_posts"] = max(0, flagged - c["details"]["observed"])
                 c["details_complete"] = c["details"]["pending"] == 0 and c["details"]["removed"] == 0 and c["details"]["missing_body"] == 0
                 c["proof_level"] = "observed_pages_only"
                 rec = self._recovery(job_id, c["stock"])
@@ -1709,6 +1745,29 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             result["coverage_limitations"] = ["日期定位跳页不计作连续覆盖；定期校准只验证实际回扫的近期锚点区间，不能证明此前整个连续前进区间无遗漏", "来源可能删除或不再提供历史数据，锚点丢失时保留显式缺口"]
             return result
 
+    def _window_epochs(self, config=None):
+        config = self._config() if config is None else config
+        if not config:
+            return 0, -1
+        start = datetime.fromisoformat(config["from_date"] + "T00:00:00+08:00").timestamp()
+        # Source timestamps have second precision. Floor the upper cutoff to
+        # avoid SQLite rounding 23:59:59.999999 into the following day.
+        return math.floor(start), math.floor(self._get("effective_to_epoch"))
+
+    @staticmethod
+    def _publication_epoch_sql():
+        value = "json_extract(p.item,'$.published_at')"
+        # Operational item times are complete ISO datetimes with an explicit
+        # offset. Do not let SQLite treat a legacy naive value as UTC.
+        return (f"CASE WHEN substr({value},11,1)='T' "
+                f"AND strftime('%Y-%m-%dT%H:%M:%S',substr({value},1,19),'+0 seconds')=substr({value},1,19) "
+                f"AND (substr({value},-1)='Z' OR substr({value},-6) GLOB '[+-][0-2][0-9]:[0-5][0-9]') "
+                f"THEN CAST(strftime('%s',{value}) AS INTEGER) END")
+
+    @staticmethod
+    def _source_epoch_time(epoch):
+        return datetime.fromtimestamp(epoch, guba.SHANGHAI).strftime("%Y-%m-%d %H:%M:%S") if epoch is not None else None
+
     @staticmethod
     def _recovery_json(rec):
         if not rec:
@@ -1747,8 +1806,14 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset 必须为非负整数")
         with self._mutex:
-            rows = self.db.execute("SELECT * FROM http_posts WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1) ORDER BY rowid LIMIT ? OFFSET ?",
-                                   (self._get("job_id"), limit, offset)).fetchall()
+            config = self._config()
+            stocks = config["stocks"] if config else []
+            stock_args = ",".join("?" for _ in stocks) or "NULL"
+            start_epoch, end_epoch = self._window_epochs(config)
+            pub_epoch = self._publication_epoch_sql()
+            rows = self.db.execute(f"SELECT p.* FROM http_posts p WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1 AND stock IN ({stock_args})) "
+                                   f"AND {pub_epoch} BETWEEN ? AND ? ORDER BY p.rowid LIMIT ? OFFSET ?",
+                                   (self._get("job_id"), *stocks, start_epoch, end_epoch, limit, offset)).fetchall()
             result = []
             for row in rows:
                 d = dict(row)

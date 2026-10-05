@@ -2,6 +2,47 @@
 
 Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: current-window counts and separate observation ranges
+
+The user reports 601012 configured for 2025-07-31..2026-05-06 while its card
+shows actual observations in September/October, a completed upper-date seek
+at page 591, 377 posts and only two forward pages. The old date label comes
+from coverage.earliest/latest: retained forward/recovery list-page facts.
+Seek samples can discover eligible historical posts without updating that
+sequential range, so the old card juxtaposes unrelated measures. The user's
+remote 377 records were not directly inspected; local read-only status belongs
+to another stock and fleet has no registered remote node. Do not infer that
+377 is correct, wrong or evidence of completed coverage from that screenshot.
+
+Status/H5 now separates requested_window, post_time_range for current-window
+posts, navigation_time_range for all retained list/seek observations, and the
+legacy forward_time_range. Active-stock aggregate/per-stock counts and the
+api/posts preview recheck publication epochs against Shanghai start-of-day and
+the inclusive frozen upper cutoff, instead of trusting old eligible flags.
+Complete offset-bearing ISO times are required; missing/invalid/naive times
+are excluded. Upper cutoff is floored to source second precision to avoid
+end-of-day rounding into next midnight. Aggregate posts remain deduplicated
+across associations; removed-stock coverage residues are filtered. Excluded
+flags are diagnosed without rewriting posts, dates or source evidence.
+
+Normal dispatch supersedes stale out-of-scope pending tasks in bounded batches
+and records an event; original blocked one-shot probes retain their exception.
+All-retained node/fleet exports continue through the existing snapshot exporter
+with unchanged scope. UI labels sampled discoveries rather than continuous
+coverage, explicitly identifies old-node semantics, and never falls back from
+post_time_range to raw list bounds. Current task stats can therefore differ
+from an all-retained export, by design.
+
+Python AST, JS syntax and diff checks passed. Isolated temporary-directory
+replays used mocked transport/clock and source fixtures: strict lower/upper
+midnight boundaries, UTC equivalents, malformed/naive dates, cross-stock
+deduplication, retained removed-stock residues, old flags, separate old forward
+range, full export retention, skipping stale details and original challenge
+probe after window edit. No test suite, real source/provider request, training
+import, live database write or collector restart. Update affected collector
+nodes and the H5 host with existing git pull / compose rebuild, then continue
+the safely paused task; the corrected count/range are calculated on read.
+
 ## Latest change: actual historical-window seek and conditional calibration
 
 The user supplies requests #2537–2565 showing page-by-page prefix walking and
