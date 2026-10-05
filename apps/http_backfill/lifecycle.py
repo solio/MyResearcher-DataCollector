@@ -83,6 +83,8 @@ class LifecycleMixin:
             raise RuntimeError("采集器已经关闭")
         if self._inflight or self._get("state") == "running" or self._get("probe", False):
             raise RuntimeError("请先暂停任务并等待正在执行的请求结束，再修改或归档")
+        if self._get_global("legacy_stock_halt_barrier"):
+            raise RuntimeError("旧阻断目标缺失，须恢复原证据后再修改任务")
         self._sync_lifecycle_jobs()
         job = self._get("job_id")
         if not job or self._job_archived(job):
@@ -92,32 +94,35 @@ class LifecycleMixin:
             raise RuntimeError("当前任务不存在")
         return job, json.loads(row["config"])
 
-    def _retained_halt_target(self):
-        if not self._get("active_halt"):
-            return None
-        task_id = self._get("halted_task_id") or self._get("halt_task_id")
-        if task_id is not None:
-            row = self.db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-        else:
-            row = self._halt_target()
-        if row is None:
-            raise RuntimeError("阻断目标缺失，不能通过修改配置清除阻断")
-        self._set("halted_task_id", row["id"])
-        return row["id"]
+    def _retained_halt_targets(self):
+        retained = []
+        for runtime in self._stock_runtimes(job=self._get("job_id")):
+            if runtime["active_halt"]:
+                with self._stock_context(runtime["stock"], runtime["job"]):
+                    row = self._halt_target()
+                    if row is None:
+                        raise RuntimeError("股票阻断目标缺失，不能通过修改配置清除阻断")
+                    self._set("halted_task_id", row["id"])
+                    retained.append(row["id"])
+        return retained
 
     def _cancel_scope_tasks(self, job, retained, status, stocks=None):
+        retained = retained or []
+        retained_clause = " AND id NOT IN (" + ",".join("?" for _ in retained) + ")" if retained else ""
         stock_clause = "" if stocks is None else " AND stock IN (" + ",".join("?" for _ in stocks) + ")"
-        self.db.execute("UPDATE tasks SET status=? WHERE job=? AND status IN ('pending','inflight') AND (? IS NULL OR id!=?)" + stock_clause,
-                        (status, job, retained, retained, *(stocks or [])))
-        if retained is not None:
-            self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (retained,))
+        self.db.execute("UPDATE tasks SET status=? WHERE job=? AND status IN ('pending','inflight')" + retained_clause + stock_clause,
+                        (status, job, *retained, *(stocks or [])))
+        for task_id in retained:
+            self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (task_id,))
 
     def _detach_halt_probe(self, old_config, retained):
-        if retained is not None:
-            failed_config = self._get("halted_config") or self._get("halt_config") or old_config
-            self._set("halt_config", failed_config)
-            self._set("halted_config", failed_config)
-            self._set("halted_probe_only", True)
+        for task_id in retained:
+            target = self.db.execute("SELECT job,stock FROM tasks WHERE id=?", (task_id,)).fetchone()
+            with self._stock_context(target["stock"], target["job"]):
+                failed_config = self._get("halted_config") or self._get("halt_config") or old_config
+                self._set("halt_config", failed_config)
+                self._set("halted_config", failed_config)
+                self._set("halted_probe_only", True)
 
     def _clear_derived_positions(self, job, stocks):
         tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -170,10 +175,10 @@ class LifecycleMixin:
         if not reset:
             self._mark_recovery_needed("config_updated")
             return []
-        probe_target = retained if self._get("halted_probe_only", False) else None
-        queued = {r[0] for r in self.db.execute(
-            "SELECT post_id FROM tasks WHERE job=? AND kind='detail' AND status IN ('pending','inflight') AND (? IS NULL OR id!=?)",
-            (job, probe_target, probe_target))}
+        retained_clause = " AND id NOT IN (" + ",".join("?" for _ in retained) + ")" if retained else ""
+        queued = {(r[0], r[1]) for r in self.db.execute(
+            "SELECT stock,post_id FROM tasks WHERE job=? AND kind='detail' AND status IN ('pending','inflight')" + retained_clause,
+            (job, *retained))}
         cache, seen, projection_requests = {}, set(), set()
         reset = sorted(reset)
         placeholders = ",".join("?" for _ in reset)
@@ -203,8 +208,8 @@ class LifecycleMixin:
                 item, status = _item_load(post["item"]), post["status"]
                 if item.published_at != published:
                     raise ValueError("历史相同源 ID 的发布时间不一致，不能重建配置范围")
-            if status == "pending" and detail_enrichment_trigger(item.title) and item.source_item_id not in queued:
-                queued.add(item.source_item_id)
+            if status == "pending" and detail_enrichment_trigger(item.title) and (observation["stock"], item.source_item_id) not in queued:
+                queued.add((observation["stock"], item.source_item_id))
                 # A retained old probe only validates; normal acquisition has
                 # its own task after the halt has been resolved.
                 self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
@@ -235,7 +240,7 @@ class LifecycleMixin:
             if start > cutoff:
                 raise ValueError("开始日期晚于当前可观察时间，不能创建未来数据任务")
             before = self._lifecycle_snapshot(job)
-            retained = self._retained_halt_target()
+            retained = self._retained_halt_targets()
             scope_changed = (set(config["stocks"]) != set(old["stocks"])
                              or config["from_date"] != old["from_date"] or config["to_date"] != old["to_date"])
             self.db.execute("UPDATE jobs SET config=? WHERE id=?", (_json(config), job))
@@ -244,9 +249,9 @@ class LifecycleMixin:
                 affected = set(old["stocks"]) ^ set(config["stocks"])
                 if config["from_date"] != old["from_date"] or config["to_date"] != old["to_date"]:
                     affected |= set(old["stocks"]) | set(config["stocks"])
-                target = self.db.execute("SELECT stock FROM tasks WHERE id=?", (retained,)).fetchone() if retained else None
-                if target and target["stock"] in affected:
-                    self._detach_halt_probe(old, retained)
+                affected_targets = [task_id for task_id in retained
+                                    if self.db.execute("SELECT stock FROM tasks WHERE id=?", (task_id,)).fetchone()[0] in affected]
+                self._detach_halt_probe(old, affected_targets)
                 projection_requests = self._rebuild_scope(job, old, config, cutoff, retained)
             self._end_segment("config_updated")
             if not self._get("active_halt"):
@@ -254,6 +259,19 @@ class LifecycleMixin:
                 self._set("reason", "配置已更新；等待开始" + ("并重新核对来源列表位置" if scope_changed else ""))
             self._record_job_revision(job, config, cutoff, "config_updated", before)
             self._event("config_updated", "修改任务配置；已采原始响应与历史配置保留", {"previous": old, "config": config, "scope_rebuilt": scope_changed})
+            self._ensure_current_stock_runtimes()
+            for runtime in self._stock_runtimes(job=job):
+                with self._stock_context(runtime["stock"], job):
+                    self._suspend_proxy_recovery()
+                    self._set("probe", False)
+                    if not runtime["active_halt"]:
+                        self._set("state", "paused")
+                        self._set("reason", "配置已更新，等待开始")
+                        self._set("resume_recovery", True)
+                    if runtime["stock"] not in config["stocks"] and runtime["active_halt"]:
+                        self._set("halted_probe_only", True)
+                    self._end_segment("config_updated")
+            self._publish_stock_summary()
         for request_id in projection_requests:
             if not self._sync_storage(request_id):
                 break
@@ -273,7 +291,7 @@ class LifecycleMixin:
             job, config = self._editable_job()
             self._suspend_proxy_recovery()
             before = self._lifecycle_snapshot(job)
-            retained = self._retained_halt_target()
+            retained = self._retained_halt_targets()
             self._detach_halt_probe(config, retained)
             self._cancel_scope_tasks(job, retained, "cancelled")
             self._end_segment("job_archived")
@@ -290,6 +308,15 @@ class LifecycleMixin:
                 self._set("reason", "任务已归档，可以创建新任务")
             else:
                 self._set("reason", "任务已归档；实例仍有未解除阻断，须对原目标单次探测后再创建任务")
+            for runtime in self._stock_runtimes(job=job):
+                with self._stock_context(runtime["stock"], job):
+                    self._suspend_proxy_recovery()
+                    self._set("probe", False)
+                    if not runtime["active_halt"]:
+                        self._set("state", "paused")
+                        self._set("reason", "任务已归档")
+                    self._end_segment("job_archived")
+            self._publish_stock_summary()
         return self.status()
 
     def jobs(self):

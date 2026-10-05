@@ -1,5 +1,59 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 independent stock controls and Mihomo task exits — authorized
+
+The user requires a source block to affect the relevant stock task rather than
+every task on the collector, with collect/pause/one-shot probe controls on each
+stock card and independent Mihomo exit assignment. Runtime control is persisted
+by job+stock: state/reason, halt and exact original target/config/evidence,
+probe, network retry/due, recovery intent, segments and automatic-proxy recovery.
+Node DB/raw/fsync/storage failures, one in-flight source request and a global
+finish-based request interval remain shared. Round-robin stock scheduling skips
+paused/blocked/cooling stocks; one stock's Retry-After/backoff cannot delay other
+eligible stocks beyond node pacing. Restart pauses active tasks; a known source
+block and historical probe exception must not be erased by upgrade or edits.
+Shared source posts keep one body record, while pending detail targets are
+stock-scoped: a blocked owner's task must not prevent another observing stock
+from acquiring that body. Ordinary duplicate detail tasks are skipped once
+another stock has acquired it; retained blocked one-shot targets are exceptions.
+
+Add stock_runtime storage and a thread-local context across reservation/I/O/
+response/storage so concurrent H5 controls cannot redirect another task's state.
+All target queries and seek/recovery loops respect scope. Top-level state is a
+node summary; stock cards carry individual state/evidence/retry/due/current and
+exit. New stock-control paths explicitly fail on old nodes instead of sending
+an ignored stock argument to old global control. Global controls remain batch
+conveniences, with blocked tasks preserved. Edits require all work paused and
+no in-flight request; retain every blocked stock's original target on removal/
+archive, expose detached probe entries, and prevent a new same-stock job from
+silently bypassing its unresolved block. Unlocatable legacy halt remains an
+explicit node barrier. Ordinary source failures belong to the originating
+stock; storage failures remain node-wide. Existing posts/raw/exports stay intact.
+
+Task exit settings support node-default/inherit, direct, explicit HTTP and
+Mihomo. Mayi/Qingguo inherited account extraction limits remain shared; do not
+multiply provider quota by constructing per-stock copies. Separate static HTTP
+managers preserve each task's route and recovery state. Route changes do not
+clear a source halt or original cooldown. Secrets are private owner-only files,
+redacted from status/events/posts/exports and never placed in Git or training.
+
+Read-only local inspection confirms Mihomo v1.19.32, mixed port7897 and global
+mode. IN-USER rule selection would not route tasks in that mode. Generate an
+authenticated private download with dedicated HTTP listeners, distinct task
+ports/users and listener.proxy bound to a selected concrete outbound. The
+collector uses each configured listener endpoint; no global selector PUT,
+daily-mode change or system-proxy change. Configuration generation alone does
+not imply the listener is loaded or that different nodes have different exit
+IPs. H5 permits per-card route editing and shows pending/unknown connectivity;
+actual listener activation must be visible as a separate step. Native local
+and Docker host addressing are documented accurately. Existing deployment
+command/Compose service and one unified database are retained.
+Explicit job-bound exit edits remain available for detached unresolved targets,
+only for their original one-shot probe. Exported Mihomo extensions include
+current routes and those unresolved detached listeners so replacing the script
+cannot silently remove the old target's proxy entrance. Other archived routes
+are not included. Exit edits retain halt evidence and source cooldown.
+
 ## 2026-10-05 cheap stable-frontier checks and bounded recalibration — authorized
 
 Read-only local evidence for 002353 requests 2230..2237 shows generation 145

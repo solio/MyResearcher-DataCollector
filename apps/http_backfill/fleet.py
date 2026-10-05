@@ -555,8 +555,9 @@ class FleetManager:
         if not isinstance(path, str):
             raise ValueError("代理路径无效")
         path = path.lstrip("/")
-        allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy"})
+        allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy", "api/mihomo/config"})
                    or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate"})
+                   or (method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/(?:control|proxy/config)", path))
                    or (method == "PATCH" and path == "api/jobs/current")
                    or (method == "DELETE" and (path == "api/jobs/current" or re.fullmatch(r"api/jobs/current/stocks/[0-9]{6}", path))))
         if not allowed:
@@ -581,9 +582,17 @@ class FleetManager:
         method = str(method).upper()
         path = self._route(method, path, query)
         node = self._node(alias)
+        if method == "POST" and (path == "api/control" or re.fullmatch(r"api/stocks/[0-9]{6}/control", path)):
+            fields = {"action", "job_id"} if path.startswith("api/stocks/") else {"action"}
+            if not isinstance(body, dict) or set(body) - fields or body.get("action") not in {"start", "pause", "retry"}:
+                raise ValueError("控制参数无效；逐股动作必须使用专用股票接口")
+        if method == "POST" and path == "api/proxy/rotate" and body:
+            raise ValueError("切换出口请求不接受额外参数")
         try:
-            if method != "GET":
-                self._check_status(node)  # Pin verification immediately before the only mutation attempt.
+            if method != "GET" or path == "api/mihomo/config":
+                checked = self._check_status(node)  # Pin verification immediately before the only mutation attempt.
+                if path.startswith("api/stocks/") and checked.get("runtime_scope") != "stock":
+                    raise FleetError(409, "此采集节点尚未支持逐股控制，请先更新节点代码")
             if node["id"] != "local":
                 payload = self._remote(node, method, path, body, query)
             elif method == "GET":
@@ -597,7 +606,15 @@ class FleetManager:
                     if body:
                         raise ValueError("切换出口请求不接受额外参数")
                     self.engine.rotate_proxy()
+                elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/control", path):
+                    if not isinstance(body, dict) or set(body) - {"action", "job_id"} or body.get("action") not in {"start", "pause", "retry"}:
+                        raise ValueError("逐股控制只接受 action=start/pause/retry 和可选 job_id")
+                    getattr(self.engine, body["action"])(path.split("/")[2], job=body.get("job_id"))
+                elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/proxy/config", path):
+                    self.engine.configure_stock_proxy(path.split("/")[2], body)
                 elif method == "POST":
+                    if not isinstance(body, dict) or set(body) - {"action"}:
+                        raise ValueError("节点批量控制只接受 action；逐股控制请使用股票接口")
                     action = body.get("action") if isinstance(body, dict) else None
                     if action not in {"start", "pause", "retry"}:
                         raise ValueError("action 必须是 start、pause 或 retry")
@@ -609,6 +626,9 @@ class FleetManager:
                 else:
                     self.engine.remove_stock(path.rsplit("/", 1)[1])
                 payload = self.engine.status()
+            if path == "api/mihomo/config":
+                if self._identity(payload) != node["instance_id"]:
+                    raise FleetError(409, "节点私密配置 UUID 与注册身份不一致")
             if path == "api/status" or method != "GET":
                 if self._identity(payload) != node["instance_id"]:
                     raise FleetError(409, "节点响应 UUID 与注册身份不一致", method != "GET")
@@ -666,6 +686,8 @@ class FleetManager:
             return self.engine.status()
         if path == "api/proxy":
             return self.engine.proxy_status()
+        if path == "api/mihomo/config":
+            return self.engine.mihomo_config()
         if path == "api/jobs":
             return self.engine.jobs()
         if path in {"api/requests", "api/events"} and "paged" in values:

@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -303,6 +304,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
                     return self.send(200, self.server.engine.status())
+                if path == "api/mihomo/config":
+                    return self.send(200, self.server.engine.mihomo_config())
                 if path == "api/proxy":
                     return self.send(200, self.server.engine.proxy_status())
                 if path == "api/requests":
@@ -353,7 +356,15 @@ class Handler(BaseHTTPRequestHandler):
                 if obj:
                     raise ValueError("切换出口请求不接受额外参数")
                 return self.send(200, self.server.engine.rotate_proxy())
+            elif re.fullmatch(r"api/stocks/[0-9]{6}/control", path):
+                if set(obj) - {"action", "job_id"} or obj.get("action") not in {"start", "pause", "retry"}:
+                    raise ValueError("逐股控制只接受 action=start/pause/retry 和可选 job_id")
+                getattr(self.server.engine, obj["action"])(path.split("/")[2], job=obj.get("job_id"))
+            elif re.fullmatch(r"api/stocks/[0-9]{6}/proxy/config", path):
+                return self.send(200, self.server.engine.configure_stock_proxy(path.split("/")[2], obj))
             elif path == "api/control":
+                if set(obj) - {"action"}:
+                    raise ValueError("节点批量控制只接受 action；逐股控制请使用股票接口")
                 action = obj.get("action")
                 if action not in ("start", "pause", "retry"):
                     raise ValueError("action 必须是 start、pause 或 retry")

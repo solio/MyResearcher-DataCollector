@@ -39,6 +39,9 @@
   let proxyLoading = false;
   let proxyReadSerial = 0;
   const downloadBusy = new Set();
+  const taskProxyDrafts = new Map();
+  const stockEvidenceOpen = new Set();
+  let mihomoDownloading = false;
 
   function first(object, keys, fallback = null) {
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) return object[key];
@@ -114,6 +117,7 @@
     $("node-token").value = "";
     proxyReadSerial += 1; proxyLoading = false;
     clearProxySecrets();
+    clearTaskProxyDrafts();
     authMessage(message || "输入密钥后进入控制台。");
   }
   function showConsole() {
@@ -127,7 +131,7 @@
   async function api(path, method = "GET", payload, node = selectedNode) {
     const options = { method, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } };
     if (payload !== undefined) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(payload); }
-    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts|proxy)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
+    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts|proxy|stocks|mihomo)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
     const response = await fetch(new URL(`api/${routed}`, document.baseURI), options);
     const contentType = response.headers.get("content-type") || "";
     const data = contentType.includes("application/json") ? await response.json() : null;
@@ -240,7 +244,7 @@
   function requestSelection(id) {
     $("selected-node").value = selectedNode;
     if (busy || id === selectedNode) return;
-    if (formDirty || proxyDirty) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
+    if (formDirty || proxyDirty || [...taskProxyDrafts.values()].some((draft) => draft.dirty)) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
     void switchNode(id);
   }
   async function switchNode(id, force = false) {
@@ -252,6 +256,7 @@
     for (const dialog of ["retry-dialog", "delete-dialog"]) if ($(dialog).open) { $(dialog).returnValue = "cancel"; $(dialog).close?.(); }
     clearForm();
     clearProxyForm();
+    clearTaskProxyDrafts();
     for (const kind of ["requests", "events"]) {
       const previous = activityPages[kind]; activityPages[kind] = { ...previous, latest: true, index: 0, cursors: [null], snapshot: null, page: null, loading: false, generation: previous.generation + 1 };
       $(kind === "requests" ? "request-list" : "event-list").replaceChildren(el("div", "empty-state", "正在读取所选实例的记录…")); activityError(kind); display(kind === "requests" ? "request-count" : "event-count", "—");
@@ -331,6 +336,204 @@
   }
   function probePending() {
     return !!first(status, ["retry_pending", "probe_pending", "retry_scheduled"], false);
+  }
+  function independentStocks(data = status) { return data?.runtime_scope === "stock"; }
+  function stockEntries(data = status) {
+    const entries = first(data, ["coverage", "stock_coverage", "per_stock"], []);
+    return Array.isArray(entries) ? entries : Object.entries(objectValue(entries)).map(([stock, item]) => ({ stock, ...objectValue(item) }));
+  }
+  function stockRuntimes(data = status) { return stockEntries(data).map((item) => item.runtime).filter(Boolean); }
+  function runtimeProbe(runtime) { return Boolean(runtime?.probe || runtime?.probe_pending || runtime?.retry_pending); }
+  function stockInFlight(runtime, data = status) {
+    return runtime?.request_inflight === true || Boolean(data?.request_inflight && String(data.current?.stock) === String(runtime?.stock) && (runtime?.job == null || data.current?.job == null || String(data.current.job) === String(runtime.job)));
+  }
+  function runtimeFor(data, stock, job) {
+    const candidates = [...stockRuntimes(data), ...(Array.isArray(data?.detached_stock_runtimes) ? data.detached_stock_runtimes : [])];
+    return candidates.find((runtime) => String(runtime.stock) === String(stock) && (job == null || String(runtime.job) === String(job)));
+  }
+  function taskKey(stock, job) { return `${selectedNode}:${job == null ? "current" : job}:${stock}`; }
+  function clearTaskProxyDrafts() {
+    document.querySelectorAll(".task-proxy-form input[name='username'], .task-proxy-form input[name='password']").forEach((input) => { input.value = ""; });
+    taskProxyDrafts.clear(); stockEvidenceOpen.clear();
+  }
+  function stockButton(action, stock, runtime, detached = false) {
+    const labels = { start: "采集", pause: "暂停", retry: "探测" };
+    const button = el("button", `button ${action === "start" ? "primary" : "secondary"} small stock-control`, labels[action]);
+    button.type = "button"; button.dataset.stockAction = action; button.dataset.stock = String(stock);
+    if (runtime?.job != null) button.dataset.stockJob = String(runtime.job);
+    if (detached) button.dataset.detached = "1";
+    button.setAttribute("aria-label", `${labels[action]}股票 ${stock}${detached ? " 保留的原目标" : ""}`);
+    button.addEventListener("click", () => { void controlStock(String(stock), action, runtime?.job); });
+    return button;
+  }
+  function updateStockControls() {
+    const supported = independentStocks();
+    const locked = busy || !online || !authenticated;
+    document.querySelectorAll("[data-stock-action]").forEach((button) => {
+      const runtime = runtimeFor(status, button.dataset.stock, button.dataset.stockJob);
+      const active = runtime?.state === "running", probe = runtimeProbe(runtime), inFlight = stockInFlight(runtime);
+      const detached = button.dataset.detached === "1";
+      const action = button.dataset.stockAction;
+      button.disabled = Boolean(locked || !supported || !runtime || status?.storage_halt || status?.active_halt || (action === "start" ? detached || active || probe || inFlight || runtime.active_halt || !["paused", "idle"].includes(runtime.state) : action === "pause" ? !(active || probe || runtime.proxy_auto_suspended === false || inFlight) : active || probe || inFlight || !["paused", "blocked", "error"].includes(runtime.state) || !first(runtime, ["current", "current_target", "target"])));
+      if (!supported) button.title = "该节点尚不支持逐股控制，请更新节点；不会回退执行全局控制。";
+      else if (runtime?.active_halt && action === "start") button.title = "本股原目标阻断仍保留，请先探测成功，再手动采集。";
+      else button.title = action === "retry" ? "只请求本股保留的当前目标一次，遵守全局间隔和本股冷却；成功后仍暂停。" : action === "pause" ? "只暂停本股的后续请求，当前请求结束后保留响应。" : "只采集本股，其他股票状态不变。";
+    });
+    document.querySelectorAll("[data-task-proxy-fields]").forEach((fields) => { fields.disabled = locked || !supported || Boolean(status?.storage_halt); });
+    if ($("download-mihomo")) $("download-mihomo").disabled = locked || !supported || mihomoDownloading;
+  }
+  async function controlStock(stock, action, job) {
+    if (!independentStocks()) { notice("所选节点需更新以支持逐股控制；没有发送全局命令。", true); return false; }
+    const payload = { action }; if (job != null) payload.job_id = job;
+    const messages = { start: `${stock} 已提交采集指令，其他股票状态不变。`, pause: `${stock} 已暂停后续采集，已有响应与队列保留。`, retry: `${stock} 已安排一次原目标探测，遵守全局间隔与本股冷却；成功后仍暂停。` };
+    return post(`stocks/${encodeURIComponent(stock)}/control`, payload, messages[action]);
+  }
+  function stockTargetText(target) {
+    if (!target || typeof target !== "object") return target ? textValue(target) : "等待下一项";
+    return target.kind === "detail" ? `正文 ${target.post_id || "—"}` : `${target.purpose === "seek" ? "日期定位" : target.purpose === "recovery" ? "校准列表" : "前进列表"}${target.page == null ? "" : " · 源页码 " + number(target.page)}`;
+  }
+  function appendStockRuntime(row, runtime, detached = false) {
+    if (!runtime) return;
+    const facts = el("div", "stock-runtime-facts");
+    if (runtime.reason) facts.append(el("p", "stock-runtime-reason", runtime.reason));
+    const retry = objectValue(runtime.network_retry), target = first(runtime, ["current", "current_target", "target"]);
+    const parts = [stockInFlight(runtime) ? "本股请求中" : runtimeProbe(runtime) ? "单次探测已安排" : states[runtime.state] || runtime.state];
+    if (target) parts.push(stockTargetText(target));
+    const due = first(runtime, ["next_request_at", "next_due_at", "next_due"], retry.retry_at);
+    if (due) parts.push(`${runtimeProbe(runtime) ? "探测" : retry.kind ? "重试" : "最早请求"} ${time(due)}`);
+    if (retry.kind) parts.push(`${outcomes[retry.kind] || "网络异常"} · 连续 ${number(retry.attempt)} 次`);
+    facts.append(el("p", "field-note", parts.filter(Boolean).join(" · ")));
+    if (detached) facts.append(el("p", "coverage-gap", `原任务 #${runtime.job} 已移除或归档。仅保留原阻断目标的单次探测，不恢复旧采集队列。`));
+    if (runtime.active_halt) {
+      const details = el("details", "stock-evidence"), key = taskKey(runtime.stock, runtime.job);
+      details.open = stockEvidenceOpen.has(key);
+      details.append(el("summary", "", `本股阻断 · ${outcomes[runtime.active_halt] || runtime.active_halt} · 查看证据`), el("pre", "", JSON.stringify(runtime.block_evidence || { reason: runtime.reason, kind: runtime.active_halt }, null, 2)));
+      details.addEventListener("toggle", () => { if (details.isConnected) { if (details.open) stockEvidenceOpen.add(key); else stockEvidenceOpen.delete(key); } });
+      facts.append(details);
+    }
+    row.append(facts);
+  }
+  function appendTaskProxy(row, item, stock, runtime, existingPanels = new Map()) {
+    const proxy = objectValue(item.task_proxy), settings = objectValue(proxy.settings), key = taskKey(stock, runtime?.job);
+    if (existingPanels.has(key)) { row.append(existingPanels.get(key)); return; }
+    let draft = taskProxyDrafts.get(key);
+    if (!draft) { draft = { open: false, dirty: false }; taskProxyDrafts.set(key, draft); }
+    if (!draft.dirty) Object.assign(draft, { mode: settings.mode || "inherit", endpoint: settings.endpoint || "", outbound: settings.outbound || "", listen_address: settings.mode === "mihomo" ? settings.listen_address || proxy.suggested_listen_address || "127.0.0.1" : proxy.suggested_listen_address || settings.listen_address || "127.0.0.1", username: "", password: "", clear_auth: false });
+    const details = el("details", "task-proxy-panel"); details.open = draft.open; details.dataset.taskProxyKey = key;
+    const modeLabels = { inherit: "继承节点", direct: "直连", http: "HTTP 代理", mihomo: "Mihomo 独立入口" };
+    details.append(el("summary", "task-proxy-summary", `本股出口 · ${modeLabels[settings.mode] || "继承节点"}${settings.outbound ? " · " + settings.outbound : ""}`));
+    details.addEventListener("toggle", () => { if (details.isConnected) draft.open = details.open; });
+    const lease = objectValue(proxy.lease), facts = [];
+    if (lease.endpoint || settings.endpoint) facts.push(lease.endpoint || settings.endpoint);
+    if (lease.recent_success_at) facts.push(`该出口最近来源成功 ${time(lease.recent_success_at)}`);
+    else facts.push("尚未由来源请求核实");
+    if (lease.ip) facts.push(`供应商报告 IP ${lease.ip}`);
+    if (lease.expires_at) facts.push(`到期 ${time(lease.expires_at)}`);
+    if (proxy.fallback) facts.push("当前已回退直连");
+    details.append(el("p", "field-note", facts.join(" · ")));
+    if (proxy.last_error) details.append(el("p", "coverage-gap", proxy.last_error));
+    const form = el("form", "task-proxy-form"), fields = el("fieldset", ""); fields.dataset.taskProxyFields = "1";
+    const input = (name, label, type = "text", placeholder = "") => {
+      const id = `task-proxy-${String(stock)}-${String(runtime?.job ?? "current").replace(/[^A-Za-z0-9_-]/g, "_")}-${name}`;
+      const wrap = el("div", "task-proxy-field"), caption = el("label", "", label); caption.htmlFor = id;
+      const control = el("input", ""); control.id = id; control.name = name; control.type = type; control.autocomplete = type === "password" ? "new-password" : "off"; control.spellcheck = false;
+      if (type === "checkbox") control.checked = draft[name] === true; else control.value = draft[name] || "";
+      control.placeholder = placeholder; wrap.append(caption, control); return { wrap, control };
+    };
+    const modeLabel = el("label", "", "本股出站方式"), mode = el("select"); mode.id = `task-proxy-${stock}-${runtime?.job ?? "current"}-mode`; mode.name = "mode"; modeLabel.htmlFor = mode.id;
+    for (const [value, label] of Object.entries(modeLabels)) { const option = el("option", "", label); option.value = value; mode.append(option); } mode.value = draft.mode;
+    fields.append(modeLabel, mode);
+    const suggestedEndpoint = proxy.suggested_endpoint || `http://host.docker.internal:${proxy.suggested_port || 17890}`;
+    const address = input("endpoint", "本股 HTTP 代理端点", "url", suggestedEndpoint);
+    const endpointHelp = el("p", "field-note", "填写采集节点可访问的 HTTP/mixed 地址。Mac Docker 用 host.docker.internal；原生程序可用 127.0.0.1。Mihomo 为每股使用不同端口，避开日常 7897 端口。");
+    const httpFields = el("div", "task-http-fields"); httpFields.append(address.wrap, endpointHelp); fields.append(httpFields);
+    const outbound = input("outbound", "Mihomo 节点名", "text", "填写 Mihomo 配置里的具体节点完整名称"), listen = input("listen_address", "监听地址", "text", "127.0.0.1 或 0.0.0.0");
+    const mihomoFields = el("div", "task-mihomo-fields"); mihomoFields.append(outbound.wrap, listen.wrap, el("p", "field-note", "保存后下载下方私密分流配置。Clash Verge 在“订阅 → 全局扩展脚本”粘贴并保存；已有自定义脚本时须合并 main 中的采集监听逻辑，保留原逻辑。每个入口绑定具体节点，不切换日常 GLOBAL；节点名不同不证明公网 IP 不同。Docker 访问宿主时监听需接受容器连接，认证由程序生成。")); fields.append(mihomoFields);
+    const authFields = el("div", "task-auth-fields proxy-grid");
+    const user = input("username", "代理用户名", "text", settings.has_auth ? "已保存，留空保留" : "可选"), password = input("password", "代理密码", "password", settings.has_auth ? "已保存，留空保留" : "可选");
+    const clear = input("clear_auth", "明确移除旧 HTTP 认证", "checkbox"); clear.wrap.classList.add("task-auth-clear"); authFields.append(user.wrap, password.wrap, clear.wrap); fields.append(authFields);
+    const note = el("p", "field-note", runtime?.detached ? "这是已移除或归档的原任务出口，仅供原失败目标的单次探测。保存不会恢复旧采集队列，不清除原阻断或冷却；其他股票状态不变。" : "保存前只暂停本股并等待本股请求结束；保存后仍暂停。其他股票继续按节点全局间隔采集。出口配置不清除本股原阻断或冷却。");
+    const actions = el("div", "task-proxy-actions"), save = el("button", "button secondary small", "保存本股出口"), reset = el("button", "button quiet small", "撤销修改"); save.type = "submit"; reset.type = "button"; reset.hidden = !draft.dirty;
+    actions.append(save, reset); fields.append(actions); form.append(fields, note);
+    const error = el("p", "page-error"); error.hidden = true; error.setAttribute("role", "status"); form.append(error);
+    const showMode = () => { httpFields.hidden = !["http", "mihomo"].includes(mode.value); mihomoFields.hidden = mode.value !== "mihomo"; authFields.hidden = mode.value !== "http"; user.control.disabled = password.control.disabled = clear.control.checked; };
+    showMode();
+    form.addEventListener("input", () => { for (const field of [mode, address.control, outbound.control, listen.control, user.control, password.control, clear.control]) draft[field.name] = field.type === "checkbox" ? field.checked : field.value; draft.dirty = true; reset.hidden = false; error.hidden = true; showMode(); });
+    mode.addEventListener("change", () => {
+      if (mode.value === "mihomo") {
+        if (!address.control.value.trim()) address.control.value = suggestedEndpoint;
+        if (!listen.control.value.trim()) listen.control.value = proxy.suggested_listen_address || "127.0.0.1";
+      }
+      Object.assign(draft, { mode: mode.value, endpoint: address.control.value, listen_address: listen.control.value, dirty: true });
+      reset.hidden = false; showMode();
+    });
+    reset.addEventListener("click", () => { taskProxyDrafts.delete(key); renderCoverage(status, jobConfig()); controls(); });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault(); if (fields.disabled) return;
+      try {
+        const payload = { mode: mode.value };
+        if (["http", "mihomo"].includes(payload.mode)) {
+          let parsed; try { parsed = new URL(address.control.value.trim()); } catch { throw new Error("请填写该采集节点可访问的 HTTP 代理地址（http://）。"); }
+          if (parsed.protocol !== "http:" || parsed.username || parsed.password || parsed.search || parsed.hash || !["", "/"].includes(parsed.pathname)) throw new Error("代理地址应使用 http://，不带路径、查询或认证。用户名和密码请单独填写。");
+          payload.endpoint = address.control.value.trim();
+        }
+        if (payload.mode === "mihomo") {
+          payload.outbound = outbound.control.value.trim(); payload.listen_address = listen.control.value.trim();
+          if (!payload.outbound) throw new Error("请填写 Mihomo 配置中的具体节点名称。");
+        } else if (payload.mode === "http") { if (user.control.value) payload.username = user.control.value; if (password.control.value) payload.password = password.control.value; if (clear.control.checked) payload.clear_auth = true; }
+        const saved = await saveStockProxy(String(stock), runtime?.job, payload);
+        draft.username = draft.password = ""; user.control.value = password.control.value = "";
+        if (saved) { draft.dirty = false; draft.open = true; }
+        renderCoverage(status, jobConfig()); controls();
+      } catch (err) { error.textContent = safeProxyMessage(err.message, [user.control.value, password.control.value]); error.hidden = false; }
+    });
+    details.append(form); row.append(details);
+  }
+  async function pauseStockAndWait(stock, job, node, selection) {
+    let snapshot = await api("status", "GET", undefined, node);
+    const verify = () => {
+      if (selection !== nodeEpoch) throw new Error("查看实例已变化，尚未修改出口。");
+      if (!independentStocks(snapshot)) throw new Error("该节点尚不支持逐股控制，请更新节点；没有发送全局暂停。");
+      const runtime = runtimeFor(snapshot, stock, job); if (!runtime) throw new Error("股票任务已变化，请刷新后重新配置出口。"); return runtime;
+    };
+    let runtime = verify(); applyStatus(snapshot);
+    if (runtime.state === "running" || runtimeProbe(runtime) || stockInFlight(runtime, snapshot) || runtime.proxy_auto_suspended === false) {
+      snapshot = await api(`stocks/${encodeURIComponent(stock)}/control`, "POST", { action: "pause", ...(job == null ? {} : { job_id: job }) }, node);
+      runtime = verify(); applyStatus(snapshot);
+    }
+    const deadline = Date.now() + 45000;
+    while (runtime.state === "running" || runtimeProbe(runtime) || stockInFlight(runtime, snapshot)) {
+      if (Date.now() >= deadline) throw new Error("本股已提交暂停，当前请求尚未结束。出口尚未修改，请等待后重试。");
+      await new Promise((resolve) => setTimeout(resolve, 750)); snapshot = await api("status", "GET", undefined, node); runtime = verify(); applyStatus(snapshot);
+    }
+  }
+  async function saveStockProxy(stock, job, payload) {
+    if (busy || !authenticated || !online || !independentStocks()) return false;
+    const node = selectedNode, selection = nodeEpoch, detached = runtimeFor(status, stock, job)?.detached === true; busy = true; statusGeneration += 1; controls(); let saved = false;
+    try {
+      notice(`正在暂停 ${stock} 并保存本股出口；其他股票的采集状态不变。`);
+      await pauseStockAndWait(stock, job, node, selection);
+      const result = await api(`stocks/${encodeURIComponent(stock)}/proxy/config`, "POST", { ...payload, ...(job == null ? {} : { job_id: job }) }, node);
+      if (selection !== nodeEpoch) throw new Error("查看实例已变化，请重新读取原节点状态。");
+      applyStatus(result); saved = true; notice(`${stock} ${detached ? "原任务的探测" : "的"}出口已保存，仍保持暂停。${payload.mode === "mihomo" ? "请下载分流配置，在 Clash Verge 的全局扩展脚本中合并并保存，再对本股单次探测；配置生成不表示监听已可用。" : detached ? "已有阻断与冷却保留，只能单次探测原失败目标，不恢复旧采集队列。" : "已有阻断与冷却保留，检查后对本股探测或采集。"}`);
+    } catch (error) { notice(safeProxyMessage(error.message, [payload.username, payload.password]), true); }
+    finally { busy = false; controls(); if (authenticated) await poll(); }
+    return saved;
+  }
+  async function downloadMihomo() {
+    if (busy || mihomoDownloading || !independentStocks()) return;
+    const node = selectedNode, selection = nodeEpoch; mihomoDownloading = true; controls();
+    try {
+      const result = await api("mihomo/config", "GET", undefined, node);
+      if (selection !== nodeEpoch || !authenticated) return;
+      const hasScript = typeof result.script === "string" && Boolean(result.script.trim());
+      const contents = hasScript ? result.script : result.yaml;
+      if (typeof contents !== "string" || !contents.trim()) throw new Error("该节点没有返回有效的 Mihomo 分流配置。");
+      const url = URL.createObjectURL(new Blob([contents], { type: hasScript ? "text/javascript;charset=utf-8" : "application/yaml;charset=utf-8" }));
+      const anchor = el("a"); anchor.href = url; anchor.download = String(hasScript ? result.script_filename || "collector-mihomo-extension.js" : result.filename || "collector-mihomo-listeners.yaml").replace(/[^A-Za-z0-9._-]/g, "_"); document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      notice(`${nodeName(node)} 的私密 Mihomo ${hasScript ? "扩展脚本" : "监听 YAML"}已下载，含入口认证。${hasScript ? "请在 Clash Verge“订阅 → 全局扩展脚本”粘贴并保存；已有脚本时合并采集逻辑，保留原逻辑。" : "该节点只提供 YAML，请将 listeners 条目合并到代理配置并加载；更新节点可下载 Clash Verge 扩展脚本。"}加载后逐股探测，没有切换日常代理或发送股吧请求。`);
+    } catch (error) { if (selection === nodeEpoch && authenticated) notice(error.status === 404 ? "所选节点需更新以支持 Mihomo 配置下载；没有从主控本机生成替代配置。" : error.message, true); }
+    finally { mihomoDownloading = false; controls(); }
   }
   function clearProxySecrets() {
     for (const id of ["proxy-username", "proxy-password", "proxy-api-url"]) $(id).value = "";
@@ -447,13 +650,15 @@
     const state = status ? status.state : "idle";
     const job = jobConfig();
     const locked = busy || !online || !authenticated;
-    const pending = probePending();
-    $("start").disabled = locked || !job || pending || status?.storage_halt || status?.active_halt || status?.request_inflight || !["paused", "idle"].includes(state);
+    const scoped = independentStocks(), runtimes = stockRuntimes();
+    const pending = probePending() || (scoped && runtimes.some(runtimeProbe));
+    $("start").disabled = locked || !job || status?.storage_halt || status?.active_halt || (scoped ? !runtimes.some((runtime) => ["paused", "idle"].includes(runtime.state) && !runtime.active_halt && !runtimeProbe(runtime) && !stockInFlight(runtime)) : pending || status?.request_inflight || !["paused", "idle"].includes(state));
     const autoWaiting = ["blocked", "error"].includes(state) && status?.proxy?.settings?.auto_recover === true && status?.proxy?.auto_suspended === false && status?.proxy?.fallback?.blocked !== true;
-    $("pause").disabled = locked || !(state === "running" || pending || autoWaiting);
-    $("retry").disabled = locked || pending || status?.request_inflight || (status?.storage_halt ? state === "running" : ((!job && !status?.active_halt) || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state)));
-    display("retry", status?.storage_halt ? "重试数据库写入" : "单次探测重试");
-    const awaitingStop = state === "running" || pending || status?.request_inflight;
+    $("pause").disabled = locked || !(state === "running" || pending || autoWaiting || (scoped && runtimes.some((runtime) => runtime.state === "running" || runtime.proxy_auto_suspended === false)));
+    $("retry").disabled = locked || (status?.storage_halt ? state === "running" : scoped ? Boolean(status?.active_halt) || ![...runtimes, ...(status?.detached_stock_runtimes || [])].some((runtime) => ["paused", "blocked", "error"].includes(runtime.state) && !runtimeProbe(runtime) && !stockInFlight(runtime) && first(runtime, ["current", "current_target", "target"])) : pending || status?.request_inflight || ((!job && !status?.active_halt) || !first(status, ["current_target", "current", "target"]) || !["paused", "blocked", "error"].includes(state)));
+    display("start", scoped ? "批量采集" : "开始采集"); display("pause", scoped ? "批量暂停" : "暂停");
+    display("retry", status?.storage_halt ? "重试数据库写入" : scoped && !status?.active_halt ? "批量探测" : "单次探测重试");
+    const awaitingStop = state === "running" || pending || status?.request_inflight || (scoped && runtimes.some((runtime) => runtime.state === "running"));
     $("config-fields").disabled = locked || awaitingStop;
     $("save-config").disabled = $("config-fields").disabled || (!job && !!status?.active_halt);
     display("save-config", job ? "保存当前任务修改" : "创建任务");
@@ -482,10 +687,13 @@
     const blockedProxy = ["blocked", "error"].includes(state);
     display("proxy-rotate", dynamicProxyMode(proxyMode) ? (blockedProxy ? "更换 IP 并单次探测" : "更换下一次出口") : (blockedProxy ? "重选出站并单次探测" : "重选下一次出站"));
     proxyVisibility();
+    updateStockControls();
     updateDownloadLinks();
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
+    else if (scoped && status?.active_halt) display("action-note", "旧阻断记录无法定位到原股票任务，节点保持保护暂停。需要恢复原任务与请求证据，不能猜测目标探测或直接开始。");
+    else if (scoped) display("action-note", "各股控制在下方股票卡片右上角。批量采集只启动可继续的股票，保留其他股票的阻断；暂停作用于全部股票。多个探测目标请按卡片分别探测。");
     else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
     else if (state === "running" && status?.network_retry) display("action-note", "网络异常会按退避时间自动重试；点击暂停可停止后续请求。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
@@ -578,6 +786,14 @@
     display("run-title", pending ? "等待单次探测，不会自动继续" : retryWaiting ? "网络暂时失败，等待自动重试" : titles[state] || "等待检查任务状态");
     const genericReasons = { idle: "尚未设置股票和日期窗口。保存配置后，手动启动采集。", paused: config ? "恢复采集后继续使用已保存的队列和请求间隔。" : "尚未设置股票和日期窗口。保存配置后，手动启动采集。", running: "列表和正文串行获取；暂时网络异常按间隔退避重试，验证码或身份核实等保护性拦截会暂停。", blocked: "保留响应和失败位置，等待人工检查。", error: "保留响应和异常原因，等待人工检查。", completed: "本任务已停止，请逐股核对请求范围、源数据终点和未解决的缺口。" };
     display("run-reason", textValue(data.reason) || genericReasons[state]);
+    if (independentStocks(data)) {
+      const runtimes = stockRuntimes(data), active = runtimes.filter((runtime) => runtime.state === "running").length, blocked = runtimes.filter((runtime) => runtime.active_halt || ["blocked", "error"].includes(runtime.state)).length, probes = runtimes.filter(runtimeProbe).length;
+      display("state-label", `${states[state] || state}${runtimes.length ? ` · 采集 ${active} / 阻断 ${blocked}${probes ? " / 探测 " + probes : ""}` : ""}`);
+      if (!data.storage_halt && !data.active_halt) {
+        display("run-title", active ? "各股独立调度，按节点间隔采集" : probes ? "等待各股单次探测" : blocked ? "部分股票等待处理，逐股查看状态" : titles[state] || "逐股查看采集状态");
+        display("run-reason", textValue(data.reason) || "每只股票独立保存状态与出口。一股阻断或网络退避不暂停其他股票，节点仍共用一个请求间隔。");
+      }
+    }
     $("network-retry-note").hidden = !hasNetworkRetry;
     if (hasNetworkRetry) {
       const retryAt = first(networkRetry, ["retry_at"], first(data, ["next_request_at", "next_due_at", "next_allowed_at"]));
@@ -702,11 +918,11 @@
   function renderBlock(data) {
     const firstBlock = first(data, ["first_block_evidence", "first_block"]);
     const evidence = first(data, ["blocking_evidence", "block_evidence", "block"], firstBlock);
-    const blocked = Boolean(data.active_halt) || (["blocked", "error"].includes(data.state) && !data.storage_halt);
+    const blocked = Boolean(data.active_halt) || (!independentStocks(data) && ["blocked", "error"].includes(data.state) && !data.storage_halt);
     const evidenceKind = first(objectValue(evidence), ["kind", "outcome", "type"]);
     const staleEvidence = Boolean(data.active_halt && evidenceKind && evidenceKind !== data.active_halt);
     const currentEvidence = staleEvidence ? null : evidence;
-    const history = $("block-history"), hideHistory = !evidence || (blocked && !staleEvidence);
+    const history = $("block-history"), hideHistory = independentStocks(data) || !evidence || (blocked && !staleEvidence);
     if (history.hidden || hideHistory) history.open = false;
     history.hidden = hideHistory;
     display("block-history-evidence", hideHistory ? "" : JSON.stringify(firstBlock ? { first_block: firstBlock, latest_block: evidence } : evidence, null, 2));
@@ -715,7 +931,7 @@
     const info = objectValue(currentEvidence);
     const reason = first(info, ["reason", "error", "message"], data.reason || (data.state === "error" ? "当前异常尚未处理。" : "当前来源阻断尚未解除。"));
     const kind = first(info, ["outcome", "kind", "type"], data.active_halt || "待检查");
-    display("block-title", data.state === "error" ? "采集已暂停，需检查异常" : "当前来源阻断尚未解除");
+    display("block-title", independentStocks(data) ? "节点保护暂停，需检查原始证据" : data.state === "error" ? "采集已暂停，需检查异常" : "当前来源阻断尚未解除");
     display("block-kind", outcomes[kind] || kind);
     display("block-reason", reason);
     const facts = [
@@ -731,14 +947,22 @@
     let items = first(data, ["coverage", "stock_coverage", "per_stock"], []);
     if (!Array.isArray(items) && items && typeof items === "object") items = Object.entries(items).map(([stock, value]) => ({ stock, ...objectValue(value) }));
     if (!Array.isArray(items)) items = [];
-    const list = $("coverage-list"); list.replaceChildren();
+    const list = $("coverage-list");
+    const focused = document.activeElement;
+    const existingPanels = new Map([...list.querySelectorAll("[data-task-proxy-key]")].filter((panel) => taskProxyDrafts.get(panel.dataset.taskProxyKey)?.dirty || panel.contains(focused)).map((panel) => [panel.dataset.taskProxyKey, panel]));
+    const detachedRuntimes = Array.isArray(data.detached_stock_runtimes) ? data.detached_stock_runtimes : [];
+    const activeProxyKeys = new Set([...items.filter((item) => item.runtime).map((item) => taskKey(first(item, ["stock", "stock_code", "bar_code", "code"]), item.runtime.job)), ...detachedRuntimes.map((runtime) => taskKey(runtime.stock, runtime.job))]);
+    for (const key of taskProxyDrafts.keys()) if (!activeProxyKeys.has(key)) taskProxyDrafts.delete(key);
+    list.replaceChildren();
     if (!items.length && config && Array.isArray(config.stocks)) items = config.stocks.map((stock) => ({ stock, status: "pending" }));
     display("coverage-count", items.length ? `${items.length} 只股票 · 覆盖未确认` : "未配置");
-    if (!items.length) { list.append(el("div", "empty-state", "保存股票和日期窗口后，这里会显示覆盖进度。")); return; }
+    display("stock-controls-note", independentStocks(data) ? "各股独立采集、暂停、探测和出口；一个股票被拦截不会暂停其他股票。节点仍串行请求，共用全局请求间隔。" : "所选节点尚不支持逐股状态与控制，请更新该节点和主控。卡片按钮不会回退为全局命令。");
+    if (!items.length) list.append(el("div", "empty-state", "保存股票和日期窗口后，这里会显示覆盖进度。"));
     for (const item of items) {
       const stock = first(item, ["stock", "stock_code", "bar_code", "code"], "未知代码");
       const seek = windowSeekInfo(data, stock, item);
-      const state = first(item, ["status", "state", "stop_reason"], Number(item.pages || item.list_pages) > 0 ? data.state === "running" ? "running" : "paused" : "pending");
+      const runtime = independentStocks(data) ? item.runtime : null;
+      const state = runtime?.state || first(item, ["status", "state", "stop_reason"], Number(item.pages || item.list_pages) > 0 ? data.state === "running" ? "running" : "paused" : "pending");
       const complete = item.date_boundary_reached && item.details_complete && !item.gaps?.length;
       const gaps = first(item, ["gaps", "gap", "coverage_gap"]);
       const labels = { pending: "待观察", running: "进行中", active: "进行中", paused: "待继续", complete: "已发现项完成", completed: "已发现项完成", date_boundary_confirmed: "已到窗口边界", boundary_reached: "已到窗口边界", source_exhausted: "源数据到尾", gap: "存在缺口", blocked: "已拦截", exhausted: "源数据到尾" };
@@ -746,7 +970,9 @@
       const header = el("div", "coverage-item-header");
       const hasGap = Array.isArray(gaps) ? gaps.length > 0 : !!gaps;
       const actions = el("div", "coverage-item-actions");
-      actions.append(el("span", `tag${complete ? " success" : hasGap ? " warning" : ""}`, complete ? "已发现项完成" : hasGap ? "存在缺口" : item.date_boundary_reached ? "已到窗口边界" : labels[state] || state));
+      const runtimeLabel = runtime ? runtimeProbe(runtime) ? "探测已安排" : runtime.state === "running" && runtime.network_retry ? "等待网络重试" : states[runtime.state] || runtime.state : complete ? "已发现项完成" : hasGap ? "存在缺口" : item.date_boundary_reached ? "已到窗口边界" : labels[state] || state;
+      actions.append(el("span", `tag${runtime?.active_halt || state === "error" ? " warning" : state === "completed" || (!runtime && complete) ? " success" : ""}`, runtimeLabel));
+      if (/^\d{6}$/.test(String(stock))) for (const action of ["start", "pause", "retry"]) actions.append(stockButton(action, stock, runtime));
       if (config && config.stocks?.includes(String(stock)) && /^\d{6}$/.test(String(stock))) {
         const remove = el("button", "stock-remove", "移除");
         remove.type = "button"; remove.dataset.removeStock = String(stock);
@@ -756,6 +982,7 @@
       }
       header.append(el("strong", "", stock), actions);
       row.append(header);
+      appendStockRuntime(row, runtime);
       const requested = objectValue(item.requested_window);
       const requestedFrom = requested.from_date || config?.from_date;
       const requestedTo = requested.to_date || config?.to_date;
@@ -769,7 +996,7 @@
       if (navigationEarliest || navigationLatest) row.append(el("p", "stock-recovery", `${windowScoped ? "定位／列表观察" : "列表观察（旧节点口径）"}：${dateOnly(navigationEarliest)} 至 ${dateOnly(navigationLatest)} · 不代表采集覆盖`));
       const forward = objectValue(item.forward_time_range);
       if (forward.earliest || forward.latest) row.append(el("p", "stock-recovery", `顺序列表页观察：${dateOnly(forward.earliest)} 至 ${dateOnly(forward.latest)} · 页面可能跨越目标窗口`));
-      if (seek) row.append(el("p", "stock-recovery", windowSeekDescription(seek, data.state)));
+      if (seek) row.append(el("p", "stock-recovery", windowSeekDescription(seek, state)));
       const counters = el("div", "coverage-counts");
       const pages = first(item, ["list_pages", "pages", "pages_completed"]);
       const details = objectValue(item.details);
@@ -803,8 +1030,17 @@
       const reason = first(item, ["reason", "message"]);
       if (gapText || reason || ["exhausted", "source_exhausted"].includes(state)) row.append(el("p", "coverage-gap", gapText || reason || "源数据已到尾。目标窗口是否有未覆盖历史，请核对保留证据。"));
       if (item.recovery) row.append(el("div", "stock-recovery", recoveryDescription(item.recovery)));
+      if (runtime) appendTaskProxy(row, item, stock, runtime, existingPanels);
       list.append(row);
     }
+    for (const runtime of detachedRuntimes) {
+      const row = el("article", "coverage-item detached-stock-item"), header = el("div", "coverage-item-header"), actions = el("div", "coverage-item-actions");
+      actions.append(el("span", "tag warning", runtimeProbe(runtime) ? "原目标探测已安排" : "保留原阻断"), stockButton("pause", runtime.stock, runtime, true), stockButton("retry", runtime.stock, runtime, true));
+      header.append(el("strong", "", `${runtime.stock} · 原任务 #${runtime.job}`), actions); row.append(header); appendStockRuntime(row, runtime, true);
+      appendTaskProxy(row, { task_proxy: runtime.task_proxy }, runtime.stock, runtime, existingPanels); list.append(row);
+    }
+    updateStockControls();
+    if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
   }
   function windowSeekInfo(data, stock, item) {
     if (item.window_seek && typeof item.window_seek === "object") return item.window_seek;
@@ -1271,6 +1507,7 @@
     retryNodeEpoch = nodeEpoch; renderTiming(); $("retry-dialog").showModal();
   });
   $("retry-dialog").addEventListener("close", () => { if ($("retry-dialog").returnValue === "confirm" && retryNodeEpoch === nodeEpoch) void post("control", { action: "retry" }, "已安排一次探测。发送时间遵守间隔与冷却期，成功后仍暂停。"); });
+  $("download-mihomo").addEventListener("click", () => { void downloadMihomo(); });
   $("selected-node").addEventListener("change", () => requestSelection($("selected-node").value));
   $("switch-node-dialog").addEventListener("close", () => { const target = pendingSelection; pendingSelection = null; if ($("switch-node-dialog").returnValue === "confirm" && target) void switchNode(target); });
   $("add-node").addEventListener("click", () => openNodeForm());

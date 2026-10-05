@@ -20,7 +20,7 @@
     <section id="auth-panel" class="auth-card" aria-labelledby="auth-title">
       <div class="eyebrow">HTTP BACKFILL / PRIVATE CONSOLE</div>
       <h1 id="auth-title">把闲时，留给数据。</h1>
-      <p class="intro">查看无浏览器采集的连续表现。服务端按设定间隔请求股吧，检测到验证码响应或异常即暂停。</p>
+      <p class="intro">查看无浏览器采集的连续表现。服务端按设定间隔请求股吧，验证码和身份核实会暂停对应股票，暂时网络异常按间隔退避重试。</p>
       <form id="auth-form">
         <label for="token">控制台访问密钥</label>
         <div class="auth-input"><input id="token" name="token" type="password" autocomplete="current-password" required placeholder="输入部署时设置的密钥"><button id="login" class="button primary" type="submit">进入控制台</button></div>
@@ -71,7 +71,8 @@
       </section>
 
       <section class="card proxy-card" aria-label="当前节点出站代理">
-        <details id="proxy-panel"><summary class="proxy-summary"><strong>出站代理</strong><span id="proxy-summary-state" class="tag">尚未读取</span></summary>
+        <details id="proxy-panel"><summary class="proxy-summary"><strong>节点默认出站代理</strong><span id="proxy-summary-state" class="tag">尚未读取</span></summary>
+          <p class="field-note">下方股票卡片可单独指定出口；选择“继承节点”的股票共用这里的设置与动态 IP 提取额度。</p>
           <p id="proxy-node-note" class="field-note">设置作用于当前控制节点，手机与主控的管理连接不使用此代理。</p>
           <div class="proxy-toolbar"><span id="proxy-config-state" class="quiet-text">等待脱敏配置</span><button id="proxy-refresh" type="button" class="button quiet small">读取代理状态</button></div>
           <p id="proxy-capability-note" class="field-note">展开后读取该节点的代理能力；旧节点需要升级。</p>
@@ -129,7 +130,9 @@
 
         <section class="card coverage-card" aria-labelledby="coverage-title">
           <div class="section-heading"><div><div class="eyebrow">范围与缺口</div><h2 id="coverage-title">股票覆盖</h2></div><span id="coverage-count" class="tag">未配置</span></div>
-          <p class="section-intro">逐股展示目标窗口、已发现窗口内帖子的时间范围，以及日期定位和仍未取得的正文。</p>
+          <p class="section-intro">逐股展示状态、出口、目标窗口与已发现帖子。采集、暂停和探测只作用于所选股票。</p>
+          <p id="stock-controls-note" class="field-note">正在读取所选节点的逐股控制能力…</p>
+          <div class="stock-tools"><button id="download-mihomo" type="button" class="button secondary small" disabled>下载 Mihomo 采集分流配置</button><span class="field-note">先保存各股出口。Clash Verge：订阅 → 全局扩展脚本，粘贴并保存；已有脚本要合并采集逻辑，保留原逻辑。下载不会切换日常代理。</span></div>
           <div id="coverage-list" class="coverage-list"><div class="empty-state">保存股票和日期窗口后，这里会显示覆盖进度。</div></div>
           <p class="small-note">窗口内帖子按当前配置日期统计。定位／列表观察可能包含窗口外日期，用于定位和核对，不能当作采集覆盖。日期定位跳页不表示中间页面已采集。移动分页通过末页稳定检查或源 ID 与发布时间的局部区间两轮校准核对；旧 ID 不可见或时间次序未核实会保留缺口。校准通过和已发现项完成，仍不能证明目标窗口无遗漏。</p>
         </section>

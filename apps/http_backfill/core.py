@@ -40,6 +40,7 @@ from myresearcher_collector.sources.eastmoney_guba.content_rules import (
 )
 from lifecycle import LifecycleMixin
 from window_seek import WindowSeekMixin
+from stock_runtime import StockRuntimeMixin
 from rate_audit import tail_audit
 from compatible_store import CompatibleDataStore, _utc
 from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_store_adapter
@@ -321,8 +322,10 @@ def _validate_config(config):
             "interval_seconds": interval, "client": client}
 
 
-class Engine(LifecycleMixin, WindowSeekMixin):
+class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
     def __init__(self, data_dir, transport=None, clock=None):
+        self._stock_runtime_ready = False
+        self._stock_local = threading.local()
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         db_path = guard_runtime_path(self.data_dir)
@@ -336,6 +339,9 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             raise RuntimeError("该实验目录已有运行中的 worker，不能启动第二个进程") from exc
         self._mutex = threading.RLock()
         self._inflight = False
+        self._inflight_stock = None
+        self._inflight_probe = False
+        self._inflight_task = None
         self._closed = False
         self.clock = clock or time.time
         from proxy import ProxyManager
@@ -354,6 +360,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         self.db.execute("PRAGMA synchronous=FULL")
         with self.db:
             initialize_schema(self.db)
+        has_stock_runtime = self._get_global("stock_runtime_schema") is not None
         self._init_lifecycle_schema()
         with self.db:
             if self._get("instance_id") is None:
@@ -363,6 +370,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 self._set("reason", "尚未创建任务")
                 self._set("next_due", 0)
             interrupted = self.db.execute("SELECT * FROM requests WHERE outcome='reserved'").fetchall()
+            self._stock_interrupted = [dict(row) for row in interrupted]
             for row in interrupted:
                 raw = self.raw_dir / f"{row['id']:09d}.body"
                 partial = raw.with_suffix(".tmp")
@@ -389,26 +397,80 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 self._end_segment("restart_paused", last_observed)
             self._set("probe", False)
             self._suspend_proxy_recovery()
-            if not interrupted:
+            if not interrupted and not has_stock_runtime:
                 self._migrate_network_halt()
             self._migrate_content_policy()
-            self._migrate_frontiers()
-            self._migrate_window_seek()
-            if self._get("job_id") and self._get("state") != "completed":
-                self._mark_recovery_needed("process_restart")
+            if not has_stock_runtime:
+                self._migrate_frontiers()
+                self._migrate_window_seek()
+                if self._get("job_id") and self._get("state") != "completed":
+                    self._mark_recovery_needed("process_restart")
         self.compatible_store = CompatibleDataStore(self.data_dir, self._get("instance_id"))
         self._sync_storage()
+        from task_proxy import TaskProxyRoutes
+        self.task_proxies = TaskProxyRoutes(self.data_dir, self.proxy, clock=self.clock)
+        self._init_stock_runtime()
 
-    def _get(self, key, default=None):
+    def _get_global(self, key, default=None):
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return json.loads(row[0]) if row else default
 
-    def _set(self, key, value):
+    def _set_global(self, key, value):
         self.db.execute("INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, _dump(value)))
 
+    def _get(self, key, default=None):
+        if self._stock_runtime_ready and self._stock_scope() and self._stock_key(key):
+            return self._stock_get(key, default)
+        return self._get_global(key, default)
+
+    def _set(self, key, value):
+        if self._stock_runtime_ready and self._stock_scope() and self._stock_key(key):
+            return self._stock_set(key, value)
+        return self._set_global(key, value)
+
+    def _scope_stocks(self, config=None):
+        config = config or self._config()
+        scope = self._stock_scope() if self._stock_runtime_ready else None
+        return [scope[1]] if scope else config["stocks"] if config else []
+
+    def _proxy_for_stock(self):
+        scope = self._stock_scope() if self._stock_runtime_ready else None
+        return self.task_proxies.manager(str(scope[0]), scope[1]) if scope else self.proxy
+
+    def _sanitize(self, value):
+        routes = getattr(self, "task_proxies", None)
+        return routes.sanitize(value) if routes else self.proxy.sanitize(value)
+
+    def configure_stock_proxy(self, stock, settings):
+        with self._mutex, self.db:
+            settings = dict(settings)
+            requested_job = settings.pop("job_id", self._get("job_id"))
+            job, _ = self._resolve_stock_scope(stock, requested_job)
+            with self._stock_context(stock, job=job):
+                if self._inflight_stock == (job, stock) or self._get("state") == "running" or self._get("probe"):
+                    raise RuntimeError("请先暂停这只股票并等待它的请求结束，再修改出口")
+                result = self.task_proxies.configure(str(job), stock, settings)
+                self._suspend_proxy_recovery()
+                self._event("stock_proxy_configured", "更新本股票出口；阻断、冷却和断点保留", {"mode": result["settings"]["mode"]})
+        return self.status()
+
+    def mihomo_config(self):
+        with self._mutex:
+            job = self._get("job_id")
+            scopes = [(str(runtime["job"]), runtime["stock"]) for runtime in self._stock_runtimes(include_detached=True)]
+            if not scopes:
+                raise ValueError("请先创建任务并配置股票出口")
+            return {"yaml": self.task_proxies.mihomo_fragment(str(job), scopes=scopes),
+                    "script": self.task_proxies.mihomo_script(str(job), scopes=scopes),
+                    "filename": "collector-mihomo-listeners.yaml", "script_filename": "collector-mihomo-extension.js",
+                    "instance_id": self._get("instance_id"), "version": VERSION, "contains_private_credentials": True}
+
     def _event(self, kind, message, evidence=None):
+        scope = self._stock_scope() if self._stock_runtime_ready else None
+        if scope:
+            evidence = {**(evidence or {}), "stock": scope[1]}
         self.db.execute("INSERT INTO events(job,created,kind,message,evidence) VALUES(?,?,?,?,?)",
-                        (self._get("job_id"), self.clock(), kind, message, _dump(evidence) if evidence is not None else None))
+                        (scope[0] if scope else self._get("job_id"), self.clock(), kind, message, _dump(evidence) if evidence is not None else None))
 
     def _migrate_network_halt(self):
         halt = self._get("active_halt")
@@ -444,9 +506,11 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         self._event("network_retry_cleared_legacy", self._get("reason"), {"request_id": row["id"], "kind": kind})
 
     def _begin_segment(self, probe=False):
-        count = self.db.execute("SELECT COUNT(*) FROM requests WHERE job=?", (self._get("job_id"),)).fetchone()[0]
+        scope = self._stock_scope() if self._stock_runtime_ready else None
+        job = scope[0] if scope else self._get("job_id")
+        count = self.db.execute("SELECT COUNT(*) FROM requests WHERE job=?", (job,)).fetchone()[0]
         sid = self.db.execute("INSERT INTO run_segments(job,started,probe,attempts_at_start) VALUES(?,?,?,?)",
-                              (self._get("job_id"), self.clock(), int(probe), count)).lastrowid
+                              (job, self.clock(), int(probe), count)).lastrowid
         self._set("segment_id", sid)
 
     def _end_segment(self, reason, at=None):
@@ -531,6 +595,17 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                     self._set("probe", False)
                     self._end_segment("local_storage_error")
                     self._event("local_storage_error", self._get("reason"), halt)
+                    if self._stock_runtime_ready:
+                        for runtime in self._stock_runtimes(include_detached=True):
+                            with self._stock_context(runtime["stock"], runtime["job"]):
+                                self._suspend_proxy_recovery()
+                                self._set("probe", False)
+                                if not runtime["active_halt"] and runtime["state"] != "completed":
+                                    self._set("state", "paused")
+                                    self._set("reason", "本地存储异常，节点已暂停；修复后需手动继续")
+                                    self._set("resume_recovery", True)
+                                self._end_segment("local_storage_error")
+                        self._publish_stock_summary()
                 return False
             with self.db:
                 self._set("data_storage", {**summary, "schema_version": "legacy_posts", "status": "ready",
@@ -563,20 +638,23 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         network_target = self._network_retry_target()
         if network_target:
             return network_target
-        inflight = self.db.execute("SELECT * FROM tasks WHERE job=? AND status='inflight' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
+        scope = self._stock_scope() if self._stock_runtime_ready else None
+        where = " AND stock=?" if scope else ""
+        args = (scope[0], scope[1]) if scope else (self._get("job_id"),)
+        inflight = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND status='inflight' ORDER BY id LIMIT 1", args).fetchone()
         if inflight:
             return inflight
-        seeking = self.db.execute("SELECT * FROM tasks WHERE job=? AND kind='list' AND purpose='seek' AND status='pending' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
+        seeking = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND kind='list' AND purpose='seek' AND status='pending' ORDER BY id LIMIT 1", args).fetchone()
         if seeking:
             return seeking
-        forced = self.db.execute("SELECT * FROM tasks WHERE job=? AND kind='list' AND purpose='recovery' AND status='pending' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
+        forced = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND kind='list' AND purpose='recovery' AND status='pending' ORDER BY id LIMIT 1", args).fetchone()
         if forced:
             rec = self._recovery(forced["job"], forced["stock"])
             if rec and rec.get("force_first"):
                 return forced
-        return self.db.execute("SELECT * FROM tasks WHERE job=? AND status IN ('pending','inflight') "
+        return self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND status IN ('pending','inflight') "
                                "ORDER BY CASE WHEN status='inflight' THEN 0 WHEN kind='detail' THEN 1 WHEN purpose='recovery' THEN 2 ELSE 3 END,id LIMIT 1",
-                               (self._get("job_id"),)).fetchone()
+                               args).fetchone()
 
     def _network_retry_target(self):
         retry = self._get("network_retry")
@@ -597,6 +675,11 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         with self._mutex, self.db:
             if self._inflight or self._get("active_halt") or self._get("storage_halt"):
                 raise RuntimeError("已有未解决的暂停原因；不能新建任务绕过，请先单次探测")
+            if self._stock_runtime_ready:
+                blocked = [r["stock"] for r in self._stock_runtimes(include_detached=True)
+                           if r["active_halt"] and r["stock"] in config["stocks"]]
+                if blocked:
+                    raise RuntimeError("这些股票仍有原阻断，须先在旧任务入口单次探测：" + "、".join(sorted(set(blocked))))
             if self._get("job_id") and self._get("state") != "completed":
                 raise RuntimeError("已有未完成任务；请继续现有任务，避免丢失覆盖进度")
             end = datetime.fromisoformat(config["to_date"] + "T23:59:59.999999+08:00").timestamp()
@@ -618,6 +701,8 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 self._begin_window_seek(job, stock)
             self._register_job_lifecycle(job)
             self._event("job_created", "创建隔离回补任务", config)
+            if self._stock_runtime_ready:
+                self._ensure_current_stock_runtimes()
         return self.status()
 
     def _enqueue_list(self, job, stock, page):
@@ -701,6 +786,14 @@ class Engine(LifecycleMixin, WindowSeekMixin):
     def _frontier_rows(rows):
         return [r for r in rows if not (type(r.get("post_top_status")) is int and r["post_top_status"] != 0)]
 
+    def _ordinary_task_needed(self, task):
+        if not self._task_in_active_scope(task):
+            return False
+        if task["kind"] == "detail":
+            post = self.db.execute("SELECT status FROM http_posts WHERE post_id=?", (task["post_id"],)).fetchone()
+            return bool(post and post["status"] == "pending")
+        return True
+
     @classmethod
     def _navigation_rows(cls, rows):
         unpinned = cls._frontier_rows(rows)
@@ -727,6 +820,8 @@ class Engine(LifecycleMixin, WindowSeekMixin):
     def _migrate_frontiers(self):
         """v1 list observations establish an unverified anchor, never proof."""
         for cov in self.db.execute("SELECT * FROM coverage WHERE job=? AND pages>0", (self._get("job_id"),)).fetchall():
+            if cov["stock"] not in self._scope_stocks():
+                continue
             seek = self._seek_state(cov["job"], cov["stock"])
             if seek and not seek.get("entry_verified"):
                 continue
@@ -755,7 +850,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         if not job or not cfg or self._job_archived(job):
             return
         cutoff = datetime.fromtimestamp(self._get("effective_to_epoch"), guba.SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
-        for stock in cfg["stocks"]:
+        for stock in self._scope_stocks(cfg):
             if self._seek_state(job, stock):
                 continue
             frontier = self._frontier(job, stock)
@@ -771,11 +866,17 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             self._event("window_seek_upgraded", "旧任务尚未进入日期上界，改为快速定位；原请求和观察保留", {"stock": stock})
 
     def _mark_recovery_needed(self, reason):
+        if self._stock_runtime_ready and not self._stock_scope():
+            for job, stock in self._current_stock_scopes():
+                with self._stock_context(stock, job):
+                    if not self._get("active_halt"):
+                        self._mark_recovery_needed(reason)
+            return
         job = self._get("job_id")
         cfg = self._config()
         if not job or not cfg:
             return
-        for stock in cfg["stocks"]:
+        for stock in self._scope_stocks(cfg):
             seek = self._seek_state(job, stock)
             if seek and not seek.get("entry_verified"):
                 continue
@@ -999,13 +1100,13 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         self._enqueue_recovery(rec, rec["scan_start_page"])
         return {"phase": "seek", "verification_pending": True}
 
-    def start(self):
+    def _start_one(self):
         with self._mutex:
             if self._get("storage_halt"):
                 self._sync_storage()
                 return self.status()
         with self._mutex, self.db:
-            if self._inflight:
+            if self._inflight and (not self._stock_scope() or self._inflight_stock == self._stock_scope()):
                 raise RuntimeError("当前请求尚在执行，请等待其结果保存后继续")
             if not self._config():
                 raise RuntimeError("请先创建任务")
@@ -1029,7 +1130,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             self._event("started", "开始/继续任务")
         return self.status()
 
-    def pause(self):
+    def _pause_one(self):
         with self._mutex, self.db:
             self._suspend_proxy_recovery()
             self._set("probe", False)
@@ -1041,20 +1142,20 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             self._event("paused", "人工暂停；不会发起后续请求")
         return self.status()
 
-    def retry(self, *, automatic=False):
+    def _retry_one(self, *, automatic=False):
         with self._mutex:
             if self._get("storage_halt"):
                 self._sync_storage()
                 return self.status()
         with self._mutex, self.db:
-            if self._inflight or self._get("probe"):
+            if (self._inflight and (not self._stock_scope() or self._inflight_stock == self._stock_scope())) or self._get("probe"):
                 raise RuntimeError("请求或单次探测已在执行/排队")
             if self._get("state") == "running":
                 raise RuntimeError("请先暂停任务再单次探测")
             if not self._target(probe_target=True):
                 raise RuntimeError("没有待请求目标")
             if not automatic:
-                self.proxy.prepare_manual_probe()
+                self._proxy_for_stock().prepare_manual_probe()
             self._set("probe", True)
             self._suspend_proxy_recovery()
             self._set("state", "running")
@@ -1107,7 +1208,8 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             if halt == "proxy_error" and self._get("last_proxy_error") not in {
                     "proxy_connect", "provider_unavailable", "provider_duplicate"}:
                 return
-            proxy_status = self.proxy.status()
+            manager = self._proxy_for_stock()
+            proxy_status = manager.status()
             settings = proxy_status["settings"]
             if settings["mode"] not in {"mayi", "qingguo"} or not settings["auto_recover"]:
                 return
@@ -1124,13 +1226,13 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                       + settings["recovery_cooldown_seconds"])
             if self.clock() < due:
                 return
-            if not self.proxy.claim_recovery():
-                proxy_status = self.proxy.status()
+            if not manager.claim_recovery():
+                proxy_status = manager.status()
                 if proxy_status["recovery_attempts"] >= settings["recovery_max_attempts"]:
                     self._suspend_proxy_recovery()
                     self._event("proxy_recovery_exhausted", "连续恢复尝试预算耗尽，自动恢复已暂停；需要人工处理")
                 return
-            self.retry(automatic=True)
+            self._retry_one(automatic=True)
             self._set("proxy_auto_suspended", False)
             self._set("proxy_auto_probe", True)
             self._event("proxy_recovery_scheduled", "动态代理单次恢复已排队；仍受原限速和来源冷却约束")
@@ -1143,7 +1245,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
 
     def proxy_status(self):
         with self._mutex:
-            result = self.proxy.status()
+            result = self._proxy_for_stock().status()
             result["auto_suspended"] = self._get("proxy_auto_suspended", True)
             if (not result["auto_suspended"] and result["settings"]["auto_recover"]
                     and self._get("state") in {"blocked", "error"}):
@@ -1154,7 +1256,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                         self._get("next_due", 0), finished + result["settings"]["recovery_cooldown_seconds"]))
             return result
 
-    def tick(self):
+    def _tick_one(self):
         """Reserve durably, release control lock during I/O, then commit one outcome."""
         self._maybe_proxy_recovery()
         with self._mutex, self.db:
@@ -1165,14 +1267,14 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             task = self._target(probe_target=self._get("probe", False))
             if not self._get("probe", False) and not self._get("active_halt"):
                 skipped = []
-                while task and not self._task_in_active_scope(task) and len(skipped) < 100:
+                while task and not self._ordinary_task_needed(task) and len(skipped) < 100:
                     self.db.execute("UPDATE tasks SET status='superseded' WHERE id=?", (task["id"],))
                     skipped.append(task["id"])
                     task = self._target()
                 if skipped:
-                    self._event("out_of_scope_tasks_skipped", "跳过已不属于当前股票／日期窗口的待执行任务，历史记录仍保留",
+                    self._event("out_of_scope_tasks_skipped", "跳过窗口外或已取得正文的待执行任务，历史记录仍保留",
                                 {"count": len(skipped), "task_ids": skipped})
-                if task and not self._task_in_active_scope(task):
+                if task and not self._ordinary_task_needed(task):
                     return {"attempted": False}
             if not task:
                 self._finish_job()
@@ -1194,10 +1296,15 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             profile = self._request_profile(task)
             self._set("probe", False)
             self._set("next_due", max(now, self._get("next_due", 0)) + config["interval_seconds"])
+            interval = max(config["interval_seconds"], (self._config() or {}).get("interval_seconds", 60))
+            self._set_global("node_next_due", max(now, self._get_global("node_next_due", 0)) + interval)
             rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only,analysis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                                   (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only), _dump(profile))).lastrowid
             self.db.execute("UPDATE tasks SET status='inflight' WHERE id=?", (task["id"],))
             self._inflight = True
+            self._inflight_stock = (task["job"], task["stock"])
+            self._inflight_probe = probe
+            self._inflight_task = task
         # A concurrent pause is now effective for the next request; this response
         # remains fully recorded. Transport never recursively requests a redirect.
         dispatched = False
@@ -1206,8 +1313,9 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             self._record_proxy_dispatch(rid, route)
             dispatched = True
         try:
+            manager = self._proxy_for_stock()
             if self._managed_transport:
-                response = self.proxy.fetch(task["url"], config["client"], referer=profile["request_headers"]["Referer"],
+                response = manager.fetch(task["url"], config["client"], referer=profile["request_headers"]["Referer"],
                                             on_route=record_route)
             elif self._transport_with_referer:
                 response = self.transport(task["url"], config["client"], referer=profile["request_headers"]["Referer"])
@@ -1216,7 +1324,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             if not isinstance(response, Response):
                 raise ValueError("transport 必须返回 Response")
         except Exception as exc:
-            response = Response(None, b"", {}, task["url"], self.proxy.sanitize(f"{type(exc).__name__}: {exc}"),
+            response = Response(None, b"", {}, task["url"], self._sanitize(f"{type(exc).__name__}: {exc}"),
                                 network_attempted=dispatched if self._managed_transport else True,
                                 transient_error=_transient_error_kind(exc))
         with self._mutex:
@@ -1224,7 +1332,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 self._record_response(rid, task, response, config, probe, probe_only)
                 try:
                     outcome = self.db.execute("SELECT outcome FROM requests WHERE id=?", (rid,)).fetchone()[0]
-                    self.proxy.observe(response, outcome, self._get("next_due", 0))
+                    manager.observe(response, outcome, self._get("next_due", 0))
                 except Exception:
                     with self.db:
                         self._halt("error", "proxy_state_error", "代理运行状态保存失败；保留已取得数据，暂停后续请求", rid)
@@ -1243,23 +1351,28 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                     pass  # The original write error remains the stop reason.
                 with self.db:
                     self.db.execute("UPDATE requests SET outcome='internal_error',finished=?,error=?,network_attempted=? WHERE id=?",
-                                    (self.clock(), self.proxy.sanitize(f"{type(exc).__name__}: {exc}"), int(response.network_attempted), rid))
+                                    (self.clock(), self._sanitize(f"{type(exc).__name__}: {exc}"), int(response.network_attempted), rid))
                     if retained is not None:
                         headers = {str(k).lower(): str(v) for k, v in response.headers.items() if str(k).lower() in SAFE_HEADERS} if isinstance(response.headers, dict) else {}
                         self.db.execute("UPDATE requests SET http_status=?,response_bytes=?,sha256=?,raw_ref=?,headers=?,final_url=? WHERE id=?",
                                         (response.status, *retained, _dump(headers), response.url or task["url"], rid))
                     self._set("next_due", max(self._get("next_due", 0), self.clock() + config["interval_seconds"]))
                     self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (task["id"],))
-                    self._halt("error", "internal_error", self.proxy.sanitize(f"结果保存/解析错误，需要人工处理: {exc}"), rid)
+                    self._halt("error", "internal_error", self._sanitize(f"结果保存/解析错误，需要人工处理: {exc}"), rid)
             finally:
+                with self.db:
+                    self._set_global("node_next_due", max(self._get_global("node_next_due", 0), self.clock() + interval))
                 self._inflight = False
+                self._inflight_stock = None
+                self._inflight_probe = False
+                self._inflight_task = None
             self._sync_storage(rid)
             if (auto_probe and not probe_only and not self._get("proxy_auto_suspended", True)
                     and self._get("proxy_control_generation", 0) == control_generation
                     and not self._get("active_halt") and not self._get("storage_halt")
                     and self._get("state") == "paused" and self._task_in_active_scope(task)
                     and not self._job_archived(task["job"])):
-                self.start()
+                self._start_one()
             return {"attempted": True, "request_id": rid, "state": self._get("state")}
 
     def _prepare_forward_target(self, task):
@@ -1330,13 +1443,13 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 self._set("last_proxy_error", response.proxy_error)
                 if response.proxy_error not in {"proxy_connect", "provider_unavailable", "provider_duplicate"}:
                     self._suspend_proxy_recovery()
-                self._outcome(rid, "proxy_error", self.proxy.sanitize(response.error or "代理出站失败"),
+                self._outcome(rid, "proxy_error", self._sanitize(response.error or "代理出站失败"),
                               {"proxy_error": response.proxy_error, "source_attempted": response.network_attempted})
                 self._halt("blocked" if response.proxy_error == "proxy_auth" else "error", "proxy_error",
-                           self.proxy.sanitize("代理出站失败: " + (response.error or response.proxy_error)), rid)
+                           self._sanitize("代理出站失败: " + (response.error or response.proxy_error)), rid)
                 return
             if response.error:
-                error = self.proxy.sanitize(response.error)
+                error = self._sanitize(response.error)
                 self._outcome(rid, "transport_error", error)
                 self._halt("error", "transport_error", "网络/传输失败: " + error, rid)
                 return
@@ -1444,7 +1557,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
         self.db.execute("UPDATE requests SET outcome=?,error=?,analysis=? WHERE id=?", (outcome, error, _dump(combined) if combined else None, rid))
 
     def _record_network_retry(self, rid, task, response, config, probe):
-        error = self.proxy.sanitize(response.error)
+        error = self._sanitize(response.error)
         facts = {"transient_error": response.transient_error, "proxy_error": response.proxy_error,
                  "source_attempted": response.network_attempted}
         if probe or self._get("active_halt"):
@@ -1609,7 +1722,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                 else:
                     status = prior["status"]
                 if status == "pending" and detail_enrichment_trigger(item.title):
-                    exists = self.db.execute("SELECT 1 FROM tasks WHERE job=? AND kind='detail' AND post_id=? AND status IN ('pending','inflight')", (task["job"], pid)).fetchone()
+                    exists = self.db.execute("SELECT 1 FROM tasks WHERE job=? AND stock=? AND kind='detail' AND post_id=? AND status IN ('pending','inflight')", (task["job"], task["stock"], pid)).fetchone()
                     if not exists:
                         self.db.execute("INSERT INTO tasks(job,kind,stock,page,post_id,url,original_url) VALUES(?,'detail',?,?,?,?,?)",
                                         (task["job"], task["stock"], task["page"], pid, item.url, item.url))
@@ -1827,7 +1940,7 @@ class Engine(LifecycleMixin, WindowSeekMixin):
                       "data_storage": self._get("data_storage"), "storage_halt": self._get("storage_halt"),
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
             result["rate_audit"] = tail_audit(self)
-            result["proxy"] = self.proxy_status()
+            result["proxy"] = self.proxy.status()
             result["observed_work_complete"] = bool(coverage) and all(c["date_boundary_reached"] and c["details_complete"] and not c["gaps"] for c in coverage)
             result["recovery"] = [c["recovery"] for c in coverage if c["recovery"]]
             result["reconciliation_complete"] = bool(coverage) and all(c["reconciliation_complete"] for c in coverage)
@@ -1835,6 +1948,29 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             result["coverage_proof"] = "observed_pages_only"
             result["needs_review"] = True
             result["coverage_limitations"] = ["日期定位跳页不计作连续覆盖；定期校准只验证实际回扫的近期锚点区间，不能证明此前整个连续前进区间无遗漏", "来源可能删除或不再提供历史数据，锚点丢失时保留显式缺口"]
+            if self._stock_runtime_ready:
+                result.update(self._stock_summary())
+                result["probe_pending"] = result["probe_pending"] or self._inflight_probe
+                if self._inflight_task:
+                    result["current"] = self._target_json(self._inflight_task)
+                runtime_map = {r["stock"]: r for r in result["stock_runtimes"]}
+                for c in coverage:
+                    runtime = runtime_map[c["stock"]]
+                    runtime["request_inflight"] = self._inflight_stock == (runtime["job"], runtime["stock"])
+                    runtime["probe_pending"] = runtime["probe"] or (runtime["request_inflight"] and self._inflight_probe)
+                    c["runtime"], c["status"] = runtime, runtime["state"]
+                    c["task_proxy"] = self.task_proxies.status(str(runtime["job"]), runtime["stock"])
+                    containerized = Path("/.dockerenv").exists()
+                    c["task_proxy"]["suggested_listen_address"] = "0.0.0.0" if containerized else "127.0.0.1"
+                    c["task_proxy"]["suggested_endpoint"] = "http://" + ("host.docker.internal" if containerized else "127.0.0.1") + ":" + str(c["task_proxy"]["suggested_port"])
+                for runtime in result["detached_stock_runtimes"]:
+                    runtime["request_inflight"] = self._inflight_stock == (runtime["job"], runtime["stock"])
+                    runtime["probe_pending"] = runtime["probe"] or (runtime["request_inflight"] and self._inflight_probe)
+                    runtime["task_proxy"] = self.task_proxies.status(str(runtime["job"]), runtime["stock"])
+                    containerized = Path("/.dockerenv").exists()
+                    runtime["task_proxy"]["suggested_listen_address"] = "0.0.0.0" if containerized else "127.0.0.1"
+                    runtime["task_proxy"]["suggested_endpoint"] = "http://" + ("host.docker.internal" if containerized else "127.0.0.1") + ":" + str(runtime["task_proxy"]["suggested_port"])
+                result["proxy"]["auto_suspended"] = all(r["proxy_auto_suspended"] for r in result["stock_runtimes"])
             return result
 
     def _window_epochs(self, config=None):
@@ -1944,7 +2080,19 @@ class Engine(LifecycleMixin, WindowSeekMixin):
             if self._inflight:
                 raise RuntimeError("当前请求仍在执行，请暂停并等待 worker 退出后关闭")
             with self.db:
-                if self._get("state") == "running":
+                if self._stock_runtime_ready:
+                    for runtime in self._stock_runtimes(include_detached=True):
+                        with self._stock_context(runtime["stock"], runtime["job"]):
+                            self._suspend_proxy_recovery()
+                            self._set("probe", False)
+                            if runtime["state"] == "running":
+                                self._set("state", "blocked" if runtime["active_halt"] in {"challenge", "http_401", "http_403", "http_429"} else "error" if runtime["active_halt"] else "paused")
+                                if not runtime["active_halt"]:
+                                    self._set("reason", "进程关闭后安全暂停，等待继续")
+                                    self._set("resume_recovery", True)
+                            self._end_segment("process_closed")
+                    self._publish_stock_summary()
+                elif self._get("state") == "running":
                     self._set("state", "paused")
                     self._set("reason", "进程关闭后安全暂停，等待继续")
                 self._end_segment("process_closed")

@@ -2,6 +2,88 @@
 
 Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: independent stock controls and Mihomo task exits
+
+User requires source blocks to stop the affected stock rather than every task
+on the node, with collect/pause/probe buttons at the top right of each coverage
+card and a separate Mihomo route per stock task. SPEC was amended before
+implementation. New stock_runtime rows persist job+stock state, exact original
+halt target/config/evidence, cooldown, network retries, one-shot probe intent,
+recovery, run segment and proxy recovery control. A thread-local scope spans
+reservation, source I/O, callbacks, validation and storage; concurrent H5
+controls cannot switch another request's proxy or state. Round-robin skips
+paused/blocked/cooling stocks. One source request at a time and the existing
+node-wide finish-to-next-start interval remain in force; a stock's long
+Retry-After/backoff does not postpone another beyond that node interval.
+
+Top status is a node summary and coverage cards carry their own runtime, target,
+evidence, due and exit. Dedicated authenticated api/stocks/{stock}/control and
+proxy/config paths include job_id. Fleet validates arguments before dispatch,
+checks node UUID and runtime_scope=stock, and refuses old nodes without posting
+an ignored stock parameter to their global endpoint. Global controls remain
+batch conveniences. Source blocks are retained individually; probe success
+clears only its owner and leaves it paused. Storage/raw/sync durability failures
+still protect the whole node, including a dispatch owner temporarily marked
+error; successful storage repair leaves every affected stock paused.
+
+Legacy node halt migrates to the stock/job owning the original task; evidence
+and cooldown are preserved. Unlocatable targets remain an explicit node
+barrier. Restart pauses active stocks and restores owner-bound interrupted
+requests for a deliberate one-shot probe. Edits/removal/archive preserve all
+retained failure targets as probe-only detached entries; new same-stock jobs
+cannot silently bypass unresolved old blocks. Detached entries can change
+their exit by explicit job_id only for the original probe, without reviving
+old queues. Shared source bodies remain one post record, while detail tasks
+are now queued per stock; another observing stock can acquire the same body
+when its first owner is blocked. Normal duplicate detail targets are skipped
+after acquisition, but retained blocked probes remain exceptions.
+
+New TaskProxyRoutes supports inherit/direct/http/mihomo per job+stock. Inherit
+uses the existing node ProxyManager, retaining shared Mayi/Qingguo extraction
+limits and provider budgets. Other routes use independent static managers.
+Changing exit preserves source halt and cooldown. Private route files are
+owner-only, with generated HTTP listener credentials redacted from status,
+events and data exports. Current and unresolved detached routes are included
+in private Mihomo downloads; other historical routes are excluded.
+
+Read-only inspection of the actual Clash Verge service found Mihomo v1.19.32,
+mixed port 7897, GLOBAL mode, allow-lan=false, 69 proxy records and 2 selector
+groups. Its UNIX controller is not exposed inside the collector container.
+IN-USER routing is inappropriate in the observed GLOBAL mode. Instead each
+stock gets its own authenticated HTTP listener port (suggestions start at
+17890), with listener.proxy bound to the user-selected concrete outbound.
+The downloadable Clash Verge extension replaces/appends only exact collector
+listener names, preserves unrelated listeners and daily mode/ports/rules,
+and rejects port collisions before modifying config. It is idempotent and
+subscription-safe. Docker/native addressing and manual extension activation
+are explicit in UI/README. Different node names do not establish different
+public IPs: exit_identity stays unknown until actual measurement. Saving or
+generating config does not mean the listener has loaded. No live Mihomo
+selector/config/system-proxy change was made.
+
+Validation: Python AST, JS syntax and diff checks; isolated temporary Engine
+replays with mocked clock/source transport for A challenge/B continuing,
+owner-only probe recovery, owner 900-second backoff/B node pacing, independent
+routes and restart. Independent review replayed multi-halt removal/date edit/
+archive/detached probes, unknown legacy barriers, shared-body queues, and
+node/scoped storage failure plus repair. Authenticated loopback API/fleet
+replays verified job pinning, old-node rejection, malformed control rejection,
+private download auth/no-store and per-stock mutation. Private-route replay
+verified separate credentials/managers, shared inherited provider, persistence,
+0600 permissions, redaction and port checks. Native Mihomo v1.19.32 static
+configuration validation accepted fixed listeners in GLOBAL mode; generated
+JS replay preserved daily/unrelated settings, was idempotent and rejected
+collisions without mutation. No test suite, real Guba/provider request, live
+collector DB write, training import or running collector restart. Actual
+listener installation and distinct exit IPs have not been exercised.
+
+Deploy affected collector nodes and H5 host with the existing git pull /
+docker compose up -d --build command. The additive runtime schema migration is
+automatic in the existing collector.db, without resetting posts/raw/exports;
+tasks remain safely paused after restart. Configure each card's endpoint/node,
+download and load the extension on its proxy host, then probe that stock and
+manually collect. No extra Compose file or dependency was introduced.
+
 ## Latest change: stable-frontier checks instead of routine four-read recovery
 
 Read-only snapshot of local runtime confirms 002353 requests 2230..2236 are
