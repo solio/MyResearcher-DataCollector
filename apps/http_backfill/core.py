@@ -9,8 +9,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
+import errno
 import fcntl
 import hashlib
+import http.client
 from html.parser import HTMLParser
 import inspect
 import json
@@ -20,6 +22,8 @@ from pathlib import Path
 import random
 import re
 import sqlite3
+import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -48,6 +52,7 @@ GOOGLE_REFERER = "https://www.google.com/"
 BAIDU_REFERER = "https://www.baidu.com/"
 REDIRECTS = {301, 302, 303, 307, 308}
 SAFE_HEADERS = {"content-type", "content-length", "content-encoding", "location", "retry-after", "date", "server"}
+NETWORK_RETRY_KINDS = {"network_timeout", "tls_error", "network_connect", "network_io"}
 
 
 @dataclass
@@ -60,6 +65,62 @@ class Response:
     network_attempted: bool = True
     proxy: dict | None = None
     proxy_error: str | None = None
+    transient_error: str | None = None
+
+
+def _transient_error_kind(exc):
+    """Classify transport exceptions without treating local/config failures as a block."""
+    seen = set()
+    while isinstance(exc, BaseException) and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+            return "network_timeout"
+        if isinstance(exc, ssl.SSLError):
+            return "tls_error"
+        if isinstance(exc, socket.gaierror):
+            return "network_connect"
+        if isinstance(exc, (http.client.RemoteDisconnected, http.client.IncompleteRead, EOFError)):
+            return "network_io"
+        if isinstance(exc, ConnectionError):
+            return "network_connect"
+        if isinstance(exc, OSError) and exc.errno in {
+                errno.ECONNABORTED, errno.ECONNRESET, errno.ECONNREFUSED,
+                errno.EHOSTUNREACH, errno.ENETUNREACH, errno.ENETDOWN, errno.EPIPE}:
+            return "network_connect"
+        exc = exc.reason if isinstance(exc, urllib.error.URLError) else exc.__cause__
+    return None
+
+
+def _curl_transient_error(code):
+    if code in {5, 6, 7}:
+        return "network_connect"
+    if code == 28:
+        return "network_timeout"
+    if code in {35, 51, 60}:
+        return "tls_error"
+    if code in {16, 18, 52, 55, 56, 92}:
+        return "network_io"
+    return None
+
+
+def _legacy_transient_error(error):
+    """Narrow replay classification of old transport diagnostics, never source content."""
+    text = error or ""
+    match = re.search(r"curl(?: exit |:\s*\()(\d+)", text)
+    if match:
+        return _curl_transient_error(int(match[1]))
+    if re.search(r"\b(?:TimeoutError|TimeoutExpired|timed out)\b", text, re.I):
+        return "network_timeout"
+    if re.search(r"\b(?:SSLError|SSLCertVerificationError|CERTIFICATE_VERIFY_FAILED|SSL_ERROR_SYSCALL)\b|\[SSL:", text):
+        return "tls_error"
+    return None
+
+
+def _read_http_body(response):
+    # Shared read1-based bound keeps bytes already received before a timeout,
+    # including a short challenge shell that must not disappear into a buffer.
+    from proxy import _bounded_read
+    return _bounded_read(response, MAX_BODY + 1, time.monotonic() + 25)
 
 
 def _dump(value):
@@ -107,18 +168,23 @@ def fetch(url, client, referer=None):
     if client == "urllib":
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         request = urllib.request.Request(url, headers=headers)
+        observed_status, observed_headers = None, {}
         try:
             try:
                 response = opener.open(request, timeout=25)
             except urllib.error.HTTPError as exc:
                 response = exc
             with response:
-                body = response.read(MAX_BODY + 1)
-                headers = {k.lower(): v for k, v in response.headers.items() if k.lower() in SAFE_HEADERS}
-                return Response(response.status, body, headers, url,
+                observed_status = response.status
+                observed_headers = {k.lower(): v for k, v in response.headers.items() if k.lower() in SAFE_HEADERS}
+                body = _read_http_body(response)
+                return Response(observed_status, body, observed_headers, url,
                                 "响应超出 16 MiB，内容可能不完整" if len(body) > MAX_BODY else None)
         except Exception as exc:
-            return Response(None, b"", {}, url, f"{type(exc).__name__}: {exc}")
+            partial = getattr(exc, "partial", b"")
+            partial = partial if isinstance(partial, bytes) else b""
+            return Response(observed_status, partial[:MAX_BODY + 1], observed_headers, url, f"{type(exc).__name__}: {exc}",
+                            transient_error=_transient_error_kind(exc))
     if client != "curl":
         raise ValueError("client 只能是 curl 或 urllib")
     with tempfile.TemporaryDirectory(prefix="http-backfill-") as tmp:
@@ -144,9 +210,25 @@ def fetch(url, client, referer=None):
             body = bp.read_bytes() if bp.exists() else b""
             status = int(proc.stdout.strip()) if proc.stdout.strip().isdigit() else None
             return Response(status or None, body, headers, url,
-                            (proc.stderr.strip() or f"curl exit {proc.returncode}") if proc.returncode else None)
+                            (proc.stderr.strip() or f"curl exit {proc.returncode}") if proc.returncode else None,
+                            transient_error=_curl_transient_error(proc.returncode))
         except Exception as exc:
-            return Response(None, bp.read_bytes() if bp.exists() else b"", {}, url, f"{type(exc).__name__}: {exc}")
+            # A killed curl may have received an auth/block status before its
+            # final write-out. Retain that fact rather than retrying as a timeout.
+            observed_status, observed_headers = None, {}
+            if hp.exists():
+                for line in hp.read_text(errors="replace").splitlines():
+                    if line.startswith("HTTP/"):
+                        parts = line.split()
+                        observed_status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+                        observed_headers = {}
+                    elif ":" in line:
+                        key, value = line.split(":", 1)
+                        if key.lower() in SAFE_HEADERS:
+                            observed_headers[key.lower()] = value.strip()
+            return Response(observed_status, bp.read_bytes() if bp.exists() else b"", observed_headers, url, f"{type(exc).__name__}: {exc}",
+                            network_attempted=not isinstance(exc, (FileNotFoundError, PermissionError)),
+                            transient_error=_transient_error_kind(exc))
 
 
 class _StaticHTML(HTMLParser):
@@ -300,6 +382,8 @@ class Engine(LifecycleMixin):
                 self._end_segment("restart_paused", last_observed)
             self._set("probe", False)
             self._suspend_proxy_recovery()
+            if not interrupted:
+                self._migrate_network_halt()
             self._migrate_content_policy()
             self._migrate_frontiers()
             if self._get("job_id") and self._get("state") != "completed":
@@ -317,6 +401,39 @@ class Engine(LifecycleMixin):
     def _event(self, kind, message, evidence=None):
         self.db.execute("INSERT INTO events(job,created,kind,message,evidence) VALUES(?,?,?,?,?)",
                         (self._get("job_id"), self.clock(), kind, message, _dump(evidence) if evidence is not None else None))
+
+    def _migrate_network_halt(self):
+        halt = self._get("active_halt")
+        if halt not in {"transport_error", "proxy_error"}:
+            return
+        target = self._halt_target()
+        if (not target or target["status"] not in {"pending", "inflight"}
+                or not self._task_in_active_scope(target) or self._job_archived(target["job"])):
+            return
+        row = self.db.execute("SELECT * FROM requests WHERE task=? ORDER BY id DESC LIMIT 1", (target["id"],)).fetchone()
+        if (not row or row["probe"] or row["finished"] is None
+                or row["outcome"] != halt or row["http_status"] in {401, 403, 407, 429}):
+            return
+        analysis = json.loads(row["analysis"]) if row["analysis"] else {}
+        if halt == "proxy_error" and analysis.get("proxy_error") != "proxy_connect":
+            return
+        kind = _legacy_transient_error(row["error"])
+        if not kind:
+            return
+        if row["raw_ref"]:
+            try:
+                raw = (self.data_dir / row["raw_ref"]).resolve()
+                raw.relative_to(self.raw_dir)
+                body = raw.read_bytes()
+                if hashlib.sha256(body).hexdigest() != row["sha256"] or challenge_evidence(body.decode("utf-8-sig", errors="replace"))["challenge"]:
+                    return
+            except (OSError, ValueError):
+                return
+        self._clear_active_halt()
+        self._set("network_retry", None)
+        self._set("state", "paused")
+        self._set("reason", "旧版网络故障已改为可重试；历史证据和冷却保留，等待继续")
+        self._event("network_retry_cleared_legacy", self._get("reason"), {"request_id": row["id"], "kind": kind})
 
     def _begin_segment(self, probe=False):
         count = self.db.execute("SELECT COUNT(*) FROM requests WHERE job=?", (self._get("job_id"),)).fetchone()[0]
@@ -435,6 +552,9 @@ class Engine(LifecycleMixin):
             halted = self._halt_target()
             if halted:
                 return halted
+        network_target = self._network_retry_target()
+        if network_target:
+            return network_target
         inflight = self.db.execute("SELECT * FROM tasks WHERE job=? AND status='inflight' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
         if inflight:
             return inflight
@@ -446,6 +566,16 @@ class Engine(LifecycleMixin):
         return self.db.execute("SELECT * FROM tasks WHERE job=? AND status IN ('pending','inflight') "
                                "ORDER BY CASE WHEN status='inflight' THEN 0 WHEN kind='detail' THEN 1 WHEN purpose='recovery' THEN 2 ELSE 3 END,id LIMIT 1",
                                (self._get("job_id"),)).fetchone()
+
+    def _network_retry_target(self):
+        retry = self._get("network_retry")
+        if not retry:
+            return None
+        target = self.db.execute("SELECT * FROM tasks WHERE id=?", (retry["task_id"],)).fetchone()
+        if (target and target["job"] == self._get("job_id") and target["status"] in {"pending", "inflight"}
+                and self._task_in_active_scope(target) and not self._job_archived(target["job"])):
+            return target
+        return None
 
     @staticmethod
     def _target_json(row):
@@ -913,6 +1043,8 @@ class Engine(LifecycleMixin):
         with self._mutex, self.db:
             if self._closed or self._inflight or self._get("storage_halt") or self._get("state") != "running" or self.clock() < self._get("next_due", 0):
                 return {"attempted": False}
+            if self._get("network_retry") and not self._network_retry_target():
+                self._set("network_retry", None)
             task = self._target(probe_target=self._get("probe", False))
             if not task:
                 self._finish_job()
@@ -955,7 +1087,8 @@ class Engine(LifecycleMixin):
                 raise ValueError("transport 必须返回 Response")
         except Exception as exc:
             response = Response(None, b"", {}, task["url"], self.proxy.sanitize(f"{type(exc).__name__}: {exc}"),
-                                network_attempted=dispatched if self._managed_transport else True)
+                                network_attempted=dispatched if self._managed_transport else True,
+                                transient_error=_transient_error_kind(exc))
         with self._mutex:
             try:
                 self._record_response(rid, task, response, config, probe, probe_only)
@@ -1027,28 +1160,40 @@ class Engine(LifecycleMixin):
             # from bunching up the next request immediately after it finishes.
             self._set("next_due", max(self._get("next_due", 0), self.clock() + config["interval_seconds"]))
             self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (task["id"],))
+            if not _allowed(final_url) or final_url != task["url"]:
+                self._outcome(rid, "unexpected_final_url", "transport 不得自动重定向或请求外部地址")
+                self._halt("error", "unexpected_final_url", "transport 返回意外最终地址，拒绝接受数据", rid)
+                return
+            if response.status in {401, 403, 407, 429} and not response.proxy_error:
+                due = self._retry_after(headers.get("retry-after"))
+                self._set("next_due", max(self._get("next_due"), due))
+                self._outcome(rid, "access_block", response.error, {"http_status": response.status, "retry_after": headers.get("retry-after")})
+                self._halt("blocked", "http_" + str(response.status), f"来源返回 HTTP {response.status}；已停止自动请求", rid)
+                return
+            # Even a partial timed-out body can contain positive challenge
+            # evidence. It may stop access, but is never accepted as source data.
+            if response.error and not response.proxy_error:
+                partial_evidence = challenge_evidence(response.body.decode("utf-8-sig", errors="replace"))
+                if partial_evidence["challenge"]:
+                    self._outcome(rid, "access_block", partial_evidence["reason"], partial_evidence)
+                    self._halt("blocked", "challenge", f"检测到{partial_evidence['reason']}；已停止自动请求", rid)
+                    return
+            if response.error and response.transient_error in NETWORK_RETRY_KINDS and response.proxy_error != "proxy_auth":
+                self._record_network_retry(rid, task, response, config, probe)
+                return
             if response.proxy_error:
                 self._set("last_proxy_error", response.proxy_error)
                 if response.proxy_error not in {"proxy_connect", "provider_unavailable", "provider_duplicate"}:
                     self._suspend_proxy_recovery()
                 self._outcome(rid, "proxy_error", self.proxy.sanitize(response.error or "代理出站失败"),
                               {"proxy_error": response.proxy_error, "source_attempted": response.network_attempted})
-                self._halt("error", "proxy_error", self.proxy.sanitize("代理出站失败: " + (response.error or response.proxy_error)), rid)
-                return
-            if response.status in {403, 429}:
-                due = self._retry_after(headers.get("retry-after"))
-                self._set("next_due", max(self._get("next_due"), due))
-                self._outcome(rid, "access_block", response.error, {"http_status": response.status, "retry_after": headers.get("retry-after")})
-                self._halt("blocked", "http_" + str(response.status), f"来源返回 HTTP {response.status}；已停止自动请求", rid)
+                self._halt("blocked" if response.proxy_error == "proxy_auth" else "error", "proxy_error",
+                           self.proxy.sanitize("代理出站失败: " + (response.error or response.proxy_error)), rid)
                 return
             if response.error:
                 error = self.proxy.sanitize(response.error)
                 self._outcome(rid, "transport_error", error)
                 self._halt("error", "transport_error", "网络/传输失败: " + error, rid)
-                return
-            if not _allowed(final_url) or final_url != task["url"]:
-                self._outcome(rid, "unexpected_final_url", "transport 不得自动重定向或请求外部地址")
-                self._halt("error", "unexpected_final_url", "transport 返回意外最终地址，拒绝接受数据", rid)
                 return
             try:
                 html = response.body.decode("utf-8-sig", errors="strict")
@@ -1070,6 +1215,7 @@ class Engine(LifecycleMixin):
                 self._halt("error", "schema_error", "响应不完整/编码不支持: " + str(exc), rid)
                 return
             if response.status in REDIRECTS:
+                self._set("network_retry", None)
                 target = urljoin(task["url"], headers.get("location", ""))
                 if not headers.get("location") or not _allowed(target) or task["hops"] >= 5 or target == task["url"]:
                     self._outcome(rid, "redirect_error", "重定向地址不允许、形成循环或超出 5 跳")
@@ -1143,7 +1289,47 @@ class Engine(LifecycleMixin):
         combined = self._request_analysis(rid, analysis)
         self.db.execute("UPDATE requests SET outcome=?,error=?,analysis=? WHERE id=?", (outcome, error, _dump(combined) if combined else None, rid))
 
+    def _record_network_retry(self, rid, task, response, config, probe):
+        error = self.proxy.sanitize(response.error)
+        facts = {"transient_error": response.transient_error, "proxy_error": response.proxy_error,
+                 "source_attempted": response.network_attempted}
+        if probe or self._get("active_halt"):
+            # A failed one-shot probe is not permission to keep sending. Preserve
+            # the protective halt and original evidence if one already exists.
+            self._set("network_retry", None)
+            self._outcome(rid, "transport_error", error, facts | {"automatic_retry": False})
+            if self._get("active_halt"):
+                halt = self._get("active_halt")
+                blocked = halt in {"challenge", "http_401", "http_403", "http_407", "http_429"} or (
+                    halt == "proxy_error" and self._get("last_proxy_error") == "proxy_auth")
+                self._set("state", "blocked" if blocked else "error")
+                self._set("reason", (self._get("block_evidence") or {}).get("reason") or "原阻断尚未解除")
+            elif self._get("state") == "running":
+                self._set("state", "paused")
+                self._set("reason", "单次探测遇到网络故障；已暂停，等待继续或再次单次探测")
+            self._end_segment("probe_network_error")
+            self._event("network_probe_failed", "单次探测遇到网络故障，未安排自动重试", {"request_id": rid, **facts})
+            return
+        previous = self._get("network_retry") or {}
+        attempt = previous.get("attempt", 0) + 1 if previous.get("task_id") == task["id"] else 1
+        delay = max(config["interval_seconds"], min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
+        due = max(self._get("next_due", 0), self.clock() + delay, self._retry_after(response.headers.get("retry-after")))
+        retry = {"kind": response.transient_error, "attempt": attempt, "task_id": task["id"],
+                 "request_id": rid, "retry_at": _iso(due), "error": error}
+        self._set("network_retry", retry)
+        self._set("next_due", due)
+        self._outcome(rid, "transport_error", error, facts | {"network_retry": retry, "automatic_retry": True})
+        if self._get("state") == "running":
+            self._set("reason", f"网络故障，保留原请求等待第 {attempt} 次退避重试；未观察到来源阻断")
+        self._event("network_retry_scheduled", "网络故障已记录，保留原目标并按全局间隔退避", retry)
+
+    def _clear_active_halt(self):
+        for key in ("active_halt", "halted_task_id", "halt_task_id", "halted_config", "halt_config"):
+            self._set(key, None)
+        self._set("halted_probe_only", False)
+
     def _halt(self, state, kind, reason, rid):
+        self._set("network_retry", None)
         if kind not in {"challenge", "http_403", "http_429", "proxy_error"}:
             self._suspend_proxy_recovery()
         self._set("state", state)
@@ -1163,21 +1349,19 @@ class Engine(LifecycleMixin):
         self._event(kind, reason, evidence)
 
     def _after_success(self, rid, probe):
+        self._set("network_retry", None)
         self._set("last_success", self.clock())
         if probe:
             self._set("resume_recovery", True)
-            self._set("active_halt", None)
-            self._set("halted_task_id", None)
-            self._set("halt_task_id", None)
-            self._set("halted_probe_only", False)
-            self._set("halted_config", None)
-            self._set("halt_config", None)
+            self._clear_active_halt()
             self._set("state", "paused")
             self._set("reason", "单次探测取得有效来源响应；已暂停，等待继续")
             self._end_segment("probe_success")
             self._event("probe_success", self._get("reason"), {"request_id": rid})
-        elif self._get("state") == "running" and not self._target():
-            self._finish_job()
+        elif self._get("state") == "running":
+            self._set("reason", "按全局间隔运行")
+            if not self._target():
+                self._finish_job()
 
     def _accept_list(self, rid, task, html, config, probe_only=False):
         expected_path = urlparse(task["original_url"]).path
@@ -1401,6 +1585,7 @@ class Engine(LifecycleMixin):
                       "observed_span_seconds": max(0, last - first) if first is not None and last is not None else 0,
                       "last_success": _iso(self._get("last_success")), "block_evidence": self._get("block_evidence"),
                       "active_halt": self._get("active_halt"), "probe_pending": self._get("probe", False),
+                      "network_retry": self._get("network_retry") if self._network_retry_target() else None,
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
                       "content_policy": self._get("content_policy"),
                       "http_request_profile": {"version": REQUEST_PROFILE, "user_agent": UA,

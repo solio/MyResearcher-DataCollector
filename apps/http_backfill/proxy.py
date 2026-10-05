@@ -152,17 +152,29 @@ def _bounded_read(response, limit, deadline):
             break
         except AttributeError:
             continue
-    while size < limit:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("HTTP 响应超过总传输时限")
-        if sock is not None:
-            sock.settimeout(remaining)
-        block = read(min(65536, limit - size))
-        if not block:
-            break
-        pieces.append(block)
-        size += len(block)
+    try:
+        while size < limit:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("HTTP 响应超过总传输时限")
+            if sock is not None:
+                sock.settimeout(remaining)
+            block = read(min(65536, limit - size))
+            if not block:
+                break
+            pieces.append(block)
+            size += len(block)
+    except Exception as exc:
+        # Preserve received evidence even when the next read or total deadline
+        # fails. Keep the original exception type for transport classification.
+        partial = getattr(exc, "partial", b"")
+        if not isinstance(partial, bytes):
+            partial = b""
+        try:
+            exc.partial = (b"".join(pieces) + partial)[:limit]
+        except (AttributeError, TypeError):
+            pass
+        raise
     return b"".join(pieces)
 
 
@@ -706,7 +718,7 @@ class ProxyManager:
         return response
 
     def _urllib(self, core, url, route, referer):
-        trace = {"origin_started": False}
+        trace = {"origin_started": False, "tunnel_established": False}
 
         class ObservedConnection(http.client.HTTPSConnection):
             _proxy_tunnelling = False
@@ -716,6 +728,7 @@ class ProxyManager:
                 self._proxy_tunnelling = True
                 try:
                     super()._tunnel()
+                    trace["tunnel_established"] = True
                 finally:
                     self._proxy_tunnelling = False
 
@@ -742,22 +755,43 @@ class ProxyManager:
             request.add_unredirected_header("Proxy-Authorization", "Basic " + base64.b64encode(credentials).decode("ascii"))
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(), ExplicitHTTPS())
         deadline = time.monotonic() + REQUEST_TIMEOUT
+        observed_status, headers, body = None, {}, b""
         try:
             try:
                 response = opener.open(request, timeout=REQUEST_TIMEOUT)
             except urllib.error.HTTPError as exc:
                 response = exc
+            observed_status = response.status
+            headers = {k.lower(): v for k, v in response.headers.items() if k.lower() in core.SAFE_HEADERS}
             with response:
                 body = _bounded_read(response, core.MAX_BODY + 1, deadline)
-                headers = {k.lower(): v for k, v in response.headers.items() if k.lower() in core.SAFE_HEADERS}
                 error = "响应超出 16 MiB，内容可能不完整" if len(body) > core.MAX_BODY else None
-                return core.Response(response.status, body, headers, url, error)
+                return core.Response(observed_status, body, headers, url, error)
         except Exception as exc:
+            partial = getattr(exc, "partial", None)
+            if isinstance(partial, bytes):
+                body = partial[:core.MAX_BODY + 1]
             text = self.sanitize(f"{type(exc).__name__}: {exc}")
             match = re.search(r"Tunnel connection failed:\s*(\d{3})", str(exc))
             code = int(match[1]) if match else None
-            pe = "proxy_auth" if code == 407 else "proxy_connect"
-            return core.Response(None, b"", {}, url, text, network_attempted=trace["origin_started"], proxy_error=pe)
+            transient = core._transient_error_kind(exc)
+            if observed_status is not None:
+                pe = "proxy_auth" if observed_status == 407 else None
+                if pe:
+                    transient = None
+            elif code is not None:
+                pe = "proxy_auth" if code == 407 else "proxy_connect"
+                # Explicit refusal/authentication is not a transport failure.
+                transient = "network_connect" if 500 <= code <= 599 else None
+            elif trace["tunnel_established"]:
+                # TLS negotiation and origin reads occur after CONNECT. Their
+                # failure does not establish that the proxy exit is blocked.
+                pe = None
+            else:
+                pe = "proxy_connect" if transient else "proxy_config"
+            return core.Response(observed_status, body, headers, url, text,
+                                 network_attempted=trace["origin_started"] or observed_status is not None,
+                                 proxy_error=pe, transient_error=transient)
 
     def _curl(self, core, url, route, referer):
         with tempfile.TemporaryDirectory(prefix="http-backfill-proxy-") as tmp:
@@ -791,19 +825,49 @@ class ProxyManager:
                 connect = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
                 error = self.sanitize(proc.stderr.strip() or f"curl exit {proc.returncode}") if proc.returncode else None
                 pe = None
+                transient = core._curl_transient_error(proc.returncode)
                 if connect not in {0, 200}:
                     pe = "proxy_auth" if connect == 407 else "proxy_connect"
                     error = error or f"代理拒绝 CONNECT ({connect})"
                     status, headers, body = 0, {}, b""
+                    transient = "network_connect" if 500 <= connect <= 599 else None
                 elif proc.returncode and connect != 200:
-                    pe = "proxy_connect"
+                    pe = "proxy_connect" if transient else "proxy_config"
                 return core.Response(status or None, body, headers, url, error,
-                                     network_attempted=connect == 200 or status > 0, proxy_error=pe)
+                                     network_attempted=connect == 200 or status > 0, proxy_error=pe,
+                                     transient_error=transient)
             except Exception as exc:
                 error = self.sanitize(f"{type(exc).__name__}: {exc}")
                 did_start = not isinstance(exc, (FileNotFoundError, PermissionError))
-                return core.Response(None, bp.read_bytes() if bp.exists() else b"", {}, url, error,
-                                     network_attempted=did_start, proxy_error="proxy_connect" if did_start else "proxy_config")
+                transient = core._transient_error_kind(exc)
+                observed_status, headers = None, {}
+                try:
+                    if hp.exists():
+                        for line in hp.read_text(errors="replace").splitlines():
+                            match = re.match(r"^HTTP/\S+\s+(\d{3})(?:\s|$)", line)
+                            if match:
+                                code = int(match[1])
+                                observed_status = code if code >= 200 else None
+                                headers = {}
+                            elif observed_status is not None and ":" in line:
+                                k, v = line.split(":", 1)
+                                if k.lower() in core.SAFE_HEADERS:
+                                    headers[k.lower()] = v.strip()
+                except OSError:
+                    pass
+                # CONNECT headers are suppressed, so an observed status belongs
+                # to the source even when the process never finished write-out.
+                if observed_status == 407:
+                    pe = "proxy_auth"
+                    transient = None
+                else:
+                    pe = None if observed_status is not None or transient else "proxy_config"
+                return core.Response(observed_status, bp.read_bytes() if bp.exists() else b"", headers, url, error,
+                                     network_attempted=did_start or observed_status is not None,
+                                     # Missing write-out cannot establish that
+                                     # a process timeout was a CONNECT failure.
+                                     proxy_error=pe,
+                                     transient_error=transient)
 
     def observe(self, response, outcome, cooldown_until=None):
         public = getattr(response, "proxy", None) or {}
@@ -827,8 +891,11 @@ class ProxyManager:
                     self._save()
                 return
             pe = getattr(response, "proxy_error", None)
-            source_block = outcome in {"access_block", "blocked", "challenge", "http_block", "rate_limited"} or (response.status in {403, 429} and not pe)
-            if not source_block and not pe:
+            source_block = outcome in {"access_block", "blocked", "challenge", "http_block", "rate_limited"} or (response.status in {401, 403, 429} and not pe)
+            # Configuration/storage errors and post-CONNECT origin transport
+            # failures are not evidence against a dynamic candidate. Genuine
+            # proxy connection failures can still retire a failed lease.
+            if not source_block and pe not in {"proxy_connect", "proxy_auth"}:
                 return
             fallback = self._state.get("fallback")
             if (source_block and fallback and public.get("mode") == "direct"

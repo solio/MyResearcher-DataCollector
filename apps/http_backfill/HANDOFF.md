@@ -1,6 +1,49 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-04, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest change: paced retry for transient TLS/network failures
+
+The user explicitly requires TLS errors/timeouts to keep collecting rather than
+requiring an access-block recovery. SPEC records this amendment before code.
+Known curl exit codes and typed urllib exceptions classify timeout, TLS, DNS,
+connection and interrupted transfer failures; local/configuration errors are
+not automatically assumed transient. Strict TLS verification is retained.
+
+Normal running leaves the original task pending and pins it before ordinary
+queue priority, preserving Referer and partial raw evidence. Existing meta and
+request analysis persist network_retry kind/target/request/count/due. Finish-based
+backoff doubles the original interval up to 900 seconds, never faster than the
+configured interval or retained Retry-After; successful acquisition resets it.
+Transport still performs one attempt, with no inner retry or implicit fallback.
+An in-flight failure cannot override manual pause. Invalid/removed/archived retry
+targets do not revive; restart stays paused. Existing list anchor calibration
+continues rather than regenerating it after every network retry.
+
+Source 401/403/429, proxy 407 and positive challenge evidence take precedence
+over a concurrent body timeout. Both urllib routes share bounded read1-based
+body acquisition and retain already received bytes/status/headers on failure;
+partial evidence can prove a challenge but never becomes parsed source data.
+Proxy transports distinguish failed CONNECT from origin TLS/read failure so
+the latter does not cool a good dynamic candidate. A one-shot probe that fails
+transiently remains one-shot and preserves original source halt/evidence. Source
+auth/protection and permanent/schema/storage error stops remain separate from
+automatic network retry. Recognized old non-probe network halts release only to
+paused after retained target/status/raw/hash checks; historical evidence remains.
+
+Changed core.py, proxy.py, static app/index and SPEC/README/HANDOFF. H5 and fleet
+cards display network retry waiting/count/due with existing pause controls.
+Independent diff review caught and resolved loss of short challenge bytes before
+urllib timeout. Syntax commands: Python ast.parse for core.py/proxy.py;
+node --check apps/http_backfill/static/app.js; git diff --check.
+Isolated temporary-directory replays with mocked transport/clock passed normal
+60/120/240/480/900/900 spacing, pinned target, retained failure ledger, valid
+source-success reset, 401/403/429/Retry-After precedence, proxy auth precedence,
+manual pause during I/O, one-shot probe after block, legacy timeout release,
+partial body/status retention for direct/proxy urllib and curl TLS classification,
+and safely paused restart. No test suite, real source/provider request, training
+write or live collector restart. Deploy nodes and the H5 host with their existing
+git pull / docker compose up -d --build command; no Compose/schema change.
 
 ## Latest research: task routing through the existing local Clash port
 

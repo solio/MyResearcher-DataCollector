@@ -5,7 +5,7 @@
   const states = { idle: "待配置", running: "采集中", paused: "已暂停", blocked: "已拦截", error: "需要检查", completed: "任务结束" };
   const proxyModes = { direct: "直连", http: "HTTP 代理", mayi: "动态 IP", qingguo: "青果动态 IP" };
   const dynamicProxyMode = (mode) => ["mayi", "qingguo"].includes(mode);
-  const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", detail_unavailable: "详情不可用", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", error: "异常", pending: "待处理", unknown: "结果未确认" };
+  const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", detail_unavailable: "详情不可用", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", network_timeout: "请求超时", tls_error: "TLS 连接失败", network_connect: "网络连接失败", network_io: "网络传输失败", error: "异常", pending: "待处理", unknown: "结果未确认" };
   let authenticated = false;
   let status = null;
   let online = false;
@@ -197,7 +197,8 @@
       head.append(el("strong", "", node.name || id), el("span", `tag${node.connection === "offline" ? " warning" : node.connection === "online" ? " success" : ""}`, { online: "连接正常", offline: "连接异常", unknown: "尚未连接" }[node.connection] || "等待状态")); card.append(head);
       card.append(el("p", "node-address", node.local || id === "local" ? "中央控制台所在本机" : node.base_url || "地址未返回"));
       const state = objectValue(node.status), counts = objectValue(first(state, ["aggregate", "counters", "stats"], {}));
-      card.append(el("p", "node-status", `${states[state.state] || "状态尚未取得"}${state.reason ? " · " + textValue(state.reason) : ""}`));
+      const nodeStateLabel = state.state === "running" && state.network_retry ? "等待网络重试" : states[state.state] || "状态尚未取得";
+      card.append(el("p", "node-status", `${nodeStateLabel}${state.reason ? " · " + textValue(state.reason) : ""}`));
       const summary = el("div", "post-summary"); summary.append(el("strong", "", `已采集帖子 ${number(counts.unique_posts)}`));
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", counts.body_complete], ["待补详情", counts.pending], ["未触发补详情", counts.list_only]]) subsets.append(el("span", "", `${label} ${number(value)}`));
@@ -486,6 +487,7 @@
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
     else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
+    else if (state === "running" && status?.network_retry) display("action-note", "网络异常会按退避时间自动重试；点击暂停可停止后续请求。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
     else if (autoWaiting) display("action-note", "动态 IP 自动恢复正在等待冷却与额度。点击暂停可挂起自动恢复；单次探测只做一次。");
     else if (["blocked", "error"].includes(state)) display("action-note", "已暂停后续请求。检查证据后，可手动安排一次探测。");
@@ -567,12 +569,21 @@
     const config = jobConfig();
     const state = data.state || "idle";
     const pending = probePending();
-    display("state-label", pending ? "单次探测已安排" : states[state] || state);
+    const networkRetry = objectValue(data.network_retry);
+    const hasNetworkRetry = Object.keys(networkRetry).length > 0;
+    const retryWaiting = state === "running" && hasNetworkRetry && !pending;
+    display("state-label", pending ? "单次探测已安排" : retryWaiting ? "等待网络重试" : states[state] || state);
     $("state-badge").dataset.state = state;
     const titles = { idle: "配置窗口，开始长期观察", running: "正在按间隔采集", paused: config ? "任务已暂停，进度已保留" : "配置窗口，开始长期观察", blocked: "观测到访问拦截，已暂停", error: "观测到异常，已暂停", completed: "采集已结束，请核对覆盖" };
-    display("run-title", pending ? "等待单次探测，不会自动继续" : titles[state] || "等待检查任务状态");
-    const genericReasons = { idle: "尚未设置股票和日期窗口。保存配置后，手动启动采集。", paused: config ? "恢复采集后继续使用已保存的队列和请求间隔。" : "尚未设置股票和日期窗口。保存配置后，手动启动采集。", running: "列表和正文串行获取，任何源异常都会暂停后续请求。", blocked: "保留响应和失败位置，等待人工检查。", error: "保留响应和异常原因，等待人工检查。", completed: "本任务已停止，请逐股核对请求范围、源数据终点和未解决的缺口。" };
+    display("run-title", pending ? "等待单次探测，不会自动继续" : retryWaiting ? "网络暂时失败，等待自动重试" : titles[state] || "等待检查任务状态");
+    const genericReasons = { idle: "尚未设置股票和日期窗口。保存配置后，手动启动采集。", paused: config ? "恢复采集后继续使用已保存的队列和请求间隔。" : "尚未设置股票和日期窗口。保存配置后，手动启动采集。", running: "列表和正文串行获取；暂时网络异常按间隔退避重试，验证码或身份核实等保护性拦截会暂停。", blocked: "保留响应和失败位置，等待人工检查。", error: "保留响应和异常原因，等待人工检查。", completed: "本任务已停止，请逐股核对请求范围、源数据终点和未解决的缺口。" };
     display("run-reason", textValue(data.reason) || genericReasons[state]);
+    $("network-retry-note").hidden = !hasNetworkRetry;
+    if (hasNetworkRetry) {
+      const retryAt = first(networkRetry, ["retry_at"], first(data, ["next_request_at", "next_due_at", "next_allowed_at"]));
+      const retryError = first(networkRetry, ["error", "reason"], "网络请求未成功，原目标仍保留。");
+      display("network-retry-note", `${outcomes[networkRetry.kind] || "网络异常"} · 连续失败 ${number(networkRetry.attempt)} 次 · ${retryWaiting ? "下次重试 " + time(retryAt) : pending ? "仅执行已安排的单次探测" : "已暂停，点击继续后才会重试"} · ${textValue(retryError)}`);
+    }
     if (config) {
       const effectiveTo = first(data.job, ["effective_to_shanghai", "effective_to"]);
       display("job-window", `${config.from_date || "—"} 至 ${config.to_date || "—"}${effectiveTo ? " · 本次截止 " + time(effectiveTo) : ""}`);
@@ -694,9 +705,9 @@
     $("block-panel").hidden = !blocked;
     if (!blocked) return;
     const info = objectValue(currentEvidence);
-    const reason = first(info, ["reason", "error", "message"], data.reason || "当前来源阻断尚未解除。");
-    display("block-title", "当前来源阻断尚未解除");
+    const reason = first(info, ["reason", "error", "message"], data.reason || (data.state === "error" ? "当前异常尚未处理。" : "当前来源阻断尚未解除。"));
     const kind = first(info, ["outcome", "kind", "type"], data.active_halt || "待检查");
+    display("block-title", data.state === "error" ? "采集已暂停，需检查异常" : "当前来源阻断尚未解除");
     display("block-kind", outcomes[kind] || kind);
     display("block-reason", reason);
     const facts = [
@@ -964,7 +975,7 @@
     const items = unpack(data, "events"); display("event-count", data.total == null ? items.length : number(data.total));
     const list = $("event-list"); list.replaceChildren();
     if (!items.length) { list.append(el("div", "empty-state", "尚无控制事件。")); return; }
-    const eventLabels = { job_created: "已保存任务配置", started: "开始采集", start: "开始采集", paused: "任务已暂停", pause: "任务已暂停", blocked: "访问拦截，自动暂停", error: "异常，自动暂停", retry: "已安排单次探测", probe_scheduled: "已安排单次探测", retry_scheduled: "已安排单次探测", probe_success: "探测成功，保持暂停", completed: "任务结束", recovered: "重启恢复，保持暂停" };
+    const eventLabels = { job_created: "已保存任务配置", started: "开始采集", start: "开始采集", paused: "任务已暂停", pause: "任务已暂停", blocked: "访问拦截，自动暂停", error: "异常，自动暂停", network_retry_scheduled: "网络异常，等待退避重试", network_retry_cleared_legacy: "旧传输异常已转为待重试，保持暂停", retry: "已安排单次探测", probe_scheduled: "已安排单次探测", retry_scheduled: "已安排单次探测", probe_success: "探测成功，保持暂停", completed: "任务结束", recovered: "重启恢复，保持暂停" };
     for (const item of items) {
       const kind = textValue(first(item, ["kind", "type", "event", "action"], "event"));
       const row = el("div", "activity-row"); row.append(el("div", "activity-time", time(first(item, ["at", "timestamp", "created_at", "time"]))));

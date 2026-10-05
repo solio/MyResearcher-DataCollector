@@ -45,6 +45,7 @@
         <div class="run-topline"><span id="state-badge" class="state-badge"><span class="state-dot"></span><span id="state-label">待配置</span></span><span class="quiet-text">服务端独立运行 · 亚洲/上海时间</span></div>
         <h2 id="run-title">配置窗口，开始长期观察</h2>
         <p id="run-reason" class="run-reason">尚未设置股票和日期窗口。保存配置后，手动启动采集。</p>
+        <p id="network-retry-note" class="field-note activity-detail" role="status" hidden></p>
         <div class="run-grid">
           <div><span class="datum-label" id="run-duration-label">任务历时</span><strong id="run-duration">—</strong><small id="run-start">尚未启动</small></div>
           <div><span class="datum-label">下一次源请求</span><strong id="next-request">—</strong><small id="next-request-time">由服务端统一调度</small></div>
@@ -137,7 +138,7 @@
       <section class="card history-card" aria-labelledby="history-title">
         <div class="section-heading"><div><div class="eyebrow">任务管理</div><h2 id="history-title">任务历史</h2></div><span id="history-count" class="tag">—</span></div>
         <details id="history-details"><summary>查看当前与已归档任务</summary><div id="history-list" class="history-list"><div class="empty-state">尚无任务记录。</div></div></details>
-        <details id="block-history" hidden><summary>查看历史阻断证据</summary><p class="small-note">这是所选实例以前的阻断记录，当前状态以采集状态和阻断提示为准。</p><pre id="block-history-evidence"></pre></details>
+        <details id="block-history" hidden><summary>查看历史异常与阻断证据</summary><p class="small-note">这是所选实例以前的异常与阻断记录，当前状态以采集状态和当前提示为准。</p><pre id="block-history-evidence"></pre></details>
         <p class="small-note">删除任务或移除股票只取消后续采集。已取得的帖子、原始响应和运行证据保留，归档任务不会自动恢复采集。</p>
       </section>
 

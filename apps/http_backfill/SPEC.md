@@ -1,5 +1,35 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 transient network failures — explicitly authorized
+
+TLS handshake/certificate-verification errors, request/connect timeouts, DNS and
+connection interruptions are transport failures, not evidence of source access
+blocking. Keep strict TLS verification. Classify known curl exit codes and typed
+urllib exceptions; do not guess every unknown/configuration error is transient.
+Retain failed bytes and request facts without parsing or advancing the target.
+During normal running, keep the original target pending and retry it through the
+existing scheduler after finish-based exponential backoff: original interval,
+twice, four times, etc., capped at 15 minutes but never below the configured
+global interval or retained Retry-After. No retry loop inside transport and no
+new provider extraction for every origin TLS/read failure. Persist retry kind,
+target, request, consecutive count and due time in existing meta/analysis;
+successful target completion resets it. H5 distinguishes network retry waiting
+from an access block. Manual pause wins over an in-flight transient result;
+restart remains safely paused and archived/out-of-scope targets cannot revive.
+
+Observed CAPTCHA/identity verification, source HTTP 401/403/429 and proxy 407
+remain protective stops and take precedence even if body acquisition also fails.
+A single manual or dynamic-recovery probe stays single: transient failure cannot
+clear or replace an existing source halt/evidence or trigger generic retries.
+Permanent/configuration, response-structure and local persistence failures remain
+visible error stops; they cannot be accepted as acquired data. This amendment
+supersedes older blanket transport-failure halt wording, not source-validation
+or data-safety invariants. Legacy non-probe halts may be released to paused only
+when their retained request identifies a known transient failure, has no source
+block status/challenge bytes, and its original target is still in active scope.
+Keep all historical request/raw/evidence and cooldown facts; upgrade never
+automatically starts a collector.
+
 ## 2026-10-04 Qingguo short-effect provider — authorized
 
 The user requests Qingguo support using its official API overview
@@ -402,8 +432,9 @@ This app is an isolated experiment, not a production transport amendment.
 - Preserve raw response bytes/hash and every attempt. Network-level ambiguous
   failures are explicit; HTTP200 is insufficient. Strict decode/parse and
   list/detail identity/publication agreement precede accepting complete data.
-- Real challenge, HTTP403/429, unknown/partial response or transport failure
-  pauses automatically. Template captcha script alone is not a challenge.
+- Real challenge and HTTP401/403/429 pause automatically. Unknown/partial
+  structures remain error stops; classified transient transport failures use
+  the authorized paced network retry policy above. Template captcha script alone is not a challenge.
   Payload with challenge is blocked. Lack of JS execution remains an explicit
   observability limitation; do not label every challenge a proven IP blacklist.
 - Block reason/evidence persist across restart. No automatic retry loop after a
