@@ -2,6 +2,41 @@
 
 Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: remove unauthorized 60-second request floor
+
+User explicitly rejects the minimum 60-second global request interval. SPEC
+corrected before implementation: 60 remains only the default; any finite
+nonnegative numeric interval is accepted, including fractions and zero. Zero
+means no deliberate post-completion delay, with requests still serialized.
+Backend validation, HTML min/step, JS validation and zero-value form loading
+now agree. Source timing audit uses the actual configured interval rather than
+the previous fixed 60-second live audit threshold, and accepts zero. Historical
+job policy checks remain tied to recorded revisions. An archived retained
+probe without a current job no longer gains a fallback 60-second node gap.
+Detached restart likewise recovers the most recent request's original interval.
+Worker sleep follows the next eligible due time without a fixed half-second
+post-request floor. A configured gap >=300 seconds no longer triggers repeated
+list-delay checks before every forward page: the 300-second extra-delay trigger
+now excludes one configured interval. Out-of-calendar-range due times do not
+crash ISO presentation; numeric due remains available.
+Existing source halt/Retry-After and configured proxy recovery controls remain
+independent; saved task intervals are not automatically rewritten. README
+removes minimum/per-minute claims. Existing invalid-config fixtures now use
+negative values instead of formerly forbidden 59 seconds.
+
+Validation used isolated temporary Engine/Wire/clock replays, not a test suite:
+0, 0.25, 5, 59, 60 and 300-second settings preserve their actual node gap,
+sub-second worker wake and timing audit threshold; pages advance instead of
+repeatedly checking the same frontier. Independent replay also covered four
+forward pages at 0/0.25/300, pause wake behavior, archived zero-interval restart
+and finite out-of-calendar-range due presentation. Negative, boolean, NaN and
+infinite settings remain invalid. Python AST, JS syntax and diff checks passed.
+
+Deploy with the existing git pull / docker compose up -d --build on the H5 host
+and affected collector nodes. Tasks retain normal safe restart pause and
+existing source cooldowns. No extra migration, source request, live DB write
+or collector restart was performed while making the change.
+
 ## Latest change: independent stock controls and Mihomo task exits
 
 User requires source blocks to stop the affected stock rather than every task

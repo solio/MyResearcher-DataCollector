@@ -71,7 +71,7 @@ class LifecycleTests(unittest.TestCase):
         engine = self.created()
         before = self.rows(engine, "tasks")
         with self.assertRaises(ValueError):
-            engine.update_job({**CONFIG, "interval_seconds": 59})
+            engine.update_job({**CONFIG, "interval_seconds": -1})
         self.assertEqual(engine.status()["config"]["from_date"], CONFIG["from_date"])
         self.assertEqual(self.rows(engine, "tasks"), before)
 

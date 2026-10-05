@@ -1,5 +1,22 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 user-defined request interval — authorized correction
+
+The user rejects the hard 60-second source interval floor. Keep 60 only as the
+default for an omitted setting; accept any finite nonnegative numeric seconds,
+including fractions. Zero requests no deliberate gap after a request finishes;
+the worker remains serialized. Frontend form, JavaScript validation, backend
+validation and timing audit must accept the same values without clamping to 60.
+Preserve source Retry-After/halts, per-stock state and explicit probe behavior.
+An original retained probe uses its original interval, combined with a current
+job's interval only when such a job exists. Do not invent another arbitrary
+minimum. The worker waits until the next eligible stock's due time rather than
+adding a fixed half-second after every request. Configured waiting alone must
+not cause list-delay calibration: its 300-second trigger measures delay beyond
+one normal configured interval. Restart of detached targets uses the most
+recent request's original interval, without a missing-current-job 60 fallback.
+Existing users' configured values remain unchanged.
+
 ## 2026-10-05 independent stock controls and Mihomo task exits — authorized
 
 The user requires a source block to affect the relevant stock task rather than
@@ -581,7 +598,7 @@ This app is an isolated experiment, not a production transport amendment.
 - Ordinary curl or urllib transport with the explicitly authorized Chrome UA and
   Referer policy below; no browser, browser state export, CAPTCHA solving, proxy
   rotation, TLS impersonation or invented challenge tokens.
-- One global source request initiation per >=60 seconds, including redirects,
+- One serialized global source request, with the user-configured gap after completion, including redirects,
   failures and manually requested probe; timing persisted across process restarts.
 - Preserve raw response bytes/hash and every attempt. Network-level ambiguous
   failures are explicit; HTTP200 is insufficient. Strict decode/parse and
@@ -616,7 +633,7 @@ This app is an isolated experiment, not a production transport amendment.
 `jobs()`, `start()`, `pause()`, `retry()`, `tick()`,
 `requests(limit=50)`, `events(limit=50)`, `raw_posts(limit=100, offset=0)`, `close()`.
 Config: required `stocks` (array of six-digit strings), `from_date`/`to_date`
-(inclusive Shanghai YYYY-MM-DD); optional `interval_seconds>=60`, `client`
+(inclusive Shanghai YYYY-MM-DD); optional finite `interval_seconds>=0` (default 60), `client`
 (`curl` or `urllib`). Invalid input raises ValueError; state conflicts RuntimeError.
 Built-in transport callable `(url, client, referer=None) -> Response(status,
 body, headers, url, error)`. Injected transports accepting a `referer` keyword

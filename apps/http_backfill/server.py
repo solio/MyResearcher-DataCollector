@@ -481,7 +481,7 @@ def main():
             except Exception as exc:
                 engine.pause()
                 print(f"Worker paused after unexpected {type(exc).__name__}", flush=True)
-            stopped.wait(0.5)
+            stopped.wait(engine.worker_wait_seconds())
 
     thread = threading.Thread(target=worker, name="http-backfill-worker", daemon=True)
     thread.start()

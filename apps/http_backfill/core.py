@@ -136,7 +136,10 @@ def _dump(value):
 
 
 def _iso(epoch):
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch is not None else None
+    try:
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch is not None else None
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def _allowed(url):
@@ -313,8 +316,8 @@ def _validate_config(config):
     if config["from_date"] > config["to_date"]:
         raise ValueError("开始日期不能晚于结束日期")
     interval = config.get("interval_seconds", 60)
-    if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval < 60:
-        raise ValueError("请求间隔必须至少 60 秒")
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval < 0:
+        raise ValueError("请求间隔必须是非负的有限秒数")
     client = config.get("client", "curl")
     if client not in {"curl", "urllib"}:
         raise ValueError("client 只能是 curl 或 urllib")
@@ -1296,7 +1299,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             profile = self._request_profile(task)
             self._set("probe", False)
             self._set("next_due", max(now, self._get("next_due", 0)) + config["interval_seconds"])
-            interval = max(config["interval_seconds"], (self._config() or {}).get("interval_seconds", 60))
+            interval = max(config["interval_seconds"], (self._config() or config)["interval_seconds"])
             self._set_global("node_next_due", max(now, self._get_global("node_next_due", 0)) + interval)
             rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only,analysis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                                   (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only), _dump(profile))).lastrowid
@@ -1385,7 +1388,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         finished = (previous_request[0] or 0) if previous_request else 0
         checked = max(frontier.get("checked_at", 0), finished)
         rec = self._recovery(task["job"], task["stock"])
-        if self.clock() - checked < 300 or (rec and rec.get("phase") != "complete"):
+        interval = self._config()["interval_seconds"]
+        if self.clock() - checked < interval + 300 or (rec and rec.get("phase") != "complete"):
             return task
         self._begin_recovery(task["job"], task["stock"], frontier, "list_delay_recheck", force_first=True)
         return self._target()
@@ -1929,6 +1933,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
                       "window_seek": [c["window_seek"] for c in coverage if c.get("window_seek")],
                       "calibration_policy": {"every_forward_pages": 25, "list_delay_seconds": 300,
+                                             "list_delay_excludes_configured_interval": True,
                                              "ordinary_check": "stable_last_forward_page", "max_validated_requests": MAX_RECOVERY_REQUESTS,
                                              "max_completed_passes": MAX_RECOVERY_PASSES, "proof_scope": "navigation_or_recent_anchor_interval_only"},
                       "content_policy": self._get("content_policy"),

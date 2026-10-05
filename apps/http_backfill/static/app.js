@@ -728,7 +728,7 @@
     $("stocks").value = Array.isArray(config.stocks) ? config.stocks.join("，") : "";
     if (config.from_date) $("from-date").value = config.from_date;
     if (config.to_date) $("to-date").value = config.to_date;
-    $("interval").value = config.interval_seconds || 60;
+    $("interval").value = config.interval_seconds ?? 60;
     $("client").value = config.client || "curl";
     loadedConfig = true;
     formJobId = first(status?.job, ["id"], first(status, ["job_id"]));
@@ -879,7 +879,7 @@
     for (const [key, label] of [["list_forward", "前进列表请求"], ["list_seek", "日期定位请求"], ["list_recovery", "校准列表请求"], ["detail", "详情请求"]]) {
       if (classification[key] != null) facts.append(el("span", "", `${label} ${number(classification[key])}`));
     }
-    display("rate-uncertainty", `网络尝试标记未知 ${number(unknown.attempt_rows)} 行 · 时间未知 ${number(unknown.timing_rows)} 行 · 未完成 ${number(unknown.unfinished_rows)} 行 · 间隔未知 ${number(unknown.pairs)} 对 · 重叠 ${number(unknown.overlaps)} 对 · 时钟异常 ${number(unknown.clock_anomalies)} 项。以上未知项不能视为遵守间隔。历史配置策略未知 ${number(policy.unknown_pairs)} 对${policy.history_truncated ? "，配置历史也有未纳入部分" : ""}；当前配置与 60 秒审计下限分别列出。`);
+    display("rate-uncertainty", `网络尝试标记未知 ${number(unknown.attempt_rows)} 行 · 时间未知 ${number(unknown.timing_rows)} 行 · 未完成 ${number(unknown.unfinished_rows)} 行 · 间隔未知 ${number(unknown.pairs)} 对 · 重叠 ${number(unknown.overlaps)} 对 · 时钟异常 ${number(unknown.clock_anomalies)} 项。以上未知项不能视为遵守间隔。历史配置策略未知 ${number(policy.unknown_pairs)} 对${policy.history_truncated ? "，配置历史也有未纳入部分" : ""}；审计按所示秒数核对，历史配置策略单独列出。`);
   }
   async function downloadPosts(scope, format) {
     const targetNode = scope === "fleet" ? "local" : selectedNode, targetName = nodeName(targetNode), selection = nodeEpoch;
@@ -1485,7 +1485,7 @@
     const to = $("to-date").value;
     if (!stocks.length || stocks.some((stock) => !/^\d{6}$/.test(stock))) { notice("请填写 6 位股票代码，用逗号、空格或换行分隔。", true); $("stocks").focus(); return; }
     if (!from || !to || from > to) { notice("开始日期不能晚于结束日期。日期以 Asia/Shanghai 为准。", true); $("from-date").focus(); return; }
-    if (!Number.isInteger(interval) || interval < 60) { notice("全局请求间隔必须是至少 60 秒的整数。", true); $("interval").focus(); return; }
+    if (!$("interval").value.trim() || !Number.isFinite(interval) || interval < 0) { notice("请填写非负的请求间隔秒数，支持小数；0 表示不额外等待。", true); $("interval").focus(); return; }
     const editing = !!jobConfig();
     const saved = await post(editing ? "jobs/current" : "jobs", { stocks, from_date: from, to_date: to, interval_seconds: interval, client: $("client").value }, editing ? "当前任务修改已保存，已有数据和响应保留。任务保持暂停或原有阻断状态，尚未重新开始采集。" : "任务已创建，尚未发起源请求。点击开始采集后才会调度。", editing ? "PATCH" : "POST", { pauseFirst: editing, expectedJobId: editing ? status?.job?.id : null, clearDraft: true });
     if (saved && status && jobConfig()) { formDirty = false; loadedConfig = false; loadForm(jobConfig()); controls(); }

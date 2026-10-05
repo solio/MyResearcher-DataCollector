@@ -109,7 +109,7 @@ class CoreTests(unittest.TestCase):
 
     def test_validation_and_no_job_overwrite(self):
         e = self.engine(Wire())
-        for config in ({**CONFIG, "interval_seconds": 59}, {**CONFIG, "interval_seconds": True},
+        for config in ({**CONFIG, "interval_seconds": -1}, {**CONFIG, "interval_seconds": True},
                        {**CONFIG, "stocks": ["123"]}, {**CONFIG, "from_date": "2025-02-31"},
                        {**CONFIG, "stocks": ["601012", "601012"]}, {**CONFIG, "client": "foo"}):
             with self.assertRaises(ValueError):

@@ -28,7 +28,10 @@ def _json(value):
 
 
 def _iso(epoch):
-    return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch is not None else None
+    try:
+        return datetime.fromtimestamp(epoch, timezone.utc).isoformat() if epoch is not None else None
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 class StockRuntimeMixin:
@@ -146,10 +149,13 @@ class StockRuntimeMixin:
             first = not self._get_global("stock_runtime_version")
             legacy = {key: self._get_global(key) for key in STOCK_KEYS}
             scopes = self._current_stock_scopes()
-            last = self.db.execute("SELECT COALESCE(finished,started) AS at FROM requests ORDER BY id DESC LIMIT 1").fetchone()
+            last = self.db.execute("SELECT job,COALESCE(finished,started) AS at FROM requests ORDER BY id DESC LIMIT 1").fetchone()
             config = self._config()
-            interval = config["interval_seconds"] if config else 60
-            node_due = max(self._get_global("node_next_due", 0) or 0, (last[0] + interval) if last and last[0] is not None else 0)
+            if not config and last:
+                original = self.db.execute("SELECT config FROM jobs WHERE id=?", (last["job"],)).fetchone()
+                config = json.loads(original[0]) if original else None
+            interval = config["interval_seconds"] if config else 0
+            node_due = max(self._get_global("node_next_due", 0) or 0, (last["at"] + interval) if last and last["at"] is not None else 0)
             self._set_global("node_next_due", node_due)
             for job, stock in scopes:
                 exists = self.db.execute("SELECT 1 FROM stock_runtime WHERE job=? AND stock=?", (job, stock)).fetchone()
@@ -360,6 +366,21 @@ class StockRuntimeMixin:
         with self._mutex:
             self._publish_stock_summary()
         return {"attempted": False}
+
+    def worker_wait_seconds(self):
+        """Wait for actual stock/node due times, without a source interval floor."""
+        with self._mutex:
+            if (self._closed or self._inflight or self._get_global("storage_halt")
+                    or self._get_global("legacy_stock_halt_barrier")):
+                return 0.5
+            node_due = self._get_global("node_next_due", 0) or 0
+            eligible = [runtime for runtime in self._stock_runtimes(include_detached=True)
+                        if runtime["state"] == "running" and (not runtime["active_halt"] or runtime["probe"])
+                        and (not runtime["detached"] or runtime["probe"])]
+            if not eligible:
+                return 0.5
+            due = min(max(node_due, runtime["next_due"] or 0) for runtime in eligible)
+            return min(0.5, max(0, due - self.clock()))
 
     def _stock_summary(self):
         active = self._stock_runtimes()

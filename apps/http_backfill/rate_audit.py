@@ -35,8 +35,8 @@ def _iso(value):
 
 
 def _threshold(value):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
-        raise ValueError("审计间隔必须是大于 0 的有限秒数")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError("审计间隔必须是非负的有限秒数")
     return float(value)
 
 
@@ -236,13 +236,24 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
 
 def tail_audit(engine):
     """Bounded, cached status summary; caller already owns the Engine mutex."""
+    config_reader = getattr(engine, "_config", None)
+    config = config_reader() if callable(config_reader) else None
+    interval = _threshold(config.get("interval_seconds", 60) if isinstance(config, dict) else 60)
+    if callable(config_reader) and config is None:
+        # An archived job still has a recorded interval. Do not turn its valid
+        # zero/fractional requests into apparent violations of a default minute.
+        if "job" in _columns(engine.db, "requests") and {"id", "config"}.issubset(_columns(engine.db, "jobs")):
+            original = engine.db.execute("SELECT config FROM jobs WHERE id=(SELECT job FROM requests ORDER BY id DESC LIMIT 1)").fetchone()
+            recorded = _config_interval(original[0]) if original else None
+            if recorded is not None:
+                interval = recorded
     latest = engine.db.execute("SELECT id,finished,outcome,network_attempted FROM requests ORDER BY id DESC LIMIT 1").fetchone()
-    signature = (tuple(latest) if latest else None, engine.db.total_changes)
+    signature = (tuple(latest) if latest else None, engine.db.total_changes, interval)
     now = time.monotonic()
     saved = _CACHE.get(engine)
     if saved and saved["signature"] == signature and now - saved["cached_at"] < 15:
         return saved["audit"]
-    result = audit_connection(engine.db, 60, limit=TAIL_LIMIT, details_limit=20)
+    result = audit_connection(engine.db, interval, limit=TAIL_LIMIT, details_limit=20)
     _CACHE[engine] = {"signature": signature, "cached_at": now, "audit": result}
     return result
 

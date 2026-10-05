@@ -30,7 +30,7 @@
     </section>
 
     <div id="console" hidden>
-      <div class="page-heading"><div><div class="eyebrow">HTTP BACKFILL / 连续观察</div><h1>股吧低频回补</h1><p>先观察每分钟一次能持续多久，再积累可追溯的历史数据。</p></div><div class="connection"><span id="connection-dot" class="connection-dot"></span><span id="connection-text">连接中</span><small id="updated-at">—</small></div></div>
+      <div class="page-heading"><div><div class="eyebrow">HTTP BACKFILL / 连续观察</div><h1>股吧低频回补</h1><p>按设定间隔采集，积累可追溯的历史数据。</p></div><div class="connection"><span id="connection-dot" class="connection-dot"></span><span id="connection-text">连接中</span><small id="updated-at">—</small></div></div>
       <div id="notice" class="notice" role="status" hidden></div>
 
       <section class="card fleet-card" aria-labelledby="fleet-title">
@@ -121,8 +121,8 @@
               <p class="field-note">6 位代码，用逗号、空格或换行分隔。</p>
               <div class="date-grid"><div><label for="from-date">开始日期</label><input id="from-date" type="date" required></div><div><label for="to-date">结束日期</label><input id="to-date" type="date" required></div></div>
               <div class="date-shortcuts"><span>建议窗口</span><button type="button" data-years="1">近 1 年</button><button type="button" data-years="2">近 2 年</button><button type="button" data-years="5">近 5 年</button></div>
-              <div class="date-grid config-options"><div><label for="interval">全局请求间隔 <span class="optional">秒</span></label><input id="interval" type="number" min="60" step="1" value="60" required inputmode="numeric"></div><div><label for="client">HTTP 客户端</label><select id="client"><option value="curl">curl</option><option value="urllib">urllib</option></select></div></div>
-              <p class="field-note">默认 60 秒一次，包含列表、详情、失败和手动探测。该频率是否稳定，需由连续实测判断。</p>
+              <div class="date-grid config-options"><div><label for="interval">全局请求间隔 <span class="optional">秒</span></label><input id="interval" type="number" min="0" step="any" value="60" required inputmode="decimal"></div><div><label for="client">HTTP 客户端</label><select id="client"><option value="curl">curl</option><option value="urllib">urllib</option></select></div></div>
+              <p class="field-note">请求完成后等待所填秒数再请求下一项，支持小数；0 表示不额外等待。包含列表、详情、失败和手动探测。</p>
             </fieldset>
             <div class="config-footer"><button id="save-config" type="submit" class="button secondary">创建任务</button><button id="reset-config" type="button" class="button quiet small" hidden>撤销修改</button><span id="config-message" class="field-note">保存后保持暂停，手动启动。</span></div>
           </form>
