@@ -34,9 +34,11 @@ CREATE TABLE IF NOT EXISTS associations(job INTEGER,stock TEXT,post_id TEXT,elig
 CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY,job INTEGER,request_id INTEGER,stock TEXT,
   page INTEGER,post_id TEXT,source_row TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS obs_stock_id ON observations(job,stock,post_id);
+CREATE INDEX IF NOT EXISTS obs_request_rows ON observations(request_id,id);
 CREATE TABLE IF NOT EXISTS page_observations(request_id INTEGER PRIMARY KEY,job INTEGER,stock TEXT,
   page INTEGER,source_count INTEGER,rows INTEGER,new_ids INTEGER,overlap INTEGER,id_sha256 TEXT,
   earliest TEXT,latest TEXT,purpose TEXT DEFAULT 'forward');
+CREATE INDEX IF NOT EXISTS page_observation_stock ON page_observations(stock,request_id);
 CREATE TABLE IF NOT EXISTS run_segments(id INTEGER PRIMARY KEY,job INTEGER,started REAL,ended REAL,
   probe INTEGER,stop_reason TEXT,attempts_at_start INTEGER);
 CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY,job INTEGER,task INTEGER,kind TEXT,stock TEXT,

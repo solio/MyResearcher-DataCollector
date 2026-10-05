@@ -1,5 +1,45 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 historical-window seek and calibration cost — authorized
+
+The user supplies a live request ledger showing a historic-window task still
+walking from page 1 and four repeated calibration requests between consecutive
+forward pages. Implement date-window entry seeking in this HTTP worker, with
+one scheduled source request at a time and durable job/stock seek state. A fresh
+head page establishes current source facts; existing local runtime page/time
+anchors are hints only. Reuse the existing page_anchor helpers and bracketed
+doubling/bisection approach to locate the effective inclusive upper cutoff,
+then start sequential forward collection conservatively one page earlier.
+Never derive a proof from uniform post density or reported total alone.
+
+Use only source-explicit non-pinned type0 rows for date bounds, validate their
+ordering and live bound consistency. Valid empty pages can bound the search,
+not prove target-window coverage. Unusable/contradictory bounds or exhausted
+probe budget remain visible errors. Seek samples retain raw/request/row/post
+facts and eligible detail queues, but do not advance forward-page coverage,
+lower-bound confirmations or the continuous collection frontier. Seek work has
+priority over sampled detail enrichment until the entry is located. Its requests
+obey the same pacing, transient backoff and source block/probe rules. Pause,
+restart, config revisions/removal/archive preserve scope and halt evidence.
+Old unfinished jobs whose last standard frontier is entirely newer than their
+upper cutoff may initialize seek on upgrade, with existing observations retained
+and only obsolete operational prefix-navigation superseded. Never migrate past
+an unresolved halt or restart live collection automatically.
+
+Remove unconditional two-pass calibration after every forward page. Retain it
+for pause/restart, at least five minutes since the last list observation before
+another forward dispatch (including substantial detail processing), loss of
+forward ID/time progress, source-count decrease, every 25 forward pages and
+terminal date/source-tail confirmation. Ordinary consecutive pages can advance
+once each; repeated detail batches may still require calibration. Known IDs from
+earlier seek samples are not pagination stagnation: compare the adjacent live
+frontier rather than all previously observed IDs. Periodic calibration verifies
+its actual recent anchor interval only, never the entire preceding segment;
+overall history/continuity remains unproven and coverage_complete stays false.
+Revalidate the first chosen entry against live dates; a now-too-old entry must
+reseek rather than silently miss the requested upper boundary. No new settings,
+Compose entry, production-db writes or unpaced synchronous seek loop.
+
 ## 2026-10-05 transient network failures — explicitly authorized
 
 TLS handshake/certificate-verification errors, request/connect timeouts, DNS and

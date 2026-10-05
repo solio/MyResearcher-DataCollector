@@ -166,7 +166,7 @@ class LifecycleMixin:
             if stock not in reset:
                 continue
             self.db.execute("INSERT INTO coverage(job,stock) VALUES(?,?)", (job, stock))
-            self._enqueue_list(job, stock, 1)
+            self._begin_window_seek(job, stock, reason="config_updated")
         if not reset:
             self._mark_recovery_needed("config_updated")
             return []

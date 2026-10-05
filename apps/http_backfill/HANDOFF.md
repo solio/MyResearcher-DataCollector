@@ -2,6 +2,63 @@
 
 Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: actual historical-window seek and conditional calibration
+
+The user supplies requests #2537–2565 showing page-by-page prefix walking and
+four calibration reads between ordinary forward pages. Previous research found
+page_anchor algorithms in the original browser path but had not integrated them
+into this HTTP worker. This change implements the capability in the running app
+code, as amended in SPEC before implementation.
+
+New window_seek.py stores job/stock state in existing meta and schedules one
+purpose=seek list request per worker tick. After a fresh head, it can reuse a
+hint from at most 64 local recorded page samples via existing choose_anchor and
+predict_page helpers; otherwise doubling then bisection locates the effective
+upper cutoff. Historical/count hints are never proof. Explicit non-pinned type0
+rows establish descending live bounds. Empty samples only bound navigation;
+contradictory/ambiguous/repeated pages and the 40-probe/1,000,000-page cap retain
+an error with actual probe facts. Confirmed entry starts conservatively one page
+earlier. A suitable fresh head is reused as forward acquisition without another
+source request. Sample observations/posts/details remain durable, but skipped
+pages do not become forward coverage or lower-bound confirmations.
+
+Seek work has priority over sampled details, retains TLS/network retry and
+protective halt rules, and survives pause/restart/window edits. First deep entry
+is revalidated live; too-old/empty entry restarts navigation instead of claiming
+source exhaustion. Recognized old unfinished future-only frontiers initialize
+seek on upgrade/continue without dropping request/post/observation history or
+clearing an unresolved block. Superseded operational prefix frontiers cannot
+reappear on restart while search/error/unverified-entry state exists.
+
+Ordinary forward pages enqueue the next page directly. Existing two-pass local
+calibration is retained for pause/restart, >=300 seconds since last checked list,
+25-page checkpoints, source-count decrease, time/ID nonprogress and terminal
+boundary/tail confirmation. Five or more paced details can still trigger the
+delay check. Successful calibration stamps checked_at to avoid immediate loops.
+Previously sampled IDs alone are not stagnation; compare the adjacent frontier.
+Periodic verification proves only its actual recent anchor interval, not the
+entire skipped calibration segment; coverage_complete remains false. H5 labels
+date seek separately and shows target/probes/page/entry/error. Rate audit counts
+seek requests separately; head reuse is recorded in analysis and forward stats.
+Two additive runtime indexes support bounded anchor reads; no data conversion,
+extra Compose entry, settings or production parser change.
+
+Changed core/lifecycle/window_seek/rate_audit/unified_store, static app/index,
+SPEC/README/HANDOFF. Independent review fixed empty-entry completion, stale
+prefix reconstruction and head statistic issues. Syntax checks: Python AST for
+changed Python modules, node --check apps/http_backfill/static/app.js and
+git diff --check. Isolated mocked-source/clock worker replays passed: historical
+window seek converging through doubling/bisection with 16 sampled pages instead
+of a 150-page prefix, four direct consecutive forward reads including previously
+sampled pages, head reuse exactly once, pages 2–25 fetched once before checkpoint,
+300-second recheck and continued forward without generation loop, seek restart
+remaining paused, old-prefix conversion, unverified entry surviving restart,
+empty deep entry reseek, retained challenge, transient seek target pin and window
+edit resetting navigation. These are synthetic replay results, not live Guba
+page estimates or sustained availability evidence. No test suite, source/provider
+request, training import or live collector restart. Update affected collector
+nodes and the H5 host with existing git pull / compose rebuild; then continue.
+
 ## Latest change: paced retry for transient TLS/network failures
 
 The user explicitly requires TLS errors/timeouts to keep collecting rather than

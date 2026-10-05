@@ -143,7 +143,7 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
         kinds[str(row["kind"])] += 1
         outcomes[str(row["outcome"])] += 1
         if row["kind"] == "list":
-            classification["list_recovery" if row["purpose"] == "recovery" else "list_forward"] += 1
+            classification["list_recovery" if row["purpose"] == "recovery" else "list_seek" if row["purpose"] == "seek" else "list_forward"] += 1
         elif row["kind"] == "detail":
             classification["detail"] += 1
         if row["outcome"] == "redirect":
@@ -219,7 +219,7 @@ def audit_connection(db, interval=60, *, limit=None, details_limit=50):
                       "last_request_id": last_id, "truncated": truncated},
             "ledger_rows": count, "confirmed_requests": confirmed, "non_source_attempts": non_source_attempts,
             "by_kind": dict(kinds), "by_outcome": dict(outcomes),
-            "classification": {name: classification[name] for name in ("list_forward", "list_recovery", "detail", "redirect", "probe")},
+            "classification": {name: classification[name] for name in ("list_forward", "list_seek", "list_recovery", "detail", "redirect", "probe")},
             "first_started_at": _iso(first_started), "last_started_at": _iso(last_started),
             "min_finish_to_start_seconds": minimum, "min_start_to_start_seconds": start_minimum,
             "checked_pairs": checked, "violations": {"count": violation_count, "items": violations, "omitted": violation_count - len(violations)},

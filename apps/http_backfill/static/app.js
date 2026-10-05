@@ -601,7 +601,7 @@
       const stock = first(target, ["stock", "stock_code", "bar_code"], "");
       const page = first(target, ["page", "page_number"]);
       const id = first(target, ["post_id", "source_item_id", "id"]);
-      const label = kind === "detail" || id != null ? `${stock ? stock + " · " : ""}正文 ${id || ""}` : `${stock || "列表"}${target.purpose === "recovery" ? " · 校准" : ""}${page == null ? "" : " · 源页码 " + page}`;
+      const label = kind === "detail" || id != null ? `${stock ? stock + " · " : ""}正文 ${id || ""}` : `${stock || "列表"}${target.purpose === "seek" ? " · 日期定位列表" : target.purpose === "recovery" ? " · 校准列表" : ""}${page == null ? "" : " · 源页码 " + page}`;
       display("current-target", label.trim());
     } else display("current-target", target || (config ? "等待下一项" : "—"));
     const success = first(data, ["last_success_at", "last_success", "last_source_success"]);
@@ -655,6 +655,10 @@
     const seconds = (value) => value == null || !Number.isFinite(Number(value)) ? "—" : `${Number(value).toFixed(2)} 秒`;
     const policy = objectValue(audit.config_policy);
     for (const [label, value] of [["当前配置间隔", config?.interval_seconds == null ? "—" : `${number(config.interval_seconds)} 秒`], ["审计下限", audit.interval_seconds == null ? "—" : `${number(audit.interval_seconds)} 秒`], ["确认网络尝试", number(audit.confirmed_requests)], ["可核对相邻请求", number(checked)], ["最小完成→下次开始", seconds(audit.min_finish_to_start_seconds)], ["已知低于下限", number(violations)], ["历史配置策略违规", number(policy.violations?.count)]]) facts.append(el("span", "", `${label} ${value}`));
+    const classification = objectValue(audit.classification);
+    for (const [key, label] of [["list_forward", "前进列表请求"], ["list_seek", "日期定位请求"], ["list_recovery", "校准列表请求"], ["detail", "详情请求"]]) {
+      if (classification[key] != null) facts.append(el("span", "", `${label} ${number(classification[key])}`));
+    }
     display("rate-uncertainty", `网络尝试标记未知 ${number(unknown.attempt_rows)} 行 · 时间未知 ${number(unknown.timing_rows)} 行 · 未完成 ${number(unknown.unfinished_rows)} 行 · 间隔未知 ${number(unknown.pairs)} 对 · 重叠 ${number(unknown.overlaps)} 对 · 时钟异常 ${number(unknown.clock_anomalies)} 项。以上未知项不能视为遵守间隔。历史配置策略未知 ${number(policy.unknown_pairs)} 对${policy.history_truncated ? "，配置历史也有未纳入部分" : ""}；当前配置与 60 秒审计下限分别列出。`);
   }
   async function downloadPosts(scope, format) {
@@ -729,6 +733,7 @@
     if (!items.length) { list.append(el("div", "empty-state", "保存股票和日期窗口后，这里会显示覆盖进度。")); return; }
     for (const item of items) {
       const stock = first(item, ["stock", "stock_code", "bar_code", "code"], "未知代码");
+      const seek = windowSeekInfo(data, stock, item);
       const state = first(item, ["status", "state", "stop_reason"], Number(item.pages || item.list_pages) > 0 ? data.state === "running" ? "running" : "paused" : "pending");
       const complete = item.date_boundary_reached && item.details_complete && !item.gaps?.length;
       const gaps = first(item, ["gaps", "gap", "coverage_gap"]);
@@ -750,6 +755,7 @@
       const earliest = first(item, ["earliest_publish_time", "earliest_published_at", "earliest", "min_published_at", "oldest"]);
       const latest = first(item, ["latest_publish_time", "latest_published_at", "latest", "max_published_at", "newest"]);
       row.append(el("div", "coverage-range", earliest || latest ? `实际观察：${dateOnly(earliest)} 至 ${dateOnly(latest)}` : "尚未取得有效列表时间范围。"));
+      if (seek) row.append(el("p", "stock-recovery", windowSeekDescription(seek, data.state)));
       const counters = el("div", "coverage-counts");
       const pages = first(item, ["list_pages", "pages", "pages_completed"]);
       const details = objectValue(item.details);
@@ -784,6 +790,26 @@
       if (item.recovery) row.append(el("div", "stock-recovery", recoveryDescription(item.recovery)));
       list.append(row);
     }
+  }
+  function windowSeekInfo(data, stock, item) {
+    if (item.window_seek && typeof item.window_seek === "object") return item.window_seek;
+    const entries = data.window_seek;
+    if (Array.isArray(entries)) return entries.find((entry) => String(entry?.stock) === String(stock)) || null;
+    if (entries && typeof entries === "object") return entries[String(stock)] || (String(entries.stock) === String(stock) ? entries : null);
+    return null;
+  }
+  function windowSeekDescription(info, state) {
+    const complete = info.phase === "complete";
+    const failed = info.phase === "error";
+    const label = failed ? "结束日期定位异常，已暂停" : complete ? "结束日期定位已完成" : state === "running" ? "正在定位结束日期" : "结束日期定位待继续";
+    const facts = [label + (info.target_time ? " " + dateOnly(info.target_time) : ""), `探测 ${number(info.probes)} 次`];
+    if (complete && info.start_page != null) facts.push(`顺序采集入口：源页码 ${number(info.start_page)}`);
+    else if (info.current_page != null) facts.push(`当前源页码 ${number(info.current_page)}`);
+    const reasons = { initial: "新任务日期定位", historic_prefix_upgrade: "旧任务升级为日期定位", seek_error_recovery: "定位异常后重新检查", entry_shifted: "入口时间范围变化，重新定位", target_at_or_after_head: "首页已进入目标日期范围", target_in_observed_page: "已找到包含结束日期的页面", adjacent_observed_bounds: "已找到结束日期的相邻页面区间" };
+    const reason = complete ? info.completion_reason : info.reason;
+    if (failed && info.error) facts.push(textValue(info.error));
+    else if (reason) facts.push(reasons[reason] || textValue(reason));
+    return facts.join(" · ");
   }
   const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
   const recoveryReasons = { process_restart: "进程重启后重新定位", manual_resume: "暂停恢复后重新定位", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后核对列表偏移", forward_no_progress: "前进列表没有新增 ID，重新定位", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
@@ -945,7 +971,7 @@
       const outcome = textValue(first(request, ["outcome", "result", "state"], "unknown"));
       const http = first(request, ["http_status", "status_code", "status"]);
       const purpose = first(request, ["purpose"], first(target, ["purpose"], first(request.analysis, ["purpose"])));
-      const title = `#${attempt} · ${stock ? stock + " · " : ""}${kind === "detail" || id != null ? "正文 " + (id || "") : (purpose === "recovery" ? "校准列表" : "前进列表") + (page == null ? "" : " · 源页码 " + page)}`;
+      const title = `#${attempt} · ${stock ? stock + " · " : ""}${kind === "detail" || id != null ? "正文 " + (id || "") : (purpose === "seek" ? "日期定位列表" : purpose === "recovery" ? "校准列表" : "前进列表") + (page == null ? "" : " · 源页码 " + page)}`;
       const row = el("div", "activity-row");
       row.append(el("div", "activity-time", time(first(request, ["started_at", "requested_at", "at", "timestamp"]))));
       const main = el("div", "activity-main"); main.append(el("div", "activity-title", title));
@@ -975,7 +1001,7 @@
     const items = unpack(data, "events"); display("event-count", data.total == null ? items.length : number(data.total));
     const list = $("event-list"); list.replaceChildren();
     if (!items.length) { list.append(el("div", "empty-state", "尚无控制事件。")); return; }
-    const eventLabels = { job_created: "已保存任务配置", started: "开始采集", start: "开始采集", paused: "任务已暂停", pause: "任务已暂停", blocked: "访问拦截，自动暂停", error: "异常，自动暂停", network_retry_scheduled: "网络异常，等待退避重试", network_retry_cleared_legacy: "旧传输异常已转为待重试，保持暂停", retry: "已安排单次探测", probe_scheduled: "已安排单次探测", retry_scheduled: "已安排单次探测", probe_success: "探测成功，保持暂停", completed: "任务结束", recovered: "重启恢复，保持暂停" };
+    const eventLabels = { job_created: "已保存任务配置", started: "开始采集", start: "开始采集", paused: "任务已暂停", pause: "任务已暂停", blocked: "访问拦截，自动暂停", error: "异常，自动暂停", network_retry_scheduled: "网络异常，等待退避重试", network_retry_cleared_legacy: "旧传输异常已转为待重试，保持暂停", network_probe_failed: "单次探测网络失败，未安排自动重试", window_seek_started: "开始日期定位", window_seek_progress: "日期定位继续探测", window_seek_completed: "日期定位完成", window_seek_upgraded: "旧任务升级为日期定位", window_seek_observed: "日期定位页面已观察", retry: "已安排单次探测", probe_scheduled: "已安排单次探测", retry_scheduled: "已安排单次探测", probe_success: "探测成功，保持暂停", completed: "任务结束", recovered: "重启恢复，保持暂停" };
     for (const item of items) {
       const kind = textValue(first(item, ["kind", "type", "event", "action"], "event"));
       const row = el("div", "activity-row"); row.append(el("div", "activity-time", time(first(item, ["at", "timestamp", "created_at", "time"]))));

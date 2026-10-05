@@ -39,6 +39,7 @@ from myresearcher_collector.sources.eastmoney_guba.content_rules import (
     detail_body_metadata, detail_enrichment_trigger, list_title_metadata,
 )
 from lifecycle import LifecycleMixin
+from window_seek import WindowSeekMixin
 from rate_audit import tail_audit
 from compatible_store import CompatibleDataStore, _utc
 from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_store_adapter
@@ -314,7 +315,7 @@ def _validate_config(config):
             "interval_seconds": interval, "client": client}
 
 
-class Engine(LifecycleMixin):
+class Engine(LifecycleMixin, WindowSeekMixin):
     def __init__(self, data_dir, transport=None, clock=None):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -386,6 +387,7 @@ class Engine(LifecycleMixin):
                 self._migrate_network_halt()
             self._migrate_content_policy()
             self._migrate_frontiers()
+            self._migrate_window_seek()
             if self._get("job_id") and self._get("state") != "completed":
                 self._mark_recovery_needed("process_restart")
         self.compatible_store = CompatibleDataStore(self.data_dir, self._get("instance_id"))
@@ -558,6 +560,9 @@ class Engine(LifecycleMixin):
         inflight = self.db.execute("SELECT * FROM tasks WHERE job=? AND status='inflight' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
         if inflight:
             return inflight
+        seeking = self.db.execute("SELECT * FROM tasks WHERE job=? AND kind='list' AND purpose='seek' AND status='pending' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
+        if seeking:
+            return seeking
         forced = self.db.execute("SELECT * FROM tasks WHERE job=? AND kind='list' AND purpose='recovery' AND status='pending' ORDER BY id LIMIT 1", (self._get("job_id"),)).fetchone()
         if forced:
             rec = self._recovery(forced["job"], forced["stock"])
@@ -604,7 +609,7 @@ class Engine(LifecycleMixin):
             self._set("last_success", None)
             for stock in config["stocks"]:
                 self.db.execute("INSERT INTO coverage(job,stock) VALUES(?,?)", (job, stock))
-                self._enqueue_list(job, stock, 1)
+                self._begin_window_seek(job, stock)
             self._register_job_lifecycle(job)
             self._event("job_created", "创建隔离回补任务", config)
         return self.status()
@@ -709,6 +714,9 @@ class Engine(LifecycleMixin):
     def _migrate_frontiers(self):
         """v1 list observations establish an unverified anchor, never proof."""
         for cov in self.db.execute("SELECT * FROM coverage WHERE job=? AND pages>0", (self._get("job_id"),)).fetchall():
+            seek = self._seek_state(cov["job"], cov["stock"])
+            if seek and not seek.get("entry_verified"):
+                continue
             if self._frontier(cov["job"], cov["stock"]):
                 continue
             requests = self.db.execute("SELECT id,page FROM requests WHERE job=? AND stock=? AND kind='list' AND outcome='real_data' AND purpose='forward' ORDER BY id DESC",
@@ -726,12 +734,38 @@ class Engine(LifecycleMixin):
                 self._save_frontier(cov["job"], cov["stock"], value)
                 self._event("anchor_migrated", "旧版观察已转换为待校准锚点，未声明连续完整", {"stock": cov["stock"], "page": value["page"]})
 
+    def _migrate_window_seek(self):
+        """Convert an unentered historic prefix without discarding acquired facts."""
+        if self._get("active_halt") or self._get("storage_halt") or self._get("state") == "completed":
+            return
+        job, cfg = self._get("job_id"), self._config()
+        if not job or not cfg or self._job_archived(job):
+            return
+        cutoff = datetime.fromtimestamp(self._get("effective_to_epoch"), guba.SHANGHAI).strftime("%Y-%m-%d %H:%M:%S")
+        for stock in cfg["stocks"]:
+            if self._seek_state(job, stock):
+                continue
+            frontier = self._frontier(job, stock)
+            if not frontier or frontier.get("terminal"):
+                continue
+            standard = [r for r in self._navigation_rows(frontier["rows"]) if r.get("post_type") == 0]
+            if not standard or min(r["post_publish_time"] for r in standard) <= cutoff:
+                continue
+            self.db.execute("UPDATE tasks SET status='superseded' WHERE job=? AND stock=? AND kind='list' AND status='pending'", (job, stock))
+            self.db.execute("DELETE FROM frontiers WHERE job=? AND stock=?", (job, stock))
+            self.db.execute("DELETE FROM recoveries WHERE job=? AND stock=?", (job, stock))
+            self._begin_window_seek(job, stock, reason="historic_prefix_upgrade")
+            self._event("window_seek_upgraded", "旧任务尚未进入日期上界，改为快速定位；原请求和观察保留", {"stock": stock})
+
     def _mark_recovery_needed(self, reason):
         job = self._get("job_id")
         cfg = self._config()
         if not job or not cfg:
             return
         for stock in cfg["stocks"]:
+            seek = self._seek_state(job, stock)
+            if seek and not seek.get("entry_verified"):
+                continue
             frontier = self._frontier(job, stock)
             if frontier:
                 old = self._recovery(job, stock)
@@ -868,6 +902,7 @@ class Engine(LifecycleMixin):
             frontier = self._frontier(task["job"], task["stock"])
             frontier.update({"page": task["page"], "rows": rows, "anchor_page": rec["scan_start_page"],
                              "anchor_rows": rec["start_rows"], "reconciled": True, "reconciliation": {"signature": signature, "passes": rec["passes"], "proof_level": rec["proof_level"]}})
+            frontier["checked_at"] = self.clock()
             self._save_frontier(task["job"], task["stock"], frontier)
             if not rec["terminal"]:
                 self._enqueue_list(task["job"], task["stock"], task["page"] + 1)
@@ -899,6 +934,7 @@ class Engine(LifecycleMixin):
                 raise RuntimeError("任务已结束，请查看覆盖缺口或创建新任务")
             if self._get("state") == "running":
                 return self.status()
+            self._migrate_window_seek()
             if self._get("resume_recovery"):
                 self._mark_recovery_needed("manual_resume")
                 self._set("resume_recovery", False)
@@ -1049,6 +1085,8 @@ class Engine(LifecycleMixin):
             if not task:
                 self._finish_job()
                 return {"attempted": False}
+            if not self._get("probe", False) and not self._get("active_halt"):
+                task = self._prepare_forward_target(task)
             task = dict(task)
             config, now = self._config(), self.clock()
             probe = self._get("probe", False)
@@ -1131,6 +1169,21 @@ class Engine(LifecycleMixin):
                     and not self._job_archived(task["job"])):
                 self.start()
             return {"attempted": True, "request_id": rid, "state": self._get("state")}
+
+    def _prepare_forward_target(self, task):
+        if task["kind"] != "list" or task["purpose"] != "forward":
+            return task
+        frontier = self._frontier(task["job"], task["stock"])
+        if not frontier:
+            return task
+        previous_request = self.db.execute("SELECT finished FROM requests WHERE id=?", (frontier.get("request_id"),)).fetchone()
+        finished = (previous_request[0] or 0) if previous_request else 0
+        checked = max(frontier.get("checked_at", 0), finished)
+        rec = self._recovery(task["job"], task["stock"])
+        if self.clock() - checked < 300 or (rec and rec.get("phase") != "complete"):
+            return task
+        self._begin_recovery(task["job"], task["stock"], frontier, "list_delay_recheck", force_first=True)
+        return self._target()
 
     def _record_response(self, rid, task, response, config, probe, probe_only=False):
         if not isinstance(response.body, bytes):
@@ -1453,30 +1506,73 @@ class Engine(LifecycleMixin):
                                         (task["job"], task["stock"], task["page"], pid, item.url, item.url))
         earliest = min(times + ([cov["earliest"]] if cov["earliest"] else []), default=None)
         latest = max(times + ([cov["latest"]] if cov["latest"] else []), default=None)
-        self.db.execute("UPDATE coverage SET rows=rows+?,earliest=?,latest=?,source_count=?,gaps=? WHERE job=? AND stock=?",
-                        (len(rows), earliest, latest, page.source_count, _dump(gaps), task["job"], task["stock"]))
+        if task.get("purpose") != "seek":
+            self.db.execute("UPDATE coverage SET rows=rows+?,earliest=?,latest=?,source_count=?,gaps=? WHERE job=? AND stock=?",
+                            (len(rows), earliest, latest, page.source_count, _dump(gaps), task["job"], task["stock"]))
         self.db.execute("INSERT INTO page_observations(request_id,job,stock,page,source_count,rows,new_ids,overlap,id_sha256,earliest,latest,purpose) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (rid, task["job"], task["stock"], task["page"], page.source_count, len(rows),
                          stats["new_ids"], stats["overlap"], stats["ordered_id_sha256"], stats["earliest"], stats["latest"], stats["purpose"]))
+        if task.get("purpose") == "seek":
+            stats["window_seek"] = self._advance_window_seek(task, rows, stats)
+            self._event("window_seek_observed", f"{task['stock']} 第 {task['page']} 页已观察，用于日期定位", {"request_id": rid, "stock": task["stock"], "page": task["page"]})
+            entry = stats["window_seek"]
+            if entry.get("phase") != "complete" or task["page"] != 1 or entry.get("start_page") != 1:
+                return stats
+            # The fresh head is already validated and is the chosen entry. Reuse
+            # its facts once instead of downloading the same head a second time.
+            self.db.execute("UPDATE tasks SET status='superseded' WHERE job=? AND stock=? AND kind='list' AND purpose='forward' AND page=1 AND status='pending'", (task["job"], task["stock"]))
+            self.db.execute("UPDATE coverage SET rows=rows+?,earliest=?,latest=?,source_count=?,gaps=? WHERE job=? AND stock=?",
+                            (len(rows), earliest, latest, page.source_count, _dump(gaps), task["job"], task["stock"]))
+            stats["head_reused_as_forward"] = True
         if task.get("purpose") == "recovery":
             stats["recovery"] = self._advance_recovery(task, rows, stats)
         else:
             previous = self._frontier(task["job"], task["stock"])
-            if ids and task["page"] > 1 and not set(ids) - known:
-                if not previous:
-                    raise ValueError("分页没有新增源 ID，且没有可恢复锚点")
+            navigation = self._navigation_rows(rows)
+            standard = [r for r in navigation if r.get("post_type") == 0]
+            if standard and [r["post_publish_time"] for r in standard] != sorted((r["post_publish_time"] for r in standard), reverse=True):
+                raise ValueError("前进列表不符合非置顶标准帖发布时间降序")
+            entry = self._seek_state(task["job"], task["stock"])
+            if entry and entry.get("phase") == "complete" and not entry.get("entry_verified"):
+                if (task["page"] > 1 and (not rows or (standard and max(r["post_publish_time"] for r in standard) < entry["target_time"]))):
+                    stats["window_seek"] = self._begin_window_seek(task["job"], task["stock"], reason="entry_shifted")
+                    return stats
+                if rows and not standard:
+                    raise ValueError("日期定位入口缺少非置顶标准帖，不能确认窗口上边界")
+                entry["entry_verified"] = True
+                entry["entry_request_id"] = rid
+                self._save_seek_state(entry)
+            previous_navigation = self._navigation_rows(previous["rows"]) if previous else []
+            previous_ids = {str(r["post_id"]) for r in previous_navigation}
+            current_ids = {str(r["post_id"]) for r in navigation}
+            if previous and current_ids and not current_ids - previous_ids:
                 self._begin_recovery(task["job"], task["stock"], previous, "forward_no_progress")
                 self._recovery_gap(self._recovery(task["job"], task["stock"]), "forward_no_new_ids", "下一页没有新增 ID，停止盲目 page+1 并重新定位")
+                return stats
+            previous_standard = [r for r in previous_navigation if r.get("post_type") == 0]
+            previous_count = previous.get("source_count") if previous else None
+            if previous and previous_count is None:
+                prior = self.db.execute("SELECT source_count FROM page_observations WHERE request_id=?", (previous.get("request_id"),)).fetchone()
+                previous_count = prior[0] if prior else None
+            shrink = previous_count is not None and page.source_count is not None and page.source_count < previous_count
+            shifted_newer = (previous_standard and standard and min(r["post_publish_time"] for r in standard)
+                             > min(r["post_publish_time"] for r in previous_standard))
+            if previous and (shrink or shifted_newer):
+                self._begin_recovery(task["job"], task["stock"], previous, "source_count_decrease" if shrink else "forward_time_shift")
                 return stats
             terminal = "date_boundary_confirmed" if boundary else "source_exhausted" if exhausted else None
             self.db.execute("UPDATE coverage SET pages=pages+1,under_pages=?,boundary=?,list_complete=0,stop_reason=? WHERE job=? AND stock=?",
                             (under, int(boundary), terminal, task["job"], task["stock"]))
             if rows:
-                frontier = {"page": task["page"], "rows": rows, "request_id": rid, "reconciled": False,
+                frontier = {"page": task["page"], "rows": rows, "request_id": rid, "source_count": page.source_count, "reconciled": False,
                             "anchor_page": previous["page"] if previous else task["page"],
                             "anchor_rows": previous["rows"] if previous else rows, "terminal": terminal}
                 self._save_frontier(task["job"], task["stock"], frontier)
-                self._begin_recovery(task["job"], task["stock"], frontier, "details_completed_recheck")
+                if terminal or (cov["pages"] + 1) % 25 == 0 or not standard:
+                    self._begin_recovery(task["job"], task["stock"], frontier,
+                                         "terminal_recheck" if terminal else "periodic_recheck" if standard else "nonstandard_page_recheck")
+                else:
+                    self._enqueue_list(task["job"], task["stock"], task["page"] + 1)
             elif previous:
                 previous["terminal"] = terminal
                 self._save_frontier(task["job"], task["stock"], previous)
@@ -1530,7 +1626,8 @@ class Engine(LifecycleMixin):
             job_id, config = self._get("job_id"), self._config()
             job = self.db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
             counts = self.db.execute("SELECT COUNT(*) AS attempts,SUM(network_attempted=1) AS source_attempts,"
-                                     "SUM(outcome='real_data' AND kind='list' AND purpose='forward') AS list_pages,"
+                                     "SUM(outcome='real_data' AND kind='list' AND (purpose='forward' OR (purpose='seek' AND json_extract(analysis,'$.list_observation.head_reused_as_forward')=1))) AS list_pages,"
+                                     "SUM(kind='list' AND purpose='seek') AS seek_requests,"
                                      "SUM(kind='list' AND purpose='recovery') AS calibration_requests,"
                                      "SUM(outcome='real_data' AND kind='list' AND purpose='recovery') AS calibration_pages,"
                                      "SUM(outcome NOT IN ('real_data','redirect','detail_unavailable','reserved')) AS failures FROM requests WHERE job=?", (job_id,)).fetchone()
@@ -1557,7 +1654,10 @@ class Engine(LifecycleMixin):
                 c["proof_level"] = "observed_pages_only"
                 rec = self._recovery(job_id, c["stock"])
                 c["recovery"] = self._recovery_json(rec)
-                c["reconciliation_complete"] = bool(rec and rec["phase"] == "complete" and not rec["time_fallback"] and rec.get("time_order_verified", True))
+                frontier = self._frontier(job_id, c["stock"])
+                c["reconciliation_complete"] = bool(frontier and frontier.get("reconciled") and rec and rec["phase"] == "complete" and not rec["time_fallback"] and rec.get("time_order_verified", True))
+                seek = self._seek_state(job_id, c["stock"])
+                c["window_seek"] = {key: seek.get(key) for key in ("job", "stock", "phase", "target_time", "probes", "current_page", "start_page", "reason", "error", "completion_reason")} if seek else None
                 c["pagination_overlap"] = self.db.execute("SELECT COALESCE(SUM(overlap),0) FROM page_observations WHERE job=? AND stock=?", (job_id, c["stock"])).fetchone()[0]
                 if c["details"]["removed"]:
                     c["gaps"].append({"kind": "details_unavailable", "count": c["details"]["removed"]})
@@ -1587,6 +1687,9 @@ class Engine(LifecycleMixin):
                       "active_halt": self._get("active_halt"), "probe_pending": self._get("probe", False),
                       "network_retry": self._get("network_retry") if self._network_retry_target() else None,
                       "request_inflight": self._inflight, "coverage": coverage, "research_only": True,
+                      "window_seek": [c["window_seek"] for c in coverage if c.get("window_seek")],
+                      "calibration_policy": {"every_forward_pages": 25, "list_delay_seconds": 300,
+                                             "proof_scope": "recent_anchor_interval_only"},
                       "content_policy": self._get("content_policy"),
                       "http_request_profile": {"version": REQUEST_PROFILE, "user_agent": UA,
                                                "list_first_page_referer": GOOGLE_REFERER,
@@ -1603,7 +1706,7 @@ class Engine(LifecycleMixin):
             result["coverage_complete"] = False
             result["coverage_proof"] = "observed_pages_only"
             result["needs_review"] = True
-            result["coverage_limitations"] = ["已按源 ID/时间锚点回扫并比较两轮局部区间；不能证明来源全部历史完整或发现已永久消失的未观察帖子", "来源可能删除或不再提供历史数据，锚点丢失时保留显式缺口"]
+            result["coverage_limitations"] = ["日期定位跳页不计作连续覆盖；定期校准只验证实际回扫的近期锚点区间，不能证明此前整个连续前进区间无遗漏", "来源可能删除或不再提供历史数据，锚点丢失时保留显式缺口"]
             return result
 
     @staticmethod
