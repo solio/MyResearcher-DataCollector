@@ -2,6 +2,45 @@
 
 Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: resume keeps the unfinished calibration checkpoint
+
+Read-only local evidence confirms an actual rewind: request2124 successfully
+calibrated133 in generation136 and queued134; manual_resume then opened
+generation137 at132, producing request2125 and redundant133/134 reads. A later
+process_restart similarly replaced pending135 with old anchor134. The earlier
+140/141/140/141 group2231..2236 was instead the old required two-pass scan
+(zero discoveries), not a pause itself. Current local container files match
+b878793; its stable last-page checks did run successfully at162/164, so the
+unfinished-checkpoint bug remained even with that optimization deployed.
+
+SPEC amended before implementation. Ordinary resume/restart/config refresh now
+reuses a valid unfinished recovery generation, phase, current page, pass rows,
+last signature, visits and cumulative budgets. It retains its exact pending
+task and makes it next ahead of details; only a missing checkpoint task is
+recreated at the saved current page after the normal budget checks. A distinct
+recovery_checkpoint_resumed event/public resume facts describe this without
+claiming another source validation. Completed/ordinary frontiers still use the
+single-read last-successful-page check, then page+1 if unchanged; actual drift,
+missing anchors and terminal confirmation retain their bounded interval scan.
+Required second passes and source-proven relocation can still move backwards;
+pause alone no longer resets to the older anchor. Source transport retries
+keep their original task/profile/due instead of being superseded by resume or
+forward preparation. Source halts and budget-exhaustion protections remain.
+
+Validation used isolated temporary Engine/MovingSite/Wire/clock replays:
+stable ordinary resume checks last page2 then advances3; partial first/second
+140/141 passes keep generation, members, visits, first-pass signature and exact
+pending task; second-pass resume needs only the remaining141. verify_frontier
+keeps its original141 target. Missing queue repair recreates the saved page,
+not the anchor. Calibration141 and forward142 timeouts survive pause/restart
+with original task and backoff, including a long wait; exhausted64/6 checkpoints
+retain calibration_limit protection and send no request. H5 describes saved
+checkpoint resumes. Python AST, JS syntax and diff checks passed; no suite.
+
+No real source/provider request, live DB write, training import or live restart
+was made. Changes require the existing git pull / compose rebuild on affected
+collector nodes; updating only the H5 does not change remote worker behavior.
+
 ## Latest change: remove unauthorized 60-second request floor
 
 User explicitly rejects the minimum 60-second global request interval. SPEC

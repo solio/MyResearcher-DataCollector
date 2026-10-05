@@ -1,5 +1,29 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 resume preserves calibration checkpoints — authorized correction
+
+The user reports resume moving back to earlier calibration pages and repeating
+140/141. Read-only retained evidence distinguishes ordinary two-pass scans from
+an actual resume bug: after request2124 advanced generation136 from133 to134,
+manual_resume began generation137 at132 instead. process_restart also rewound
+an unfinished calibration. Ordinary resume/restart/config refresh must preserve
+an existing valid job/stock recovery's generation, phase, current pending page,
+pass members/pages/signature, completed passes, visits and cumulative budgets.
+Reuse the exact pending task; if the checkpoint task is missing, recreate only
+its saved current page after normal budget checks. Resume makes that checkpoint
+eligible ahead of details and records a distinct event, without claiming source
+validation or completion. Error/exhausted checkpoints keep existing safeguards.
+
+An existing transport retry likewise keeps its exact task, selected request
+profile and due time across pause/restart. A retry must not be superseded by a
+fresh calibration, and forward preparation must not replace that retry target.
+Only after a complete calibration or ordinary collected frontier does resume
+start the existing one-read stable last-page check. Unchanged page N continues
+N+1; source changes can still require bounded relocation and two matching
+observations. Retain backward movement only when source time/ID observations
+justify locating a shifted anchor, or when starting the required second pass;
+never reset to an older anchor solely because pause/resume was clicked.
+
 ## 2026-10-05 user-defined request interval — authorized correction
 
 The user rejects the hard 60-second source interval floor. Keep 60 only as the

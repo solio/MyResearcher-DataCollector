@@ -880,6 +880,11 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         if not job or not cfg:
             return
         for stock in self._scope_stocks(cfg):
+            retry = self._network_retry_target() if reason in ORDINARY_RECHECKS else None
+            if retry and retry["stock"] == stock:
+                self._event("network_retry_resumed", "保留网络重试原目标与退避时间；不另起校准",
+                            {"stock": stock, "task_id": retry["id"], "page": retry["page"], "reason": reason})
+                continue
             seek = self._seek_state(job, stock)
             if seek and not seek.get("entry_verified"):
                 continue
@@ -887,6 +892,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             if frontier:
                 old = self._recovery(job, stock)
                 try:
+                    if reason in ORDINARY_RECHECKS and self._resume_recovery_checkpoint(old, reason):
+                        continue
                     self._begin_recovery(job, stock, frontier, reason, force_first=True,
                                          original=old if old and old.get("phase") != "complete" else None)
                 except ValueError as exc:
@@ -916,6 +923,31 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                             self._set("active_halt", "recovery_anchor_unavailable")
                             self._set("reason", "恢复锚点不可用，需要人工检查: " + str(exc))
                     self._event("recovery_anchor_unavailable", "保留原阻断并安全启动；恢复锚点不可用，不能猜测下一页", {"stock": stock, "reason": str(exc)})
+
+    def _resume_recovery_checkpoint(self, rec, reason):
+        if not rec or rec.get("phase") not in {"verify_frontier", "seek", "scan"}:
+            return False
+        if (type(rec.get("generation")) is not int or rec["generation"] < 1
+                or type(rec.get("current_page")) is not int or rec["current_page"] < 1):
+            return False
+        # Existing tasks were budget-checked when queued. Preserve those limits
+        # even for an imported/legacy checkpoint already at exhaustion.
+        if (rec.get("validated_requests", 0) >= MAX_RECOVERY_REQUESTS
+                or rec.get("completed_passes", 0) >= MAX_RECOVERY_PASSES):
+            self._enqueue_recovery(rec, rec["current_page"])
+        task = self.db.execute(
+            "SELECT * FROM tasks WHERE job=? AND stock=? AND purpose='recovery' AND recovery_id=? "
+            "AND page=? AND status IN ('pending','inflight') ORDER BY id LIMIT 1",
+            (rec["job"], rec["stock"], rec["generation"], rec["current_page"])).fetchone()
+        if task is None:
+            self._enqueue_recovery(rec, rec["current_page"])
+        rec.update(force_first=True, resume_count=rec.get("resume_count", 0) + 1,
+                   last_resumed_at=_iso(self.clock()), resume_reason=reason)
+        self._save_recovery(rec)
+        self._event("recovery_checkpoint_resumed", "从保存的校准页继续；保留轮次和已核对记录，不回到旧起点",
+                    {"stock": rec["stock"], "page": rec["current_page"], "generation": rec["generation"],
+                     "phase": rec["phase"], "passes": rec.get("passes", 0), "reason": reason})
+        return True
 
     def _begin_recovery(self, job, stock, frontier, reason, force_first=False, original=None):
         previous = self._recovery(job, stock)
@@ -1380,6 +1412,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def _prepare_forward_target(self, task):
         if task["kind"] != "list" or task["purpose"] != "forward":
+            return task
+        retry = self._network_retry_target()
+        if retry and retry["id"] == task["id"]:
             return task
         frontier = self._frontier(task["job"], task["stock"])
         if not frontier:
@@ -2007,7 +2042,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return None
         keys = ("job", "stock", "phase", "reason", "anchor_page", "current_page", "passes", "drift_count", "new_posts", "proof_level",
                 "anchor_min", "anchor_max", "target_time", "time_fallback", "time_order_verified", "started_at", "completed_at", "verified_requests",
-                "strategy", "trigger_reason", "fallback_reason", "validated_requests", "completed_passes", "max_requests", "max_passes")
+                "strategy", "trigger_reason", "fallback_reason", "validated_requests", "completed_passes", "max_requests", "max_passes",
+                "generation", "resume_count", "last_resumed_at", "resume_reason")
         return {k: rec.get(k) for k in keys}
 
     def requests(self, limit=50):

@@ -1087,6 +1087,7 @@
     const trigger = first(info, ["trigger_reason", "reason"]);
     if (trigger) facts.push("触发原因：" + (recoveryReasons[trigger] || textValue(trigger)));
     if (info.fallback_reason) facts.push("转为区间校准：" + textValue(info.fallback_reason));
+    if (Number(info.resume_count) > 0) facts.push(`本轮按保存断点恢复 ${number(info.resume_count)} 次`);
     if (recoveryProof(info)) facts.push(recoveryProof(info));
     return facts.join(" · ");
   }
