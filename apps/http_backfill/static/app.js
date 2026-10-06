@@ -40,6 +40,7 @@
   let proxyReadSerial = 0;
   const downloadBusy = new Set();
   const taskProxyDrafts = new Map();
+  const startPageDrafts = new Map();
   const stockEvidenceOpen = new Set();
   let mihomoDownloading = false;
 
@@ -244,7 +245,7 @@
   function requestSelection(id) {
     $("selected-node").value = selectedNode;
     if (busy || id === selectedNode) return;
-    if (formDirty || proxyDirty || [...taskProxyDrafts.values()].some((draft) => draft.dirty)) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
+    if (formDirty || proxyDirty || [...taskProxyDrafts.values(), ...startPageDrafts.values()].some((draft) => draft.dirty)) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
     void switchNode(id);
   }
   async function switchNode(id, force = false) {
@@ -354,7 +355,7 @@
   function taskKey(stock, job) { return `${selectedNode}:${job == null ? "current" : job}:${stock}`; }
   function clearTaskProxyDrafts() {
     document.querySelectorAll(".task-proxy-form input[name='username'], .task-proxy-form input[name='password']").forEach((input) => { input.value = ""; });
-    taskProxyDrafts.clear(); stockEvidenceOpen.clear();
+    taskProxyDrafts.clear(); startPageDrafts.clear(); stockEvidenceOpen.clear();
   }
   function stockButton(action, stock, runtime, detached = false) {
     const labels = { start: "采集", pause: "暂停", retry: "探测" };
@@ -380,6 +381,17 @@
       else button.title = action === "retry" ? "只请求本股保留的当前目标一次，遵守全局间隔和本股冷却；成功后仍暂停。" : action === "pause" ? "只暂停本股的后续请求，当前请求结束后保留响应。" : "只采集本股，其他股票状态不变。";
     });
     document.querySelectorAll("[data-task-proxy-fields]").forEach((fields) => { fields.disabled = locked || !supported || Boolean(status?.storage_halt); });
+    const manualPageSupported = supported && status?.navigation_controls?.manual_start_page === true;
+    document.querySelectorAll("[data-start-page-stock]").forEach((button) => {
+      const runtime = runtimeFor(status, button.dataset.startPageStock, button.dataset.stockJob);
+      button.disabled = Boolean(locked || !manualPageSupported || !runtime || runtime.detached || runtime.active_halt || ["blocked", "error"].includes(runtime.state) || status?.storage_halt || status?.active_halt);
+      button.title = !manualPageSupported ? "所选节点需更新以支持逐股设置起始页，不会执行全局操作。" : runtime?.active_halt || ["blocked", "error"].includes(runtime?.state) ? "本股原阻断未解除，请先对原目标探测成功。" : "仅设置本股顺序采集入口，保存前暂停本股；不会证明此前页面已采集。";
+      button.setAttribute("aria-expanded", String(startPageDrafts.get(taskKey(button.dataset.startPageStock, button.dataset.stockJob))?.open === true));
+    });
+    document.querySelectorAll("[data-start-page-fields]").forEach((fields) => {
+      const runtime = runtimeFor(status, fields.dataset.startPageFields, fields.dataset.stockJob);
+      fields.disabled = Boolean(locked || !manualPageSupported || !runtime || runtime.active_halt || ["blocked", "error"].includes(runtime.state) || status?.storage_halt || status?.active_halt);
+    });
     if ($("download-mihomo")) $("download-mihomo").disabled = locked || !supported || mihomoDownloading;
   }
   async function controlStock(stock, action, job) {
@@ -489,12 +501,66 @@
     });
     details.append(form); row.append(details);
   }
+  function appendStartPage(row, item, stock, runtime, existingPanels, headerActions) {
+    const key = taskKey(stock, runtime.job);
+    let draft = startPageDrafts.get(key);
+    if (!draft) {
+      const current = first(runtime, ["current", "current_target", "target"]), seek = windowSeekInfo(status, stock, item);
+      const page = current?.kind === "list" ? current.page : seek?.manual_start_page || seek?.start_page || 1;
+      draft = { open: false, page: String(page || 1), dirty: false }; startPageDrafts.set(key, draft);
+    }
+    if (!draft.open && !draft.dirty) {
+      const current = first(runtime, ["current", "current_target", "target"]), seek = windowSeekInfo(status, stock, item);
+      draft.page = String((current?.kind === "list" ? current.page : seek?.manual_start_page || seek?.start_page) || 1);
+    }
+    const button = el("button", "button secondary small stock-control", "设置起始页"); button.type = "button";
+    button.dataset.startPageStock = String(stock); button.dataset.stockJob = String(runtime.job); button.setAttribute("aria-expanded", String(draft.open));
+    button.setAttribute("aria-label", `设置股票 ${stock} 的起始源页码`);
+    headerActions.append(button);
+    if (existingPanels.has(key)) {
+      const panel = existingPanels.get(key); panel.hidden = !draft.open; row.append(panel);
+      button.addEventListener("click", () => { if (!button.disabled) { draft.open = !draft.open; panel.hidden = !draft.open; button.setAttribute("aria-expanded", String(draft.open)); } });
+      return;
+    }
+    const panel = el("div", "start-page-panel"); panel.dataset.startPageKey = key; panel.hidden = !draft.open;
+    const form = el("form", "start-page-form"), fields = el("fieldset"); fields.dataset.startPageFields = String(stock); fields.dataset.stockJob = String(runtime.job);
+    const label = el("label", "", "从源页码开始"), input = el("input"); input.id = `start-page-${stock}-${runtime.job}`; input.type = "number"; input.min = "1"; input.step = "1"; input.inputMode = "numeric"; input.required = true; input.value = draft.page; label.htmlFor = input.id;
+    const save = el("button", "button secondary small", "暂停本股并保存"), cancel = el("button", "button quiet small", "关闭"); save.type = "submit"; cancel.type = "button";
+    const actions = el("div", "start-page-actions"); actions.append(input, save, cancel); fields.append(label, actions); form.append(fields, el("p", "field-note", "只设置本股顺序采集入口；其他股票继续。保存后本股暂停，点击“采集”才请求该页。手动跳页不表示此前页面已采集，也不证明窗口上界完整。"));
+    const error = el("p", "page-error"); error.hidden = true; error.setAttribute("role", "status"); form.append(error);
+    input.addEventListener("input", () => { draft.page = input.value; draft.dirty = true; error.hidden = true; });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault(); if (fields.disabled) return;
+      const text = input.value.trim(), page = Number(text);
+      if (!/^\d+$/.test(text) || !Number.isSafeInteger(page) || page < 1) { error.textContent = "源页码必须是正整数。"; error.hidden = false; return; }
+      await saveStockStartPage(String(stock), runtime.job, page);
+    });
+    cancel.addEventListener("click", () => { draft.open = false; panel.hidden = true; updateStockControls(); });
+    button.addEventListener("click", () => { if (!button.disabled) { draft.open = !draft.open; panel.hidden = !draft.open; button.setAttribute("aria-expanded", String(draft.open)); if (draft.open) input.focus({ preventScroll: true }); } });
+    panel.append(form); row.append(panel);
+  }
+  async function saveStockStartPage(stock, job, page) {
+    if (busy || !authenticated || !online || !independentStocks() || status?.navigation_controls?.manual_start_page !== true) return false;
+    const node = selectedNode, selection = nodeEpoch; busy = true; statusGeneration += 1; controls(); let saved = false;
+    try {
+      notice(`正在暂停 ${stock} 并设置起始源页码；其他股票状态不变。`);
+      await pauseStockAndWait(stock, job, node, selection);
+      const runtime = runtimeFor(status, stock, job);
+      if (!runtime || runtime.detached || runtime.active_halt || ["blocked", "error"].includes(runtime.state)) throw new Error("本股仍有阻断，请先对原失败目标单次探测成功，不能通过设置页码绕过。");
+      const result = await api(`stocks/${encodeURIComponent(stock)}/start-page`, "POST", { page, job_id: job }, node);
+      if (selection !== nodeEpoch) throw new Error("查看实例已变化，请重新读取原节点状态。");
+      startPageDrafts.delete(taskKey(stock, job)); applyStatus(result); saved = true;
+      notice(`${stock} 已设置从源第 ${number(page)} 页开始，仍保持暂停。点击该股“采集”后才请求；窗口上界尚未核实，其他股票状态不变。`);
+    } catch (error) { notice(error.status === 404 ? "所选节点需更新以支持设置起始页；没有执行全局操作。" : error.message, true); }
+    finally { busy = false; controls(); if (authenticated) await poll(); }
+    return saved;
+  }
   async function pauseStockAndWait(stock, job, node, selection) {
     let snapshot = await api("status", "GET", undefined, node);
     const verify = () => {
-      if (selection !== nodeEpoch) throw new Error("查看实例已变化，尚未修改出口。");
+      if (selection !== nodeEpoch) throw new Error("查看实例已变化，尚未提交修改。");
       if (!independentStocks(snapshot)) throw new Error("该节点尚不支持逐股控制，请更新节点；没有发送全局暂停。");
-      const runtime = runtimeFor(snapshot, stock, job); if (!runtime) throw new Error("股票任务已变化，请刷新后重新配置出口。"); return runtime;
+      const runtime = runtimeFor(snapshot, stock, job); if (!runtime) throw new Error("股票任务已变化，请刷新后重新操作。"); return runtime;
     };
     let runtime = verify(); applyStatus(snapshot);
     if (runtime.state === "running" || runtimeProbe(runtime) || stockInFlight(runtime, snapshot) || runtime.proxy_auto_suspended === false) {
@@ -503,7 +569,7 @@
     }
     const deadline = Date.now() + 45000;
     while (runtime.state === "running" || runtimeProbe(runtime) || stockInFlight(runtime, snapshot)) {
-      if (Date.now() >= deadline) throw new Error("本股已提交暂停，当前请求尚未结束。出口尚未修改，请等待后重试。");
+      if (Date.now() >= deadline) throw new Error("本股已提交暂停，当前请求尚未结束。修改尚未提交，请等待后重试。");
       await new Promise((resolve) => setTimeout(resolve, 750)); snapshot = await api("status", "GET", undefined, node); runtime = verify(); applyStatus(snapshot);
     }
   }
@@ -950,9 +1016,12 @@
     const list = $("coverage-list");
     const focused = document.activeElement;
     const existingPanels = new Map([...list.querySelectorAll("[data-task-proxy-key]")].filter((panel) => taskProxyDrafts.get(panel.dataset.taskProxyKey)?.dirty || panel.contains(focused)).map((panel) => [panel.dataset.taskProxyKey, panel]));
+    const existingStartPanels = new Map([...list.querySelectorAll("[data-start-page-key]")].filter((panel) => startPageDrafts.get(panel.dataset.startPageKey)?.dirty || panel.contains(focused)).map((panel) => [panel.dataset.startPageKey, panel]));
     const detachedRuntimes = Array.isArray(data.detached_stock_runtimes) ? data.detached_stock_runtimes : [];
     const activeProxyKeys = new Set([...items.filter((item) => item.runtime).map((item) => taskKey(first(item, ["stock", "stock_code", "bar_code", "code"]), item.runtime.job)), ...detachedRuntimes.map((runtime) => taskKey(runtime.stock, runtime.job))]);
     for (const key of taskProxyDrafts.keys()) if (!activeProxyKeys.has(key)) taskProxyDrafts.delete(key);
+    const activeStartKeys = new Set(items.filter((item) => item.runtime).map((item) => taskKey(first(item, ["stock", "stock_code", "bar_code", "code"]), item.runtime.job)));
+    for (const key of startPageDrafts.keys()) if (!activeStartKeys.has(key)) startPageDrafts.delete(key);
     list.replaceChildren();
     if (!items.length && config && Array.isArray(config.stocks)) items = config.stocks.map((stock) => ({ stock, status: "pending" }));
     display("coverage-count", items.length ? `${items.length} 只股票 · 覆盖未确认` : "未配置");
@@ -983,6 +1052,8 @@
       header.append(el("strong", "", stock), actions);
       row.append(header);
       appendStockRuntime(row, runtime);
+      if (runtime) appendStartPage(row, item, stock, runtime, existingStartPanels, actions);
+      else if (config?.stocks?.includes(String(stock))) appendStartPage(row, item, stock, { job: data.job?.id, stock }, existingStartPanels, actions);
       const requested = objectValue(item.requested_window);
       const requestedFrom = requested.from_date || config?.from_date;
       const requestedTo = requested.to_date || config?.to_date;
@@ -1050,6 +1121,7 @@
     return null;
   }
   function windowSeekDescription(info, state) {
+    if (info.manual_direct === true || info.navigation_mode === "manual_direct" || info.manual === true || Number(info.manual_start_page) > 0 || info.completion_reason === "manual_start_page" || info.reason === "manual_start_page") return `手动从第 ${number(info.manual_start_page || info.start_page || info.current_page)} 页开始，尚未核实窗口上界${info.entry_verified === true ? " · 所选源页响应已核实" : ""}`;
     const complete = info.phase === "complete";
     const failed = info.phase === "error";
     const label = failed ? "结束日期定位异常，已暂停" : complete ? "结束日期定位已完成" : state === "running" ? "正在定位结束日期" : "结束日期定位待继续";

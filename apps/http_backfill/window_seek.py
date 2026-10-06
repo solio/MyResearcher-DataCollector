@@ -41,13 +41,22 @@ class WindowSeekMixin:
         self._save_seek_state(state)
         raise ValueError(message)
 
+    def _retained_seek_task(self, job, stock):
+        if not self._get("active_halt"):
+            return None
+        task_id = self._get("halted_task_id") or self._get("halt_task_id")
+        row = self.db.execute("SELECT id FROM tasks WHERE id=? AND job=? AND stock=?",
+                              (task_id, job, stock)).fetchone() if task_id else None
+        return row[0] if row else None
+
     def _enqueue_seek(self, job, stock, page):
         if type(page) is not int or not 1 <= page <= MAX_PAGE:
             raise ValueError("日期定位页码超出允许范围")
         if self.db.execute(
             "SELECT 1 FROM tasks WHERE job=? AND stock=? AND kind='list' "
-            "AND purpose='seek' AND page=? AND status IN ('pending','inflight')",
-            (job, stock, page),
+            "AND purpose='seek' AND page=? AND status IN ('pending','inflight') "
+            "AND id!=COALESCE(?, -1)",
+            (job, stock, page, self._retained_seek_task(job, stock)),
         ).fetchone():
             return
         url = list_page_url(stock, page)
@@ -69,7 +78,8 @@ class WindowSeekMixin:
             raise RuntimeError("日期定位请求仍在运行，不能重置")
         self.db.execute(
             "UPDATE tasks SET status='cancelled' WHERE job=? AND stock=? "
-            "AND kind='list' AND purpose='seek' AND status='pending'", (job, stock),
+            "AND kind='list' AND purpose='seek' AND status='pending' AND id!=COALESCE(?, -1)",
+            (job, stock, self._retained_seek_task(job, stock)),
         )
         state = {
             "job": job, "stock": stock, "phase": "searching", "reason": reason,
@@ -79,8 +89,11 @@ class WindowSeekMixin:
             "too_new": None, "too_old": None, "current_page": 1,
             "start_page": None, "anchor_hint": None,
         }
+        hint = self._historical_seek_hint(state, {"request_id": None, "source_count": None})
+        if hint:
+            state.update(current_page=hint["predicted_page"], anchor_hint=hint)
         self._save_seek_state(state)
-        self._enqueue_seek(job, stock, 1)
+        self._enqueue_seek(job, stock, state["current_page"])
         self._event("window_seek_started", f"{stock} 开始定位回补结束日期", state)
         return state
 
@@ -106,11 +119,11 @@ class WindowSeekMixin:
             "FROM page_observations p JOIN requests r ON r.id=p.request_id "
             "WHERE p.stock=? AND r.stock=p.stock AND r.job=p.job AND r.page=p.page "
             "AND r.kind='list' AND r.outcome='real_data' AND r.finished IS NOT NULL "
-            "AND p.request_id<>? AND p.rows>0 AND p.earliest IS NOT NULL AND p.latest IS NOT NULL "
+            "AND (? IS NULL OR p.request_id<>?) AND p.rows>0 AND p.earliest IS NOT NULL AND p.latest IS NOT NULL "
             "ORDER BY CASE WHEN p.earliest<=? AND p.latest>=? THEN 0 ELSE "
             "MIN(ABS(julianday(p.earliest)-julianday(?)),ABS(julianday(p.latest)-julianday(?))) END, "
             "r.finished DESC LIMIT 64",
-            (state["stock"], stats["request_id"], state["target_time"], state["target_time"],
+            (state["stock"], stats.get("request_id"), stats.get("request_id"), state["target_time"], state["target_time"],
              state["target_time"], state["target_time"]),
         ).fetchall()
         anchors = []
@@ -145,7 +158,7 @@ class WindowSeekMixin:
         if type(current_count) is not int or current_count < 0:
             current_count = None
         predicted = predict_page(anchor, current_count)
-        if not 1 < predicted <= MAX_PAGE:
+        if not 1 <= predicted <= MAX_PAGE:
             return None
         return {
             "observed_page": anchor.page_no, "predicted_page": predicted,
@@ -183,7 +196,7 @@ class WindowSeekMixin:
                 raise ValueError("日期定位错误只能通过人工单次探测重新验证")
             self._seek_navigation(rows)
             # A valid one-shot probe does not rehabilitate stale or conflicting
-            # bounds. Start from a fresh head after the user explicitly resumes.
+            # bounds. Reposition from a historical hint after explicit resume.
             return self._begin_window_seek(task["job"], task["stock"], "seek_error_recovery")
         page = task["page"]
         if page != state["current_page"] or page in state["visited"] or state["probes"] >= MAX_PROBES:
@@ -234,11 +247,17 @@ class WindowSeekMixin:
                 return self._finish_window_seek(state, too_new - 1, "adjacent_observed_bounds")
             next_page = (too_new + too_old) // 2
         elif too_new is not None:
-            hint = self._historical_seek_hint(state, stats) if page == 1 else None
+            hint = self._historical_seek_hint(state, stats) if state["probes"] == 1 else None
+            if hint and (hint["predicted_page"] <= too_new or hint["predicted_page"] in state["visited"]):
+                hint = None
             state["anchor_hint"] = hint or state["anchor_hint"]
             next_page = hint["predicted_page"] if hint else min(MAX_PAGE, max(2, too_new * 2))
         else:
-            next_page = max(1, too_old // 2)
+            hint = self._historical_seek_hint(state, stats) if state["probes"] == 1 else None
+            if hint and (hint["predicted_page"] >= too_old or hint["predicted_page"] in state["visited"]):
+                hint = None
+            state["anchor_hint"] = hint or state["anchor_hint"]
+            next_page = hint["predicted_page"] if hint else max(1, too_old // 2)
         if state["probes"] >= MAX_PROBES:
             self._fail_window_seek(state, f"日期定位超过 {MAX_PROBES} 次探测预算，尚未找到结束日期")
         if next_page in state["visited"] or not 1 <= next_page <= MAX_PAGE:

@@ -1,5 +1,36 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-05 per-stock manual start page and position reuse — authorized
+
+The user requires a stock-card button to set the starting list page and rejects
+every date edit restarting at page1. Add POST api/stocks/{stock}/start-page with
+page (positive safe integer) and optional job_id, targeting only the current
+job's stock. The UI pauses only that stock and waits for its in-flight request,
+then saves the page. Original source halts cannot be bypassed by setting a page.
+The operation is paused, preserves source/node due times and posts/associations/
+requests/raw, supersedes only that stock's old navigation tasks and checkpoints,
+and clears the replaced ordinary retry pointer with an explicit event. Details
+remain queued; the selected forward page gets first ordinary dispatch priority.
+
+Persist a manual-direct entry separately from automatic date seeking. Its first
+source request is exactly the selected page, without homepage/upper-date seek
+or an automatic entry_shifted reset. Successful response validates that page,
+not the window's upper boundary; time-window filtering and normal stop rules
+still apply. Reset stale boundary/under-page flags and retain an explicit manual
+navigation coverage gap. Pause/restart and date edits retain a user's manual
+position/mode, while explicit another page replaces it. Current-job capability
+is advertised; fleet pins UUID and refuses unsupported older nodes rather than
+falling back to global control. Unknown jobs/removed stocks are not mutable.
+
+For automatic navigation, choose a validated historical page nearest the new
+upper cutoff before the first live request, without requesting1 merely to load
+a hint. Historical observations are navigation advice only; fresh responses
+establish bounds/visits and actual coverage. Same upper cutoff/lower-date edits
+retain existing stock navigation progress rather than discarding it; changed
+upper cutoff can reposition near the new date using recorded observations.
+New stocks lacking history still seek normally unless a manual page is set.
+Neither manual jumps nor reused hints establish complete window coverage.
+
 ## 2026-10-05 resume preserves calibration checkpoints — authorized correction
 
 The user reports resume moving back to earlier calibration pages and repeating

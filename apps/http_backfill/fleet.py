@@ -557,7 +557,7 @@ class FleetManager:
         path = path.lstrip("/")
         allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy", "api/mihomo/config"})
                    or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate"})
-                   or (method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/(?:control|proxy/config)", path))
+                   or (method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/(?:control|proxy/config|start-page)", path))
                    or (method == "PATCH" and path == "api/jobs/current")
                    or (method == "DELETE" and (path == "api/jobs/current" or re.fullmatch(r"api/jobs/current/stocks/[0-9]{6}", path))))
         if not allowed:
@@ -588,11 +588,17 @@ class FleetManager:
                 raise ValueError("控制参数无效；逐股动作必须使用专用股票接口")
         if method == "POST" and path == "api/proxy/rotate" and body:
             raise ValueError("切换出口请求不接受额外参数")
+        if method == "POST" and path.endswith("/start-page"):
+            if (not isinstance(body, dict) or set(body) - {"page", "job_id"}
+                    or type(body.get("page")) is not int or not 1 <= body["page"] <= 2 ** 53 - 1):
+                raise ValueError("设置起始页需要正整数 page 和可选 job_id")
         try:
             if method != "GET" or path == "api/mihomo/config":
                 checked = self._check_status(node)  # Pin verification immediately before the only mutation attempt.
                 if path.startswith("api/stocks/") and checked.get("runtime_scope") != "stock":
                     raise FleetError(409, "此采集节点尚未支持逐股控制，请先更新节点代码")
+                if path.endswith("/start-page") and not checked.get("navigation_controls", {}).get("manual_start_page"):
+                    raise FleetError(409, "此采集节点尚未支持设置起始页，请先更新节点代码")
             if node["id"] != "local":
                 payload = self._remote(node, method, path, body, query)
             elif method == "GET":
@@ -612,6 +618,8 @@ class FleetManager:
                     getattr(self.engine, body["action"])(path.split("/")[2], job=body.get("job_id"))
                 elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/proxy/config", path):
                     self.engine.configure_stock_proxy(path.split("/")[2], body)
+                elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/start-page", path):
+                    self.engine.set_start_page(path.split("/")[2], body["page"], job=body.get("job_id"))
                 elif method == "POST":
                     if not isinstance(body, dict) or set(body) - {"action"}:
                         raise ValueError("节点批量控制只接受 action；逐股控制请使用股票接口")

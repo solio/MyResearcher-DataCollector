@@ -1,7 +1,7 @@
 """Auditable local job edits and archives; never delete source evidence.
 
-Engine supplies its database, lock, clock and queue helpers. Recovery is owned
-by core: a changed scope starts at page 1 instead of inheriting a stale cursor.
+Engine supplies its database, lock, clock and queue helpers. Scope rebuilds
+reuse valid positions or historical hints while retaining raw source evidence.
 """
 from __future__ import annotations
 
@@ -106,12 +106,13 @@ class LifecycleMixin:
                     retained.append(row["id"])
         return retained
 
-    def _cancel_scope_tasks(self, job, retained, status, stocks=None):
+    def _cancel_scope_tasks(self, job, retained, status, stocks=None, kinds=None):
         retained = retained or []
         retained_clause = " AND id NOT IN (" + ",".join("?" for _ in retained) + ")" if retained else ""
         stock_clause = "" if stocks is None else " AND stock IN (" + ",".join("?" for _ in stocks) + ")"
-        self.db.execute("UPDATE tasks SET status=? WHERE job=? AND status IN ('pending','inflight')" + retained_clause + stock_clause,
-                        (status, job, *retained, *(stocks or [])))
+        kind_clause = "" if kinds is None else " AND kind IN (" + ",".join("?" for _ in kinds) + ")"
+        self.db.execute("UPDATE tasks SET status=? WHERE job=? AND status IN ('pending','inflight')" + retained_clause + stock_clause + kind_clause,
+                        (status, job, *retained, *(stocks or []), *(kinds or [])))
         for task_id in retained:
             self.db.execute("UPDATE tasks SET status='pending' WHERE id=?", (task_id,))
 
@@ -156,22 +157,109 @@ class LifecycleMixin:
             raise ValueError("历史标准详情链接不符合来源路径")
         return item
 
+    def _saved_navigation_valid(self, job, stock, seek, frontier, effective_to):
+        from window_seek import MAX_PAGE, MAX_PROBES
+        if seek and seek.get("phase") == "error":
+            return False
+        if seek and seek.get("target_epoch") == effective_to:
+            page = seek.get("current_page") if seek.get("phase") == "searching" else seek.get("start_page")
+            probes = seek.get("probes", 0)
+            if (seek.get("phase") in {"searching", "complete"} and type(page) is int and 1 <= page <= MAX_PAGE
+                    and (seek["phase"] == "complete" or type(probes) is int and 0 <= probes < MAX_PROBES)):
+                return True
+        if not frontier or type(frontier.get("page")) is not int or frontier["page"] < 1 or not frontier.get("rows"):
+            return False
+        observed = self.db.execute("SELECT 1 FROM requests WHERE id=? AND job=? AND stock=? AND page=? "
+                                   "AND kind='list' AND outcome='real_data'",
+                                   (frontier.get("request_id"), job, stock, frontier["page"])).fetchone()
+        return observed is not None
+
+    def _manual_position_page(self, job, stock, seek, frontier, retained):
+        page = seek.get("manual_start_page") or seek.get("start_page")
+        if seek.get("manual_start_pending"):
+            return page
+        retained = retained or []
+        retained_order = "CASE WHEN id IN (" + ",".join("?" for _ in retained) + ") THEN 1 ELSE 0 END," if retained else ""
+        pending = self.db.execute("SELECT page FROM tasks WHERE job=? AND stock=? AND kind='list' "
+                                  "AND purpose='forward' AND status IN ('pending','inflight') ORDER BY " + retained_order + "id LIMIT 1",
+                                  (job, stock, *retained)).fetchone()
+        if pending and type(pending[0]) is int and pending[0] > 0:
+            return pending[0]
+        rec = self._recovery(job, stock)
+        if rec and rec.get("phase") in {"seek", "scan", "verify_frontier"}:
+            candidate = rec.get("current_page")
+            if type(candidate) is int and candidate > 0:
+                return candidate
+        return frontier["page"] if frontier and type(frontier.get("page")) is int and frontier["page"] > 0 else page
+
+    def _reset_window_stop(self, job, stock):
+        self.db.execute("UPDATE coverage SET under_pages=0,boundary=0,list_complete=0,stop_reason=NULL WHERE job=? AND stock=?", (job, stock))
+        frontier = self._frontier(job, stock)
+        if frontier:
+            frontier["terminal"] = None
+            self._save_frontier(job, stock, frontier)
+        rec = self._recovery(job, stock)
+        if rec:
+            rec["terminal"] = None
+            self._save_recovery(rec)
+
     def _rebuild_scope(self, job, old_config, config, effective_to, retained):
         from core import guba, _item_load, detail_enrichment_trigger
         old_stocks, new_stocks = set(old_config["stocks"]), set(config["stocks"])
         window_changed = any(config[k] != old_config[k] for k in ("from_date", "to_date"))
         reset = new_stocks if window_changed else new_stocks - old_stocks
         affected = sorted(reset | (old_stocks - new_stocks))
-        self._cancel_scope_tasks(job, retained, "superseded", affected)
-        self._clear_derived_positions(job, affected)
+        previous_cutoff = self.db.execute("SELECT effective_to FROM job_lifecycle WHERE job=?", (job,)).fetchone()[0]
+        upper_changed = config["to_date"] != old_config["to_date"] or effective_to != previous_cutoff
+        preserve, manual_pages = set(), {}
+        for stock in reset:
+            seek, frontier = self._seek_state(job, stock), self._frontier(job, stock)
+            if seek and seek.get("manual_direct"):
+                page = self._manual_position_page(job, stock, seek, frontier, retained)
+                if type(page) is int and 1 <= page <= 2 ** 53 - 1:
+                    manual_pages[stock] = page
+            elif (stock in old_stocks and not upper_changed
+                  and self._saved_navigation_valid(job, stock, seek, frontier, effective_to)):
+                preserve.add(stock)
+        replace = sorted((reset - preserve) | (old_stocks - new_stocks))
+        if replace:
+            self._cancel_scope_tasks(job, retained, "superseded", replace)
+            self._clear_derived_positions(job, replace)
+        if preserve:
+            self._cancel_scope_tasks(job, retained, "superseded", sorted(preserve), kinds=["detail"])
         placeholders = ",".join("?" for _ in affected)
-        for table in ("associations", "coverage"):
-            self.db.execute(f"DELETE FROM {table} WHERE job=? AND stock IN (" + placeholders + ")", (job, *affected))
+        self.db.execute("DELETE FROM associations WHERE job=? AND stock IN (" + placeholders + ")", (job, *affected))
+        for stock in old_stocks - new_stocks:
+            self.db.execute("DELETE FROM coverage WHERE job=? AND stock=?", (job, stock))
         for stock in config["stocks"]:
             if stock not in reset:
                 continue
-            self.db.execute("INSERT INTO coverage(job,stock) VALUES(?,?)", (job, stock))
-            self._begin_window_seek(job, stock, reason="config_updated")
+            self.db.execute("INSERT OR IGNORE INTO coverage(job,stock) VALUES(?,?)", (job, stock))
+            self._reset_window_stop(job, stock)
+            with self._stock_context(stock, job):
+                if stock in manual_pages:
+                    self._begin_manual_entry(job, stock, manual_pages[stock], reason="config_updated_manual_position")
+                    self._event("manual_position_retained", "日期修改保留手动采集页码；仍未证明窗口上界或此前页面覆盖",
+                                {"stock": stock, "page": manual_pages[stock], "upper_boundary_verified": False})
+                elif stock in preserve:
+                    seek = self._seek_state(job, stock)
+                    if seek:
+                        seek["target_from_date"] = config["from_date"]
+                        self._save_seek_state(seek)
+                        if seek.get("phase") == "searching":
+                            self._enqueue_seek(job, stock, seek["current_page"])
+                        elif not seek.get("entry_verified"):
+                            existing = self.db.execute("SELECT 1 FROM tasks WHERE job=? AND stock=? AND kind='list' "
+                                                       "AND purpose='forward' AND page=? AND status IN ('pending','inflight') "
+                                                       "AND id!=COALESCE(?, -1)",
+                                                       (job, stock, seek["start_page"], self._retained_seek_task(job, stock))).fetchone()
+                            if not existing:
+                                self._enqueue_list(job, stock, seek["start_page"])
+                    self._event("window_position_retained", "结束日期未变，保留已有定位／前进页码并重新计算窗口内帖子",
+                                {"stock": stock, "current_page": seek.get("current_page") if seek else None,
+                                 "frontier_page": (self._frontier(job, stock) or {}).get("page")})
+                else:
+                    self._begin_window_seek(job, stock, reason="config_updated")
         if not reset:
             self._mark_recovery_needed("config_updated")
             return []

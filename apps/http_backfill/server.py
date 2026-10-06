@@ -362,6 +362,10 @@ class Handler(BaseHTTPRequestHandler):
                 getattr(self.server.engine, obj["action"])(path.split("/")[2], job=obj.get("job_id"))
             elif re.fullmatch(r"api/stocks/[0-9]{6}/proxy/config", path):
                 return self.send(200, self.server.engine.configure_stock_proxy(path.split("/")[2], obj))
+            elif re.fullmatch(r"api/stocks/[0-9]{6}/start-page", path):
+                if set(obj) - {"page", "job_id"}:
+                    raise ValueError("设置起始页只接受 page 和可选 job_id")
+                return self.send(200, self.server.engine.set_start_page(path.split("/")[2], obj.get("page"), job=obj.get("job_id")))
             elif path == "api/control":
                 if set(obj) - {"action"}:
                     raise ValueError("节点批量控制只接受 action；逐股控制请使用股票接口")

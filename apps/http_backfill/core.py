@@ -457,6 +457,63 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._event("stock_proxy_configured", "更新本股票出口；阻断、冷却和断点保留", {"mode": result["settings"]["mode"]})
         return self.status()
 
+    def set_start_page(self, stock, page, *, job=None):
+        if type(page) is not int or not 1 <= page <= 2 ** 53 - 1:
+            raise ValueError("起始页必须是大于 0 的整数")
+        with self._mutex, self.db:
+            job, stock = self._resolve_stock_scope(stock, job)
+            if (job, stock) not in self._current_stock_scopes():
+                raise RuntimeError("只能设置当前任务中股票的起始页")
+            if self._get_global("storage_halt") or self._get_global("legacy_stock_halt_barrier"):
+                raise RuntimeError("请先处理节点存储或原任务证据问题")
+            with self._stock_context(stock, job):
+                if self._inflight_stock == (job, stock) or self._get("state") == "running" or self._get("probe"):
+                    raise RuntimeError("请先暂停这只股票并等待它的请求结束，再设置起始页")
+                if self._get("active_halt"):
+                    raise RuntimeError("本股原阻断尚未解除；请先探测原目标，不能通过改页码跳过")
+                retry = self._get("network_retry")
+                self.db.execute("UPDATE tasks SET status='superseded' WHERE job=? AND stock=? "
+                                "AND kind='list' AND status='pending'", (job, stock))
+                self.db.execute("DELETE FROM frontiers WHERE job=? AND stock=?", (job, stock))
+                self.db.execute("DELETE FROM recoveries WHERE job=? AND stock=?", (job, stock))
+                self._set("network_retry", None)
+                self._begin_manual_entry(job, stock, page)
+                self._suspend_proxy_recovery()
+                self._set("probe", False)
+                self._set("resume_recovery", False)
+                self._set("state", "paused")
+                self._set("reason", f"已设置从第 {page} 页开始，等待采集")
+                self._end_segment("manual_start_page")
+                self._event("start_page_set", f"{stock} 起始页已设为 {page}，保持暂停",
+                            {"stock": stock, "page": page, "replaced_retry_task": (retry or {}).get("task_id"),
+                             "window_upper_boundary_verified": False})
+            self._publish_stock_summary()
+        return self.status()
+
+    def _begin_manual_entry(self, job, stock, page, reason="manual_start_page"):
+        config, cutoff = self._config(), self._get("effective_to_epoch")
+        state = {"job": job, "stock": stock, "phase": "complete", "reason": reason,
+                 "target_time": datetime.fromtimestamp(cutoff, guba.SHANGHAI).strftime("%Y-%m-%d %H:%M:%S"),
+                 "target_epoch": cutoff, "target_from_date": config["from_date"],
+                 "probes": 0, "visited": [], "observations": [], "too_new": None, "too_old": None,
+                 "current_page": None, "start_page": page, "anchor_hint": None,
+                 "manual_direct": True, "manual_start_page": page, "manual_start_pending": True,
+                 "entry_verified": False, "upper_boundary_verified": False,
+                 "completion_reason": "manual_start_page"}
+        state["manual_start_task_id"] = self._enqueue_list(job, stock, page)
+        self._save_seek_state(state)
+        coverage = self.db.execute("SELECT gaps FROM coverage WHERE job=? AND stock=?", (job, stock)).fetchone()
+        gaps = json.loads(coverage[0]) if coverage else []
+        gap = {"kind": "manual_start_page", "page": page, "upper_boundary_verified": False,
+               "reason": f"手动从第 {page} 页开始，目标窗口上界及此前页面覆盖未核实"}
+        if gap not in gaps:
+            gaps.append(gap)
+        self.db.execute("UPDATE coverage SET under_pages=0,boundary=0,list_complete=0,stop_reason=NULL,gaps=? "
+                        "WHERE job=? AND stock=?", (_dump(gaps), job, stock))
+        self._event("manual_entry_queued", f"{stock} 下一次列表请求为第 {page} 页，不先请求首页",
+                    {"stock": stock, "page": page, "reason": reason})
+        return state
+
     def mihomo_config(self):
         with self._mutex:
             job = self._get("job_id")
@@ -647,6 +704,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         inflight = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND status='inflight' ORDER BY id LIMIT 1", args).fetchone()
         if inflight:
             return inflight
+        for stock in self._scope_stocks():
+            entry = self._seek_state(args[0], stock)
+            if entry and entry.get("manual_start_pending"):
+                selected = self.db.execute("SELECT * FROM tasks WHERE id=? AND job=? AND stock=? "
+                                           "AND status='pending'", (entry.get("manual_start_task_id"), args[0], stock)).fetchone()
+                if selected:
+                    return selected
         seeking = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND kind='list' AND purpose='seek' AND status='pending' ORDER BY id LIMIT 1", args).fetchone()
         if seeking:
             return seeking
@@ -710,7 +774,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def _enqueue_list(self, job, stock, page):
         url = list_url(stock, page)
-        self.db.execute("INSERT INTO tasks(job,kind,stock,page,url,original_url) VALUES(?,'list',?,?,?,?)", (job, stock, page, url, url))
+        return self.db.execute("INSERT INTO tasks(job,kind,stock,page,url,original_url) VALUES(?,'list',?,?,?,?)", (job, stock, page, url, url)).lastrowid
 
     def _detail_list_referer(self, task):
         # Recovery can move an existing post to a different page. Prefer the
@@ -1794,7 +1858,11 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             if standard and [r["post_publish_time"] for r in standard] != sorted((r["post_publish_time"] for r in standard), reverse=True):
                 raise ValueError("前进列表不符合非置顶标准帖发布时间降序")
             entry = self._seek_state(task["job"], task["stock"])
-            if entry and entry.get("phase") == "complete" and not entry.get("entry_verified"):
+            if entry and entry.get("manual_direct") and entry.get("manual_start_pending"):
+                entry.update(manual_start_pending=False, entry_verified=True, entry_request_id=rid,
+                             entry_verification="manual_page_response", upper_boundary_verified=False)
+                self._save_seek_state(entry)
+            elif entry and entry.get("phase") == "complete" and not entry.get("entry_verified"):
                 if (task["page"] > 1 and (not rows or (standard and max(r["post_publish_time"] for r in standard) < entry["target_time"]))):
                     stats["window_seek"] = self._begin_window_seek(task["job"], task["stock"], reason="entry_shifted")
                     return stats
@@ -1936,7 +2004,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 frontier = self._frontier(job_id, c["stock"])
                 c["reconciliation_complete"] = bool(frontier and frontier.get("reconciled") and rec and rec["phase"] == "complete" and not rec["time_fallback"] and rec.get("time_order_verified", True))
                 seek = self._seek_state(job_id, c["stock"])
-                c["window_seek"] = {key: seek.get(key) for key in ("job", "stock", "phase", "target_time", "probes", "current_page", "start_page", "reason", "error", "completion_reason")} if seek else None
+                c["window_seek"] = {key: seek.get(key) for key in ("job", "stock", "phase", "target_time", "probes", "current_page", "start_page", "reason", "error", "completion_reason",
+                                      "manual_direct", "manual_start_page", "manual_start_pending", "entry_verified", "upper_boundary_verified", "anchor_hint")} if seek else None
                 c["pagination_overlap"] = self.db.execute("SELECT COALESCE(SUM(overlap),0) FROM page_observations WHERE job=? AND stock=?", (job_id, c["stock"])).fetchone()[0]
                 if c["details"]["removed"]:
                     c["gaps"].append({"kind": "details_unavailable", "count": c["details"]["removed"]})
@@ -1978,6 +2047,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                                                "detail_referer_probability": {"observed_list": 0.6, "google": 0.3, "baidu": 0.1},
                                                "search_referers": {"google": GOOGLE_REFERER, "baidu": BAIDU_REFERER}},
                       "data_storage": self._get("data_storage"), "storage_halt": self._get("storage_halt"),
+                      "navigation_controls": {"manual_start_page": True},
                       "model_database_eligible": False, "dynamic_challenge_detection": "unobserved: no JavaScript execution"}
             result["rate_audit"] = tail_audit(self)
             result["proxy"] = self.proxy.status()

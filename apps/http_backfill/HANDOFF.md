@@ -1,6 +1,64 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-05, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-06, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest change: per-stock manual start page and reusable date positions
+
+User reports every date edit restarting at page1 and explicitly requests a
+button to set the start page. SPEC was amended before implementation. Each
+current stock card now exposes a small page editor; it pauses/waits only that
+stock and POSTs api/stocks/{stock}/start-page with page/job_id, then stays
+paused. UI drafts survive polling and are cleared on node switch/logout.
+Unsupported nodes disable the button; fleet validates/pins UUID and capability
+before dispatch, without a global fallback. Unknown/removed/archived targets,
+invalid pages, active source halts and in-flight owner mutations are rejected.
+
+The manual-direct state persists its exact first forward task and gives it
+ordinary dispatch priority over old details. It does not request the homepage
+or auto-reset through entry_shifted even when the selected page is older than
+the automatic upper-date entry. It supersedes only this stock's old navigation,
+clears the replaced ordinary retry pointer with an event, retains due times,
+details and all posts/associations/requests/raw, and resets stale terminal flags.
+Selected-page validation is separate from the window upper boundary; an
+explicit manual coverage gap remains and normal date filters still apply.
+Pause/restart keep the selected first page; no source request is made on save.
+
+Automatic date seek now selects a validated historical candidate before its
+first live request rather than taking page1 just to load that advice. Old
+observations are hints, not fresh bounds/visits or coverage proof. Lower-date
+edits with the same upper cutoff retain valid old navigation, while upper-date
+changes re-seek near the changed date. Manual date edits retain that stock's
+current position/mode and enqueue a distinct ordinary task where the old halt
+target is retained solely for its original probe.
+
+Validation used temporary Engine/Wire/clock fixtures and an authenticated
+loopback API, with an independent implementation review. Selecting141 takes
+priority over old details and survives restart with the original900-second due;
+an older-than-upper manual page does not auto-reset to1 and advances to142.
+Other stocks, posts and details remain intact. Invalid pages return400; stale
+job IDs and unresolved source halts return409 with halt/due intact. Old fleet
+nodes lacking the capability receive only status GET, then409 without mutation.
+Navigation replays confirm historical200 is the first probe with fresh bounds,
+then a live source count can predict202. Same-upper lower-date edits retain the
+exact seek task/visits/bounds or frontier and acquired counts; changed-upper
+edits start from a historical nearby page. Manual200 before its first request,
+or pending201 after it, survives a date edit. A retained original halt seek and
+new ordinary seek at the same page remain distinct; probing the original
+successfully does not consume the new-scope task. Python AST, JS syntax and
+diff checks passed.
+Completed-window lower-date extension also retains frontier3 and observed
+counts, clears the old terminal flags, then validates3 before forward4 when
+stable-check count/top-status conditions hold. Manual201 source challenge plus
+date edit retains the old201 probe-only target independently from normal201;
+the original successful probe adds no observations and the new scope continues
+at201. The earlier error-phase seek probe was verified to transition the task
+out of inflight before re-positioning, so no extra guard change was needed.
+No test suite, real source/provider request or live database write was performed.
+
+This change does not modify live collection data or restart the running worker.
+Update H5 host and affected collectors with the existing git pull / compose
+rebuild, then use the card's page editor and manually start. No dependency or
+extra deployment file is introduced.
 
 ## Latest change: resume keeps the unfinished calibration checkpoint
 
