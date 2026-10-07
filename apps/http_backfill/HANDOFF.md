@@ -1,6 +1,22 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-06, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-07, Asia/Shanghai. Version: http-backfill.v5.
+
+## Operator deployment: new remote collector
+
+User authorized a fresh SSH deployment. Deployed application commit6ce450a to
+/opt/MyResearcher-DataCollector on Ubuntu24.04, using the existing Docker and
+Compose. The existing compose.yml publishes8790 and mounts a new independent
+apps/http_backfill/data directory; H5 is enabled with root-path cookies and the
+public python:3.12-slim base. The generated console.token has mode0600. Endpoint,
+SSH identity and token stay out of repository artifacts. Public health, H5,
+unauthenticated401, authenticated session/status and manual-start capability
+were checked. Container is healthy with zero restarts; state is paused, no job
+is configured and source request count is zero. Existing applications were not
+changed. GitHub reachability timed out during bootstrap, so source was transferred
+as a Git bundle; origin points to the repository HTTPS URL. Future git pull
+requires working GitHub reachability and repository access. No private SSH key
+or local collection data was copied to the node; transfer bundles were removed.
 
 ## Latest change: per-stock manual start page and reusable date positions
 
