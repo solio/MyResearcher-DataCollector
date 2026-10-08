@@ -85,6 +85,7 @@ def activity_page(engine, kind, *, limit=30, before_id=None, snapshot_id=None):
                 for key in ("headers", "analysis"):
                     item[key] = json.loads(item[key]) if item.get(key) else None
                 item["started_at"], item["finished_at"] = _iso(item["started"]), _iso(item["finished"])
+                item = engine.request_view(item)
             else:
                 item["created_at"] = _iso(item["created"])
                 item["evidence"] = json.loads(item["evidence"]) if item.get("evidence") else None

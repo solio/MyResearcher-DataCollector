@@ -1,5 +1,34 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-07 source error page and original-list probe — authorized correction
+
+Retained requests3761..3763 show list002463 page763 redirecting to /error?type=1,
+then two identical error-page bodies misreported as schema errors. The task URL
+was replaced by the error URL, so the manual probe never revisited the list.
+The source-owned error404.js currently renders "您访问的页面不存在" for type1;
+this states a source error page, not CAPTCHA, IP blocking, empty list or tail.
+
+Recognize source /error redirects before queuing another HTTP hop: record
+source_error plus analysis.source_error_page {original_url,error_url,error_type,
+message}, retain response and list task identity, and pause only that stock.
+Other list redirects must preserve the original stock/page path before a hop
+is queued. Error-page200 responses receive the same source-error classification,
+not schema_error. Do not mark unavailable list pages complete or acquire rows.
+
+For legacy error-page targets, an explicit manual probe may restore the same
+task to its validated original list URL, hops0, only for source_error/schema_error
+halts. Keep the halt, evidence, original config, task ID and due until the real
+original list succeeds; retain an audit event. Automatic proxy recovery must
+not apply this repair or send another request. Probe success still pauses.
+
+Read-only request/status views may derive display_outcome/display_error and
+analysis.source_error_page for old rows by matching the original task identity;
+never overwrite historical ledger outcomes or raw evidence. Runtime views may
+add source_error_page/display_reason. H5 shows the source message and original
+list/redirect addresses directly, moves UA/Referer and technical JSON into a
+collapsed record, and shortens activity-refresh instructions. Existing paging
+and evidence remain available. No real Guba probe is part of implementation.
+
 ## 2026-10-05 per-stock manual start page and position reuse — authorized
 
 The user requires a stock-card button to set the starting list page and rejects

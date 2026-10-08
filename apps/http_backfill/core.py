@@ -161,6 +161,27 @@ def list_url(stock, page=1):
     return f"https://guba.eastmoney.com/list,{stock},f" + (f"_{page}" if page > 1 else "") + ".html"
 
 
+def _original_list_target(task):
+    if (task["kind"] != "list" or type(task["page"]) is not int or task["page"] < 1
+            or not re.fullmatch(r"[0-9]{6}", task["stock"] or "")):
+        return None
+    original = task["original_url"]
+    return original if original == list_url(task["stock"], task["page"]) else None
+
+
+def _source_error_page(task, url):
+    original = _original_list_target(task)
+    if not original or not isinstance(url, str) or not _allowed(url):
+        return None
+    parsed = urlparse(url)
+    if parsed.hostname != "guba.eastmoney.com" or parsed.path.rstrip("/") != "/error":
+        return None
+    code = re.search(r"(?:^|&)type=([0-9]+)(?:&|$)", parsed.query)
+    return {"original_url": original, "error_url": url,
+            "error_type": code[1] if code else None,
+            "message": f"股吧提示：您访问的页面不存在（第 {task['page']} 页）"}
+
+
 def request_headers(referer=None):
     headers = {"User-Agent": UA, "Accept": "text/html"}
     if referer is not None:
@@ -1251,9 +1272,16 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 raise RuntimeError("请求或单次探测已在执行/排队")
             if self._get("state") == "running":
                 raise RuntimeError("请先暂停任务再单次探测")
-            if not self._target(probe_target=True):
+            target = self._target(probe_target=True)
+            if not target:
                 raise RuntimeError("没有待请求目标")
             if not automatic:
+                if self._get("active_halt") in {"source_error", "schema_error"}:
+                    info = _source_error_page(target, target["url"])
+                    if info:
+                        self.db.execute("UPDATE tasks SET url=?,hops=0 WHERE id=?", (info["original_url"], target["id"]))
+                        self._event("original_list_probe_restored", "探测目标恢复为原列表页，原错误证据和冷却保留",
+                                    {"task_id": target["id"], **info})
                 self._proxy_for_stock().prepare_manual_probe()
             self._set("probe", True)
             self._suspend_proxy_recovery()
@@ -1575,12 +1603,29 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应不完整/编码不支持: " + str(exc), rid)
                 return
+            source_error = _source_error_page(task, final_url)
+            if source_error and response.status == 200:
+                self._outcome(rid, "source_error", source_error["message"], {"source_error_page": source_error})
+                self._halt("error", "source_error", source_error["message"] + "；已暂停", rid)
+                return
             if response.status in REDIRECTS:
                 self._set("network_retry", None)
                 target = urljoin(task["url"], headers.get("location", ""))
                 if not headers.get("location") or not _allowed(target) or task["hops"] >= 5 or target == task["url"]:
                     self._outcome(rid, "redirect_error", "重定向地址不允许、形成循环或超出 5 跳")
                     self._halt("error", "redirect_error", "重定向不能安全继续，已暂停", rid)
+                    return
+                source_error = _source_error_page(task, target)
+                if source_error:
+                    self._outcome(rid, "source_error", source_error["message"], {"source_error_page": source_error})
+                    self._halt("error", "source_error", source_error["message"] + "；已暂停", rid)
+                    return
+                if task["kind"] == "list" and (urlparse(target).hostname != "guba.eastmoney.com"
+                                               or urlparse(target).path != urlparse(task["original_url"]).path):
+                    reason = f"股吧将第 {task['page']} 页跳转到其他页面；已暂停"
+                    self._outcome(rid, "redirect_error", reason,
+                                  {"location": target, "original_url": task["original_url"]})
+                    self._halt("error", "redirect_error", reason, rid)
                     return
                 self.db.execute("UPDATE tasks SET url=?,hops=hops+1 WHERE id=?", (target, task["id"]))
                 self._outcome(rid, "redirect", None, {"location": target})
@@ -2060,6 +2105,17 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             result["coverage_limitations"] = ["日期定位跳页不计作连续覆盖；定期校准只验证实际回扫的近期锚点区间，不能证明此前整个连续前进区间无遗漏", "来源可能删除或不再提供历史数据，锚点丢失时保留显式缺口"]
             if self._stock_runtime_ready:
                 result.update(self._stock_summary())
+                for runtime in result["stock_runtimes"] + result["detached_stock_runtimes"]:
+                    if runtime["active_halt"] not in {"source_error", "schema_error"}:
+                        continue
+                    task = self.db.execute("SELECT * FROM tasks WHERE id=? AND job=? AND stock=?",
+                                           (runtime["halted_task_id"] or runtime["halt_task_id"], runtime["job"], runtime["stock"])).fetchone()
+                    saved = runtime["block_evidence"] or {}
+                    info = (saved.get("analysis") or {}).get("source_error_page") or {}
+                    info = _source_error_page(task, info.get("error_url") or saved.get("url")) if task else None
+                    if info:
+                        runtime["source_error_page"] = info
+                        runtime["display_reason"] = info["message"] + ("；探测原列表已排队" if runtime["probe"] else "；已暂停，探测会重试原列表")
                 result["probe_pending"] = result["probe_pending"] or self._inflight_probe
                 if self._inflight_task:
                     result["current"] = self._target_json(self._inflight_task)
@@ -2116,6 +2172,26 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 "generation", "resume_count", "last_resumed_at", "resume_reason")
         return {k: rec.get(k) for k in keys}
 
+    def request_view(self, item):
+        """Describe old source-error rows without rewriting their ledger facts."""
+        if item.get("outcome") not in {"source_error", "schema_error", "redirect"}:
+            return item
+        task = self.db.execute("SELECT * FROM tasks WHERE id=? AND job=? AND stock=? AND kind=? AND page=?",
+                               (item.get("task"), item.get("job"), item.get("stock"), item.get("kind"), item.get("page"))).fetchone()
+        if not task:
+            return item
+        analysis = item.get("analysis") or {}
+        saved = analysis.get("source_error_page") or {}
+        url = saved.get("error_url") or item.get("final_url") or item.get("url")
+        if item.get("http_status") in REDIRECTS:
+            location = (item.get("headers") or {}).get("location") or analysis.get("location")
+            url = urljoin(item["url"], location) if location else url
+        info = _source_error_page(task, url)
+        if not info:
+            return item
+        return {**item, "display_outcome": "source_error", "display_error": info["message"],
+                "analysis": {**analysis, "source_error_page": info}}
+
     def requests(self, limit=50):
         limit = self._limit(limit)
         with self._mutex:
@@ -2126,7 +2202,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     d[key] = json.loads(d[key]) if d[key] else None
                 d["started_at"], d["finished_at"] = _iso(d["started"]), _iso(d["finished"])
                 d["instance_id"] = self._get("instance_id")
-                result.append(d)
+                result.append(self.request_view(d))
             return result
 
     def events(self, limit=50):

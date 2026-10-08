@@ -5,7 +5,7 @@
   const states = { idle: "待配置", running: "采集中", paused: "已暂停", blocked: "已拦截", error: "需要检查", completed: "任务结束" };
   const proxyModes = { direct: "直连", http: "HTTP 代理", mayi: "动态 IP", qingguo: "青果动态 IP" };
   const dynamicProxyMode = (mode) => ["mayi", "qingguo"].includes(mode);
-  const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", detail_unavailable: "详情不可用", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", network_timeout: "请求超时", tls_error: "TLS 连接失败", network_connect: "网络连接失败", network_io: "网络传输失败", error: "异常", pending: "待处理", unknown: "结果未确认" };
+  const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", source_error: "股吧返回错误页", detail_unavailable: "详情不可用", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", network_timeout: "请求超时", tls_error: "TLS 连接失败", network_connect: "网络连接失败", network_io: "网络传输失败", error: "异常", pending: "待处理", unknown: "结果未确认" };
   let authenticated = false;
   let status = null;
   let online = false;
@@ -404,10 +404,17 @@
     if (!target || typeof target !== "object") return target ? textValue(target) : "等待下一项";
     return target.kind === "detail" ? `正文 ${target.post_id || "—"}` : `${target.purpose === "seek" ? "日期定位" : target.purpose === "recovery" ? "校准列表" : "前进列表"}${target.page == null ? "" : " · 源页码 " + number(target.page)}`;
   }
+  function appendSourceErrorURLs(parent, sourceError) {
+    if (sourceError.original_url) parent.append(el("div", "activity-url", `原列表：${sourceError.original_url}`));
+    if (sourceError.error_url) parent.append(el("div", "activity-url", `跳转到：${sourceError.error_url}`));
+  }
   function appendStockRuntime(row, runtime, detached = false) {
     if (!runtime) return;
     const facts = el("div", "stock-runtime-facts");
-    if (runtime.reason) facts.append(el("p", "stock-runtime-reason", runtime.reason));
+    const sourceError = objectValue(runtime.source_error_page);
+    const displayReason = first(runtime, ["display_reason", "reason"]);
+    if (displayReason) facts.append(el("p", "stock-runtime-reason", displayReason));
+    if (Object.keys(sourceError).length) appendSourceErrorURLs(facts, sourceError);
     const retry = objectValue(runtime.network_retry), target = first(runtime, ["current", "current_target", "target"]);
     const parts = [stockInFlight(runtime) ? "本股请求中" : runtimeProbe(runtime) ? "单次探测已安排" : states[runtime.state] || runtime.state];
     if (target) parts.push(stockTargetText(target));
@@ -419,7 +426,7 @@
     if (runtime.active_halt) {
       const details = el("details", "stock-evidence"), key = taskKey(runtime.stock, runtime.job);
       details.open = stockEvidenceOpen.has(key);
-      details.append(el("summary", "", `本股阻断 · ${outcomes[runtime.active_halt] || runtime.active_halt} · 查看证据`), el("pre", "", JSON.stringify(runtime.block_evidence || { reason: runtime.reason, kind: runtime.active_halt }, null, 2)));
+      details.append(el("summary", "", "技术记录"), el("pre", "", JSON.stringify(runtime.block_evidence || { reason: runtime.reason, kind: runtime.active_halt }, null, 2)));
       details.addEventListener("toggle", () => { if (details.isConnected) { if (details.open) stockEvidenceOpen.add(key); else stockEvidenceOpen.delete(key); } });
       facts.append(details);
     }
@@ -1308,26 +1315,37 @@
       const id = first(request, ["post_id", "source_item_id"], first(target, ["post_id", "source_item_id"]));
       const page = first(request, ["page", "page_number"], first(target, ["page"]));
       const attempt = first(request, ["id", "attempt_no", "sequence", "attempt"], "—");
-      const outcome = textValue(first(request, ["outcome", "result", "state"], "unknown"));
+      const outcome = textValue(first(request, ["display_outcome", "outcome", "result", "state"], "unknown"));
       const http = first(request, ["http_status", "status_code", "status"]);
       const purpose = first(request, ["purpose"], first(target, ["purpose"], first(request.analysis, ["purpose"])));
       const title = `#${attempt} · ${stock ? stock + " · " : ""}${kind === "detail" || id != null ? "正文 " + (id || "") : (purpose === "seek" ? "日期定位列表" : purpose === "recovery" ? "校准列表" : "前进列表") + (page == null ? "" : " · 源页码 " + page)}`;
       const row = el("div", "activity-row");
       row.append(el("div", "activity-time", time(first(request, ["started_at", "requested_at", "at", "timestamp"]))));
       const main = el("div", "activity-main"); main.append(el("div", "activity-title", title));
+      const profile = objectValue(request.analysis), sourceError = objectValue(profile.source_error_page);
       const reason = first(request, ["reason", "error", "message"]);
+      const displayReason = textValue(first(request, ["display_error"], sourceError.message || reason));
+      const shortReason = outcome === "source_error" ? sourceError.message || displayReason || "股吧返回错误页" : displayReason.length <= 120 && !/[\r\n]/.test(displayReason) && !/^[\[{]/.test(displayReason.trim()) ? displayReason : "";
       const elapsed = first(request, ["elapsed_seconds", "duration_seconds", "duration"], epoch(request.finished_at) != null && epoch(request.started_at) != null ? (epoch(request.finished_at) - epoch(request.started_at)) / 1000 : null);
       const bytes = first(request, ["bytes", "body_bytes", "response_bytes", "size"]);
-      const details = [reason ? textValue(reason) : "", elapsed == null ? "" : `耗时 ${Number(elapsed).toFixed(2)} 秒`, bytes == null ? "" : `${number(bytes)} 字节`].filter(Boolean).join(" · ");
+      if (shortReason) main.append(el("div", "activity-detail", shortReason));
+      const details = [elapsed == null ? "" : `耗时 ${Number(elapsed).toFixed(2)} 秒`, bytes == null ? "" : `${number(bytes)} 字节`].filter(Boolean).join(" · ");
       if (details) main.append(el("div", "activity-detail", details));
       const url = first(request, ["url", "requested_url"], target.url);
-      if (url) main.append(el("div", "activity-url", url));
-      const profile = objectValue(request.analysis);
+      if (Object.keys(sourceError).length) appendSourceErrorURLs(main, sourceError);
+      else if (url) main.append(el("div", "activity-url", url));
       const headers = objectValue(profile.request_headers);
-      if (headers["User-Agent"] || headers.Referer) {
+      const originalOutcome = first(request, ["outcome", "result", "state"]);
+      const reasonText = textValue(reason);
+      const retainedReason = reasonText && reasonText !== shortReason ? reasonText : displayReason && displayReason !== shortReason ? displayReason : "";
+      const displayChanged = originalOutcome && originalOutcome !== outcome;
+      if (headers["User-Agent"] || headers.Referer || retainedReason || displayChanged) {
         const sources = { google_search: "Google 搜索来源", baidu_search: "百度搜索来源", list_previous_page: "上一列表页", detail_observed_list: "该帖子最近观察到的列表页", detail_task_list_page: "详情任务关联的列表页" };
         const headerDetails = el("details", "activity-detail");
-        headerDetails.append(el("summary", "", `请求特征 · ${sources[profile.referer_source] || profile.request_profile || "已记录"}`));
+        headerDetails.append(el("summary", "", "技术记录"));
+        if (displayChanged) headerDetails.append(el("div", "activity-detail", `原记录：${outcomes[originalOutcome] || originalOutcome}`));
+        if (retainedReason) headerDetails.append(el("pre", "", retainedReason));
+        if (profile.referer_source) headerDetails.append(el("div", "activity-detail", `请求来源：${sources[profile.referer_source] || profile.referer_source}`));
         if (headers.Referer) headerDetails.append(el("div", "activity-url", `Referer: ${headers.Referer}`));
         if (headers["User-Agent"]) headerDetails.append(el("div", "activity-url", `UA: ${headers["User-Agent"]}`));
         if (profile.referer_list_request_id != null) headerDetails.append(el("div", "activity-detail", `关联列表请求 #${profile.referer_list_request_id}`));
@@ -1349,7 +1367,11 @@
       const title = first(item, ["message", "reason"], eventLabels[kind] || kind);
       main.append(el("div", "activity-title", title));
       const detail = first(item, ["details", "data", "payload", "evidence"]);
-      if (detail) main.append(el("div", "activity-detail", textValue(detail)));
+      if (detail) {
+        const technical = el("details", "activity-detail");
+        technical.append(el("summary", "", "技术记录"), el("pre", "", typeof detail === "object" ? JSON.stringify(detail, null, 2) : textValue(detail)));
+        main.append(technical);
+      }
       row.append(main, el("div", `activity-result ${resultClass(kind)}`, eventLabels[kind] ? "" : kind)); list.append(row);
     }
   }

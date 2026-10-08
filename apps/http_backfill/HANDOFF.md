@@ -2,6 +2,39 @@
 
 Date: 2026-10-07, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: source error pages and original-list probes
+
+Retained local3761 requested002463 page763 and received302 Location./error?type=1.
+3762/3763 both fetched the error URL, returned200/12800 bytes and the identical
+SHA bb44dc94f5c9a7b124c49e7f37baaa1ea434c507c785e88460f3570a55107ff1.
+The legacy redirect mutated task3810.url, so the later manual probe never
+retried763. Static HTML has only the error404 skeleton and public footer;
+the source-owned https://gbfek.dfcfw.com/deploy/fd_guba_web2022/work/error404.js
+was read separately from the CDN and renders "您访问的页面不存在" for type1.
+No real Guba list/detail request was made. This does not establish IP blocking,
+CAPTCHA, list exhaustion or target-window completion.
+
+SPEC was amended before code. New source /error redirects stop at the302 as
+source_error, preserve the original list URL and add source_error_page metadata.
+Other list redirects must retain the original stock/page identity. Error-page200
+is likewise a source error, without parsing posts or declaring an empty tail.
+Explicit manual probes repair validated legacy list targets at the same task ID
+to their original URL/hops0, with an event, retaining halt/config/evidence/due;
+automatic recovery and challenge halts cannot apply that repair. Success pauses.
+Read-only request/activity/status views explain old source-error rows while
+preserving original ledger facts. H5 shows short source message, original list
+and error-page addresses; UA/Referer, old reasons and event JSON are collapsed.
+The activity-refresh note is one sentence. No new dependencies or deploy files.
+
+Independent temporary Engine/Wire/Clock replays passed: new302 causes one
+request and pauses only A, while B still acquires; legacy manual probe restores
+763 with the same task/halt/evidence/config and300-second due, sends nothing
+early, then succeeds and pauses. New200 error adds no observations. Challenge
+protection remains. Read views leave all checked tables and raw hashes intact.
+Python AST, JS syntax and diff checks passed; no suite or live database write.
+The code change requires the existing compose rebuild on the affected node;
+implementation did not restart local or remote collectors or send a source probe.
+
 ## Operator deployment: new remote collector
 
 User authorized a fresh SSH deployment. Deployed application commit6ce450a to
