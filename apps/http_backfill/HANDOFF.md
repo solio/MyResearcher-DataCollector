@@ -1,6 +1,6 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-09, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-10, Asia/Shanghai. Version: http-backfill.v5.
 
 ## Latest change: actionable field-conflict evidence and exact-record retry
 
@@ -33,6 +33,31 @@ ordinary exact-target retry and source-auth-barrier retention; a stale marker
 gets409/no dispatch, exact marker gets200 and successful response pauses; safe
 full text/mobile wrapping/links, UI target ownership and one-probe restriction.
 Syntax/diff checks pass; temporary verification directories removed.
+
+Rollout of 953e2a1 to local and 36.138.125.17 completed. Both containers are
+healthy with restarts 0; all eight changed code/UI files match committed source.
+Before local resume, retained source tables preserve 36,294 posts, 4,933 requests
+and 130,882 observations; remote preserves 7,922 posts, 973 requests and 17,840
+observations. Source rows, request ledger, job/config revisions, frontiers,
+token/instance identity, halt/due facts and prior immutable export versions are
+unchanged. Normal close/restart invalidates proxy control generations. Local
+completed recovery checkpoints open the ordinary current-frontier verification
+at pages 848/294; remote recovery checkpoints remain unchanged.
+
+Local startup adds only export version 113078 for post 1625062584: its post
+fields are identical to prior version 111458. The existing full-sync logic
+selects verified equivalent list observation 4830 instead of 4817; initial list
+4817 and detail 4832 remain. Only that compatible projection's fingerprint,
+current list request and list SHA change. Reconstructing those three old fields
+matches the entire pre-rollout compatible-table hash; journal prefix 1..113077
+matches its original hash. This creates no new source request or training write.
+
+The deployed remote requests API returns exact reconstructed comparisons for
+781/786 (post 1670807485, old request 728, both names and matching author IDs);
+its original SQL request ledger stays unchanged. Only originally running local
+002463/300054 were resumed. Remote retains node authentication barrier 972 and
+all blocked stocks; no probe or resume was scheduled. No other collector node
+or training database was changed; deployment temporary files were removed.
 
 ## Previous change: author display-name changes are retained observations
 
