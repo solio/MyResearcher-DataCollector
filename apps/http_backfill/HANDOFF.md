@@ -31,6 +31,19 @@ ID/time/bar/title/source-ID mismatches and missing/blank author IDs still reject
 AST and diff checks pass; no suites, live source probes or training DB writes.
 Temporary replay directories were removed.
 
+Rollout of1015d90 to local and36.138.125.17 completed; both Docker health checks
+pass with restarts0 and core/compatible/federation hashes match the source.
+Local pre-resume snapshot preserves35561 posts,4829 requests,129042 observations;
+remote preserves7922 posts,973 requests,17840 observations. Token/UUID/current
+job, post contents/timestamps, job/config revisions, all frontiers, immutable
+export journal, individual halt/due facts and node cooldown are preserved.
+Local unfinished recovery keeps page/generation/budget/observations; only normal
+restart-resume metadata changes. A previously completed local recovery opens
+the ordinary new frontier check. Only the originally running local002463 and
+300054 were resumed. Remote retains authentication barrier request972 and its
+original blocked stocks; no probe was scheduled. Deployment temporary files
+were removed; no training database or other collector node was changed.
+
 ## Previous change: stop the node after source captcha or authentication
 
 Latest user instruction replaces the previous independent-stock continuation
