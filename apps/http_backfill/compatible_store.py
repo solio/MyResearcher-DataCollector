@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from contextlib import closing, contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
@@ -27,6 +27,7 @@ from myresearcher_collector.sources.eastmoney_guba.content_rules import (
 from unified_store import LAYOUT, simple_store_adapter, validate_layout
 
 VERSION = "http-backfill.unified-posts.v1"
+AUTHOR_NAME_POLICY = "http.author-name-observations.v1"
 _NAVIGATION_ERRORS = {
     "无法建立非置顶来源行锚点，不能猜测下一历史页",
     "校准无法定位锚点：来源空页/无可用发布时间；已暂停",
@@ -40,6 +41,33 @@ _NAVIGATION_ERRORS = {
 
 class CompatibleStorageError(RuntimeError):
     """An offline projection cannot satisfy the existing storage contract."""
+
+
+def same_http_author_identity(first, second):
+    """A display-name change needs an actual, unchanged source author ID."""
+    return (isinstance(first.author_id, str) and bool(first.author_id.strip())
+            and first.author_id == second.author_id)
+
+
+def merge_http_observations(item, detail):
+    """Validate real list/detail facts, permitting an evidenced nickname snapshot.
+
+    The production parser retains its stricter Phase1 contract. A temporary
+    comparison object lets that parser continue validating every other field;
+    it never replaces the real list observation or its raw provenance.
+    """
+    if item.author_name == detail.author_name:
+        return guba.merge_list_and_detail(item, detail)
+    if not same_http_author_identity(item, detail):
+        raise guba.GubaDetailMismatch("列表与正文的作者昵称不同，且缺少相同的有效作者 ID")
+    merged = guba.merge_list_and_detail(replace(item, author_name=detail.author_name), detail)
+    metadata = dict(merged["source_metadata"])
+    metadata["extra"] = {**metadata.get("extra", {}), "http_author_name_observations": {
+        "policy": AUTHOR_NAME_POLICY, "author_id": item.author_id,
+        "list_author_name": item.author_name, "detail_author_name": detail.author_name,
+    }}
+    merged["source_metadata"] = metadata
+    return merged
 
 
 def _json(value):
@@ -244,9 +272,12 @@ class CompatibleDataStore:
             if request and request["kind"] == "list":
                 observed_request, html = self._raw_request(engine, request_id)
                 observed_item = self._list_item(engine, html, observed_request["stock"], post["post_id"], observed_request["id"])
-        for field in ("published_at", "canonical_bar_code", "author_id", "author_name"):
+        for field in ("published_at", "canonical_bar_code", "author_id"):
             if getattr(initial_item, field) != getattr(observed_item, field):
                 raise CompatibleStorageError(f"同一源 ID 的列表 {field} 身份不一致")
+        if (initial_item.author_name != observed_item.author_name
+                and not same_http_author_identity(initial_item, observed_item)):
+            raise CompatibleStorageError("同一源 ID 的作者显示名变化，但没有相同的非空作者 ID")
         if initial_item.title and observed_item.title and initial_item.title != observed_item.title:
             raise CompatibleStorageError("同一源 ID 的列表标题不一致")
         metadata = list_title_metadata(observed_item.source_metadata, observed_item.title)
@@ -259,7 +290,7 @@ class CompatibleDataStore:
                 raise CompatibleStorageError("已完成正文缺少真实详情来源")
             detail_request, detail_html = self._raw_request(engine, post["detail_request"])
             detail = guba.parse_detail_page(detail_html)
-            merged = guba.merge_list_and_detail(observed_item, detail)
+            merged = merge_http_observations(observed_item, detail)
             if merged["content"] != post["content"]:
                 raise CompatibleStorageError("正文与留存详情原始响应不一致")
             content = merged["content"]

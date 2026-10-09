@@ -2,7 +2,36 @@
 
 Date: 2026-10-09, Asia/Shanghai. Version: http-backfill.v5.
 
-## Latest change: stop the node after source captcha or authentication
+## Latest change: author display-name changes are retained observations
+
+Remote601888 source594 requests781/786 failed with duplicate-ID author_name
+because post1670807485 had changed user_nickname despite identical nonempty
+author_id, title, canonical bar and publication time. The retained HTTP200
+responses have no positive challenge evidence. This was an internal immutable
+nickname comparison, not a source authentication response. The observed post
+is list_only with a seven-character title.
+
+core accepts nickname changes only with the same actual nonblank author ID,
+retains raw/source-row observations and records a request-linked drift count.
+Counting compares the latest actual projected list nickname, so repeated reads
+do not repeatedly emit the same change. compatible_store and federation apply
+the same identity rule through the full storage/export chain. Current columns
+come from a complete actual list observation; existing body/created_at and old
+immutable export versions remain. The app-local merge helper preserves explicit
+list/detail nickname snapshots in metadata and all original raw references;
+its replacement object is comparison-only, never stored. Source ID, author ID,
+publication time, bar and nonempty title protections remain. Production parser,
+training-import decisions and authentication-stop code are unchanged.
+
+Independent static review plus temporary Engine/Clock/Wire and real unified
+Ledger/fleet replay passed: list old-name, body new-name and reobserved new-name
+all succeed, one post/body/first time preserved, drift count1 then0; the third
+immutable export version validates/merges and earlier versions stay unchanged.
+ID/time/bar/title/source-ID mismatches and missing/blank author IDs still reject.
+AST and diff checks pass; no suites, live source probes or training DB writes.
+Temporary replay directories were removed.
+
+## Previous change: stop the node after source captcha or authentication
 
 Latest user instruction replaces the previous independent-stock continuation
 after source authentication: one captcha/identity response stops all subsequent

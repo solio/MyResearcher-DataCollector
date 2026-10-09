@@ -1,5 +1,34 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-09 list re-observation of an author's display name
+
+Remote601888 list594 requests781/786 both contain post1670807485 with the same
+nonempty author ID, title, canonical bar and publication time as the previously
+retained item, but a different user_nickname. Both are HTTP200 without positive
+challenge evidence. author_name is the source display name at observation,
+not author identity (SOURCE_SPEC sections6/7). This list re-observation must not
+reject the whole page solely because that name changed.
+
+Keep checks for author ID, publication time, canonical bar and title. Allow a
+display-name difference only when both observations have the same nonempty
+author ID; otherwise retain the identity uncertainty error. Retain the original
+post and raw evidence, append the fresh source-row observation, and record a
+request-linked display-name drift fact/count relative to the latest projected
+list snapshot, so rereading the same nickname does not repeat the drift event.
+Compatible projection and fleet
+validation must use the same rule; the current post keeps one complete latest
+list observation, its first acquisition time and any acquired body, while raw
+observations and prior export versions remain immutable.
+
+The HTTP app's list/detail validation likewise permits only a display-name
+snapshot difference with an equal nonempty author ID. Keep explicit original
+list/detail names in source metadata and retain both raw references. Use an
+app-local helper, never write a comparison-only replaced list object or modify
+the shared production parser. All other strict list/detail checks remain.
+Do not discard details, fabricate an author, edit historical failures or clear
+authentication halts. Training-import conflict decisions and the production
+parser's frozen Phase1 rules remain unchanged.
+
 ## 2026-10-09 node stop after source captcha or authentication
 
 Latest user instruction supersedes independent-stock dispatch and automatic

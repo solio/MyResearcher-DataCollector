@@ -42,7 +42,7 @@ from lifecycle import LifecycleMixin
 from window_seek import WindowSeekMixin
 from stock_runtime import StockRuntimeMixin
 from rate_audit import tail_audit
-from compatible_store import CompatibleDataStore, _utc
+from compatible_store import CompatibleDataStore, _utc, merge_http_observations, same_http_author_identity
 from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_store_adapter
 
 VERSION = "http-backfill.v5"
@@ -2007,24 +2007,34 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return (start <= item.published_at.date().isoformat() <= end
                     and item.published_at.timestamp() <= effective_to)
         # Validate cross-observation identity before making any queue changes.
+        display_name_changes = []
         for item in page.rows:
             p = urlparse(item.url)
             if (not _allowed(item.url) or p.hostname != "guba.eastmoney.com"
                     or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(item.source_item_id) + r"\.html", p.path)):
                 raise ValueError("列表中的标准详情链接不符合已确认的来源路径")
             if not probe_only and eligible_item(item):
-                prior = self.db.execute("SELECT item FROM http_posts WHERE post_id=?", (item.source_item_id,)).fetchone()
+                prior = self.db.execute("SELECT h.item,p.author_name,p.source_item_id AS projected_id FROM http_posts h LEFT JOIN posts p "
+                                        "ON p.source=? AND p.source_item_id=h.post_id WHERE h.post_id=?",
+                                        (guba.SOURCE, item.source_item_id)).fetchone()
                 if prior:
-                    old = _item_load(prior[0])
-                    for field in ("published_at", "canonical_bar_code", "author_id", "author_name"):
+                    old = _item_load(prior["item"])
+                    for field in ("published_at", "canonical_bar_code", "author_id"):
                         if getattr(old, field) != getattr(item, field):
                             raise ValueError(f"重复源 ID 的 {field} 不一致")
+                    previous_name = prior["author_name"] if prior["projected_id"] is not None else old.author_name
+                    if old.author_name != item.author_name or previous_name != item.author_name:
+                        if not same_http_author_identity(old, item):
+                            raise ValueError(f"帖子 {item.source_item_id} 的作者昵称不同，且缺少可核实的作者 ID")
+                        if previous_name != item.author_name:
+                            display_name_changes.append(item.source_item_id)
                     if old.title and item.title and old.title != item.title:
                         raise ValueError("重复源 ID 的标题不一致")
         stats = {"request_id": rid, "job": task["job"], "stock": task["stock"], "page": task["page"], "purpose": task.get("purpose", "forward"),
                  "source_count": page.source_count, "rows": len(rows), "new_ids": len(set(ids) - known), "new_eligible_posts": 0,
                  "overlap": len(set(ids) & known), "ordered_id_sha256": hashlib.sha256(_dump(ids).encode()).hexdigest(),
-                 "earliest": min(times, default=None), "latest": max(times, default=None)}
+                 "earliest": min(times, default=None), "latest": max(times, default=None),
+                 "author_display_name_changes": {"count": len(display_name_changes), "post_ids": display_name_changes}}
         if probe_only:
             stats["probe_only"] = True
             return stats
@@ -2073,6 +2083,10 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         self.db.execute("INSERT INTO page_observations(request_id,job,stock,page,source_count,rows,new_ids,overlap,id_sha256,earliest,latest,purpose) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (rid, task["job"], task["stock"], task["page"], page.source_count, len(rows),
                          stats["new_ids"], stats["overlap"], stats["ordered_id_sha256"], stats["earliest"], stats["latest"], stats["purpose"]))
+        if display_name_changes:
+            self._event("author_display_name_changed", "同一作者的昵称发生变化；已保留新旧观察，不阻断本页",
+                        {"request_id": rid, "stock": task["stock"], "page": task["page"],
+                         "count": len(display_name_changes), "post_ids": display_name_changes})
         if task.get("purpose") == "seek":
             stats["window_seek"] = self._advance_window_seek(task, rows, stats)
             self._event("window_seek_observed", f"{task['stock']} 第 {task['page']} 页已观察，用于日期定位", {"request_id": rid, "stock": task["stock"], "page": task["page"]})
@@ -2178,7 +2192,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             raise ValueError("详情响应 URL 的源 ID 不匹配")
         detail = guba.parse_detail_page(html)
         item = _item_load(post["item"])
-        merged = guba.merge_list_and_detail(item, detail)
+        merged = merge_http_observations(item, detail)
         if detail.source_item_id != task["post_id"]:
             raise ValueError("详情源 ID 不匹配")
         payload = guba._embedded_json(html, "post_article")

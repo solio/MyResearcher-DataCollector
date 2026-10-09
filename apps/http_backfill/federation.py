@@ -20,6 +20,7 @@ import uuid
 
 from myresearcher_collector.simple_store import SimplePostStore
 from myresearcher_collector.sources.eastmoney_guba import parser as guba
+from compatible_store import merge_http_observations, same_http_author_identity
 
 SCHEMA_VERSION = "http-backfill.export.v1"
 _POST_COLUMNS = {"source", "source_item_id", "stock_code", "title", "content", "author_id", "author_name",
@@ -377,9 +378,14 @@ class MergeStore:
             raise FederationError("帖子不在原始列表中")
         if initial is None:
             raise FederationError("帖子不在原始首次列表中")
-        for name in ("published_at", "canonical_bar_code", "author_id", "author_name"):
+        for name in ("published_at", "canonical_bar_code", "author_id"):
             if getattr(initial, name) != getattr(listed, name):
                 raise FederationError("首次与当前列表身份发生冲突")
+        if (initial.author_name != listed.author_name
+                and not same_http_author_identity(initial, listed)):
+            raise FederationError("首次与当前列表作者显示名变化，但没有相同的非空作者 ID")
+        if initial.title and listed.title and initial.title != listed.title:
+            raise FederationError("首次与当前列表标题发生冲突")
         for name in ("title", "author_id", "author_name", "url", "read_count", "reply_count", "like_count", "forward_count"):
             if post[name] != getattr(listed, name):
                 raise FederationError(f"兼容帖子 {name} 与列表来源不一致")
@@ -388,7 +394,7 @@ class MergeStore:
                 or provenance.get("canonical_bar_code") != listed.canonical_bar_code):
             raise FederationError("兼容帖子发布时间/股吧归属不一致")
         if post["content"] is not None:
-            if detailed is None or guba.merge_list_and_detail(listed, detailed)["content"] != post["content"]:
+            if detailed is None or merge_http_observations(listed, detailed)["content"] != post["content"]:
                 raise FederationError("兼容正文与实际详情来源不一致")
         elif detailed is not None:
             raise FederationError("实际正文不能伪装为缺失")
