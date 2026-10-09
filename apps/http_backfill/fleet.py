@@ -38,9 +38,10 @@ MAX_DOWNLOAD_FIELD = 64 * 1024 * 1024
 
 
 class FleetError(RuntimeError):
-    def __init__(self, status_code, error, ambiguous=False):
+    def __init__(self, status_code, error, ambiguous=False, conflicts=None):
         super().__init__(error)
         self.status_code, self.error, self.ambiguous = status_code, error, bool(ambiguous)
+        self.conflicts = conflicts if isinstance(conflicts, list) else []
 
 
 @dataclass
@@ -178,7 +179,8 @@ class NodeClient:
                     # Redact at the manager boundary before truncating; slicing
                     # here could publish a credential prefix at the cut point.
                     raise FleetError(status, str(message or f"节点返回 HTTP {response.status}"),
-                                     method != "GET" and response.status >= 500)
+                                     method != "GET" and response.status >= 500,
+                                     payload.get("identity_conflicts") if isinstance(payload, dict) else None)
                 return payload
         except FleetError:
             raise
@@ -471,7 +473,8 @@ class FleetManager:
             error = exc.error
             if exc.status_code in {502, 504}:
                 error += "；" + self._connection_hint(node)
-            raise FleetError(exc.status_code, self._redact(error, (node["token"],))[:2000], exc.ambiguous) from None
+            raise FleetError(exc.status_code, self._redact(error, (node["token"],))[:2000], exc.ambiguous,
+                             self._redact(exc.conflicts, (node["token"],))) from None
         except Exception:
             raise FleetError(502, self._redact("节点请求失败；" + self._connection_hint(node), (node["token"],)), method != "GET") from None
 
@@ -583,9 +586,13 @@ class FleetManager:
         path = self._route(method, path, query)
         node = self._node(alias)
         if method == "POST" and (path == "api/control" or re.fullmatch(r"api/stocks/[0-9]{6}/control", path)):
-            fields = {"action", "job_id"} if path.startswith("api/stocks/") else {"action"}
+            fields = {"action", "job_id", "retry_request_id"} if path.startswith("api/stocks/") else {"action"}
             if not isinstance(body, dict) or set(body) - fields or body.get("action") not in {"start", "pause", "retry"}:
                 raise ValueError("控制参数无效；逐股动作必须使用专用股票接口")
+            if "retry_request_id" in body and body["action"] != "retry":
+                raise ValueError("重试记录编号只用于单次重试")
+            if "retry_request_id" in body and body["retry_request_id"] is None:
+                raise ValueError("重试记录编号必须为正整数")
         if method == "POST" and path == "api/proxy/rotate" and body:
             raise ValueError("切换出口请求不接受额外参数")
         if method == "POST" and path.endswith("/start-page"):
@@ -613,9 +620,10 @@ class FleetManager:
                         raise ValueError("切换出口请求不接受额外参数")
                     self.engine.rotate_proxy()
                 elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/control", path):
-                    if not isinstance(body, dict) or set(body) - {"action", "job_id"} or body.get("action") not in {"start", "pause", "retry"}:
-                        raise ValueError("逐股控制只接受 action=start/pause/retry 和可选 job_id")
-                    getattr(self.engine, body["action"])(path.split("/")[2], job=body.get("job_id"))
+                    kwargs = {"job": body.get("job_id")}
+                    if "retry_request_id" in body:
+                        kwargs["retry_request_id"] = body["retry_request_id"]
+                    getattr(self.engine, body["action"])(path.split("/")[2], **kwargs)
                 elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/proxy/config", path):
                     self.engine.configure_stock_proxy(path.split("/")[2], body)
                 elif method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/start-page", path):
@@ -815,14 +823,16 @@ class FleetManager:
                         self._requested.discard(node["id"])
                     self._save()
         except Exception as exc:
-            error = exc if isinstance(exc, FleetError) else FleetError(502, self._redact(f"同步失败: {type(exc).__name__}: {exc}")[:2000])
+            error = exc if isinstance(exc, FleetError) else FleetError(502, self._redact(f"同步失败: {type(exc).__name__}: {exc}")[:2000],
+                                                                      conflicts=self._redact(getattr(exc, "conflicts", [])))
             if not checked or isinstance(exc, FleetError) and exc.status_code in {502, 504}:
                 self._offline(node, error)
             with self._lock:
                 if node["id"] == "local" or self._nodes.get(node["id"]) == node:
                     if sync:
                         cache = self._cache.setdefault(node["id"], {})
-                        cache["sync"] = {**cache.get("sync", {}), "state": "error", "error": error.error}
+                        cache["sync"] = {**cache.get("sync", {}), "state": "error", "error": error.error,
+                                         "identity_conflicts": self._redact(error.conflicts)}
                         # Failed transfers retry only at the ordinary background
                         # interval; never spin an explicitly queued request.
                         if self._generation.get(node["id"], 0) <= generation:

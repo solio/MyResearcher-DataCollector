@@ -20,7 +20,8 @@ import uuid
 
 from myresearcher_collector.simple_store import SimplePostStore
 from myresearcher_collector.sources.eastmoney_guba import parser as guba
-from compatible_store import merge_http_observations, same_http_author_identity
+from compatible_store import (SourceFieldConflict, merge_http_observations,
+                              same_http_author_identity, source_field_fact)
 
 SCHEMA_VERSION = "http-backfill.export.v1"
 _POST_COLUMNS = {"source", "source_item_id", "stock_code", "title", "content", "author_id", "author_name",
@@ -29,6 +30,10 @@ _POST_COLUMNS = {"source", "source_item_id", "stock_code", "title", "content", "
 
 class FederationError(RuntimeError):
     """Transfer or merge evidence failed validation; source collection is separate."""
+
+    def __init__(self, message, *, conflicts=None):
+        super().__init__(message)
+        self.conflicts = list(conflicts or [])
 
 
 def _json(value):
@@ -378,26 +383,48 @@ class MergeStore:
             raise FederationError("帖子不在原始列表中")
         if initial is None:
             raise FederationError("帖子不在原始首次列表中")
-        for name in ("published_at", "canonical_bar_code", "author_id"):
-            if getattr(initial, name) != getattr(listed, name):
-                raise FederationError("首次与当前列表身份发生冲突")
+        fields = [name for name in ("published_at", "canonical_bar_code", "author_id")
+                  if getattr(initial, name) != getattr(listed, name)]
         if (initial.author_name != listed.author_name
                 and not same_http_author_identity(initial, listed)):
-            raise FederationError("首次与当前列表作者显示名变化，但没有相同的非空作者 ID")
+            fields.append("author_name")
         if initial.title and listed.title and initial.title != listed.title:
-            raise FederationError("首次与当前列表标题发生冲突")
+            fields.append("title")
+        if fields:
+            exc = SourceFieldConflict([source_field_fact(initial, listed, name,
+                                old_request=requests[links["initial_list"]], new_request=requests[links["list"]])
+                                       for name in fields])
+            raise FederationError(str(exc), conflicts=exc.conflicts)
         for name in ("title", "author_id", "author_name", "url", "read_count", "reply_count", "like_count", "forward_count"):
             if post[name] != getattr(listed, name):
-                raise FederationError(f"兼容帖子 {name} 与列表来源不一致")
-        if (post["published_at"] != listed.published_at.isoformat().replace("+00:00", "Z")
-                or post["stock_code"] != listed.requested_bar_code
-                or provenance.get("canonical_bar_code") != listed.canonical_bar_code):
-            raise FederationError("兼容帖子发布时间/股吧归属不一致")
+                exc = SourceFieldConflict([source_field_fact(post, listed, name,
+                                 new_request=requests[links["list"]])])
+                raise FederationError(str(exc), conflicts=exc.conflicts)
+        comparisons = (("published_at", listed.published_at.isoformat().replace("+00:00", "Z"), post["published_at"]),
+                       ("stock_code", listed.requested_bar_code, post["stock_code"]),
+                       ("canonical_bar_code", listed.canonical_bar_code, provenance.get("canonical_bar_code")))
+        fields = [source_field_fact(post, listed, name, new_request=requests[links["list"]],
+                                   old_value=actual, new_value=expected, explicit_values=True)
+                  for name, expected, actual in comparisons if expected != actual]
+        if fields:
+            exc = SourceFieldConflict(fields)
+            raise FederationError(str(exc), conflicts=exc.conflicts)
         if post["content"] is not None:
-            if detailed is None or merge_http_observations(listed, detailed)["content"] != post["content"]:
-                raise FederationError("兼容正文与实际详情来源不一致")
+            if detailed is None:
+                exc = SourceFieldConflict([source_field_fact(post, {"source_item_id": post["source_item_id"]},
+                    "content", old_value=post["content"], new_value=None, explicit_values=True)])
+                raise FederationError(str(exc), conflicts=exc.conflicts)
+            merged = merge_http_observations(listed, detailed,
+                    old_request=requests[links["list"]], new_request=requests[links["detail"]])
+            if merged["content"] != post["content"]:
+                exc = SourceFieldConflict([source_field_fact(post, detailed, "content",
+                    new_request=requests[links["detail"]], old_value=post["content"],
+                    new_value=merged["content"], explicit_values=True)])
+                raise FederationError(str(exc), conflicts=exc.conflicts)
         elif detailed is not None:
-            raise FederationError("实际正文不能伪装为缺失")
+            exc = SourceFieldConflict([source_field_fact(post, detailed, "content",
+                new_request=requests[links["detail"]], old_value=None, new_value=detailed.content, explicit_values=True)])
+            raise FederationError(str(exc), conflicts=exc.conflicts)
         if links["detail"] is not None and (requests[links["detail"]]["kind"] != "detail" or requests[links["detail"]]["post_id"] != post["source_item_id"]):
             raise FederationError("正文原请求关联不一致")
         acquired = requests[links["list"]]["finished"]
@@ -417,7 +444,8 @@ class MergeStore:
             except FederationError:
                 raise
             except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
-                raise FederationError(f"汇总证据校验/存储失败: {type(exc).__name__}: {exc}") from exc
+                raise FederationError(f"汇总证据校验/存储失败: {type(exc).__name__}: {exc}",
+                                      conflicts=getattr(exc, "conflicts", [])) from exc
 
     def _merge_page(self, instance_id, page, raw_loader):
         if not isinstance(instance_id, str) or not instance_id or page.get("instance_id") != instance_id or page.get("schema_version") != SCHEMA_VERSION:

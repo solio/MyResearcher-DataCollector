@@ -6,7 +6,8 @@ Neither parser renders JavaScript or establishes a server-side blacklist.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from collections import OrderedDict
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timezone
 from email.utils import parsedate_to_datetime
 import errno
@@ -42,7 +43,8 @@ from lifecycle import LifecycleMixin
 from window_seek import WindowSeekMixin
 from stock_runtime import StockRuntimeMixin
 from rate_audit import tail_audit
-from compatible_store import CompatibleDataStore, _utc, merge_http_observations, same_http_author_identity
+from compatible_store import (CompatibleDataStore, SourceFieldConflict, _utc,
+                              merge_http_observations, same_http_author_identity, source_field_fact)
 from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_store_adapter
 
 VERSION = "http-backfill.v5"
@@ -367,6 +369,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         self._inflight_probe = False
         self._inflight_task = None
         self._closed = False
+        self._identity_view_cache = OrderedDict()
         self.clock = clock or time.time
         from proxy import ProxyManager
         self.proxy = ProxyManager(self.data_dir, clock=self.clock)
@@ -668,6 +671,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     self._suspend_proxy_recovery()
                     halt = previous or {"previous_state": self._get("state"), "previous_reason": self._get("reason")}
                     halt.update({"kind": "local_storage_error", "error": message, "request_id": request_id, "at": _iso(self.clock())})
+                    if getattr(exc, "conflicts", None):
+                        halt["identity_conflicts"] = exc.conflicts
                     self._set("storage_halt", halt)
                     self._set("data_storage", {"schema_version": "legacy_posts", "storage_layout": LAYOUT, "single_runtime_database": True, "status": "error", "db_path": str(self.compatible_store.db_path),
                                                "last_error": message, "research_only": True, "model_database_eligible": False})
@@ -1856,6 +1861,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     self._set("halted_probe_only", True)
                     self._clear_node_auth_after_manual_success(rid, probe)
                     return
+                if getattr(exc, "conflicts", None):
+                    evidence["identity_conflicts"] = exc.conflicts
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
                 return
@@ -2008,33 +2015,51 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     and item.published_at.timestamp() <= effective_to)
         # Validate cross-observation identity before making any queue changes.
         display_name_changes = []
+        new_request = self.db.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
         for item in page.rows:
             p = urlparse(item.url)
             if (not _allowed(item.url) or p.hostname != "guba.eastmoney.com"
                     or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(item.source_item_id) + r"\.html", p.path)):
                 raise ValueError("列表中的标准详情链接不符合已确认的来源路径")
             if not probe_only and eligible_item(item):
-                prior = self.db.execute("SELECT h.item,p.author_name,p.source_item_id AS projected_id FROM http_posts h LEFT JOIN posts p "
-                                        "ON p.source=? AND p.source_item_id=h.post_id WHERE h.post_id=?",
+                prior = self.db.execute("SELECT h.item,h.list_request,p.author_name,p.source_item_id AS projected_id,"
+                                        "c.list_request AS projected_request FROM http_posts h LEFT JOIN posts p "
+                                        "ON p.source=? AND p.source_item_id=h.post_id LEFT JOIN compatible_posts c "
+                                        "ON c.post_id=h.post_id WHERE h.post_id=?",
                                         (guba.SOURCE, item.source_item_id)).fetchone()
                 if prior:
                     old = _item_load(prior["item"])
-                    for field in ("published_at", "canonical_bar_code", "author_id"):
-                        if getattr(old, field) != getattr(item, field):
-                            raise ValueError(f"重复源 ID 的 {field} 不一致")
+                    old_request = self.db.execute("SELECT * FROM requests WHERE id=?", (prior["list_request"],)).fetchone()
+                    fields = [field for field in ("published_at", "canonical_bar_code", "author_id")
+                              if getattr(old, field) != getattr(item, field)]
                     previous_name = prior["author_name"] if prior["projected_id"] is not None else old.author_name
                     if old.author_name != item.author_name or previous_name != item.author_name:
                         if not same_http_author_identity(old, item):
-                            raise ValueError(f"帖子 {item.source_item_id} 的作者昵称不同，且缺少可核实的作者 ID")
-                        if previous_name != item.author_name:
-                            display_name_changes.append(item.source_item_id)
+                            fields.append("author_name")
                     if old.title and item.title and old.title != item.title:
-                        raise ValueError("重复源 ID 的标题不一致")
+                        fields.append("title")
+                    if fields:
+                        facts = []
+                        for field in fields:
+                            compared, previous_request = old, old_request
+                            if field == "author_name" and old.author_name == item.author_name:
+                                compared = replace(old, author_name=previous_name)
+                                previous_request = self.db.execute("SELECT * FROM requests WHERE id=?",
+                                                                    (prior["projected_request"],)).fetchone()
+                            facts.append(source_field_fact(compared, item, field, old_request=previous_request,
+                                                           new_request=new_request))
+                        raise SourceFieldConflict(facts)
+                    if previous_name != item.author_name:
+                        previous_request = self.db.execute("SELECT * FROM requests WHERE id=?",
+                                        (prior["projected_request"] or prior["list_request"],)).fetchone()
+                        display_name_changes.append(source_field_fact(replace(old, author_name=previous_name), item,
+                                        "author_name", old_request=previous_request, new_request=new_request))
         stats = {"request_id": rid, "job": task["job"], "stock": task["stock"], "page": task["page"], "purpose": task.get("purpose", "forward"),
                  "source_count": page.source_count, "rows": len(rows), "new_ids": len(set(ids) - known), "new_eligible_posts": 0,
                  "overlap": len(set(ids) & known), "ordered_id_sha256": hashlib.sha256(_dump(ids).encode()).hexdigest(),
                  "earliest": min(times, default=None), "latest": max(times, default=None),
-                 "author_display_name_changes": {"count": len(display_name_changes), "post_ids": display_name_changes}}
+                 "author_display_name_changes": {"count": len(display_name_changes),
+                     "post_ids": [fact["post_id"] for fact in display_name_changes], "changes": display_name_changes}}
         if probe_only:
             stats["probe_only"] = True
             return stats
@@ -2086,7 +2111,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         if display_name_changes:
             self._event("author_display_name_changed", "同一作者的昵称发生变化；已保留新旧观察，不阻断本页",
                         {"request_id": rid, "stock": task["stock"], "page": task["page"],
-                         "count": len(display_name_changes), "post_ids": display_name_changes})
+                         "count": len(display_name_changes),
+                         "post_ids": [fact["post_id"] for fact in display_name_changes], "changes": display_name_changes})
         if task.get("purpose") == "seek":
             stats["window_seek"] = self._advance_window_seek(task, rows, stats)
             self._event("window_seek_observed", f"{task['stock']} 第 {task['page']} 页已观察，用于日期定位", {"request_id": rid, "stock": task["stock"], "page": task["page"]})
@@ -2192,7 +2218,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             raise ValueError("详情响应 URL 的源 ID 不匹配")
         detail = guba.parse_detail_page(html)
         item = _item_load(post["item"])
-        merged = merge_http_observations(item, detail)
+        old_request = self.db.execute("SELECT * FROM requests WHERE id=?", (post["list_request"],)).fetchone()
+        new_request = self.db.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
+        merged = merge_http_observations(item, detail, old_request=old_request, new_request=new_request)
         if detail.source_item_id != task["post_id"]:
             raise ValueError("详情源 ID 不匹配")
         payload = guba._embedded_json(html, "post_article")
@@ -2336,6 +2364,22 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     task = self.db.execute("SELECT * FROM tasks WHERE id=? AND job=? AND stock=?",
                                            (runtime["halted_task_id"] or runtime["halt_task_id"], runtime["job"], runtime["stock"])).fetchone()
                     saved = runtime["block_evidence"] or {}
+                    retained = self.db.execute("SELECT * FROM requests WHERE id=? AND job=? AND stock=?",
+                                               (saved.get("id"), runtime["job"], runtime["stock"])).fetchone()
+                    if retained:
+                        retained = dict(retained)
+                        for field in ("headers", "analysis"):
+                            retained[field] = json.loads(retained[field]) if retained[field] else None
+                        view = self._identity_conflict_view(retained)
+                        facts = (view.get("analysis") or {}).get("identity_conflicts")
+                        unavailable = (view.get("analysis") or {}).get("identity_conflicts_unavailable")
+                        if facts or unavailable:
+                            runtime["identity_conflicts"] = facts or []
+                            if unavailable:
+                                runtime["identity_conflicts_unavailable"] = unavailable
+                            runtime["block_evidence"] = {**saved, "analysis": view["analysis"]}
+                            if facts:
+                                runtime["display_reason"] = view.get("display_error") or str(SourceFieldConflict(facts))
                     info = (saved.get("analysis") or {}).get("source_error_page") or {}
                     info = _source_error_page(task, info.get("error_url") or saved.get("url")) if task else None
                     if info:
@@ -2399,6 +2443,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def request_view(self, item):
         """Describe old source-error rows without rewriting their ledger facts."""
+        item = self._identity_conflict_view(item)
         if item.get("outcome") not in {"source_error", "schema_error", "redirect"}:
             return item
         task = self.db.execute("SELECT * FROM tasks WHERE id=? AND job=? AND stock=? AND kind=? AND page=?",
@@ -2416,6 +2461,126 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return item
         return {**item, "display_outcome": "source_error", "display_error": info["message"],
                 "analysis": {**analysis, "source_error_page": info}}
+
+    @staticmethod
+    def _identity_file_signature(path):
+        try:
+            info = path.stat()
+            return (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        except OSError:
+            return None
+
+    def _identity_db_signature(self, item, dependencies, post_ids):
+        posts = [dict(row) if row else None for post_id in sorted(post_ids)
+                 for row in [self.db.execute("SELECT post_id,list_request,item FROM http_posts WHERE post_id=?",
+                                              (post_id,)).fetchone()]]
+        request_ids = sorted({item["id"]} | {request["id"] for request, _, _ in dependencies}
+                             | {row["list_request"] for row in posts if row and row["list_request"] is not None})
+        requests = [dict(row) if row else None for request_id in request_ids
+                    for row in [self.db.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()]]
+        task_ids = sorted({row["task"] for row in requests if row and row["task"] is not None})
+        tasks = [dict(row) if row else None for task_id in task_ids
+                 for row in [self.db.execute("SELECT id,job,stock,kind,page,post_id,original_url FROM tasks WHERE id=?",
+                                              (task_id,)).fetchone()]]
+        revision = self.db.execute("SELECT job,revision,changed,config,effective_to FROM job_revisions WHERE job=? AND changed<=? "
+                                   "ORDER BY changed DESC,revision DESC LIMIT 1", (item["job"], item["started"])).fetchone()
+        return hashlib.sha256(_dump({"requests": requests, "tasks": tasks, "posts": posts,
+                                    "revision": dict(revision) if revision else None}).encode()).hexdigest()
+
+    def _identity_conflict_view(self, item):
+        analysis = item.get("analysis") or {}
+        if analysis.get("identity_conflicts") or item.get("error") != "重复源 ID 的 author_name 不一致":
+            return item
+        key = (item.get("id"), item.get("sha256"), item.get("raw_ref"), item.get("error"))
+        entry = self._identity_view_cache.get(key)
+        if entry:
+            valid = entry[3] == self._identity_db_signature(item, entry[1], entry[2])
+            for request, path, signature in entry[1]:
+                saved = self.db.execute("SELECT sha256,raw_ref FROM requests WHERE id=?", (request["id"],)).fetchone()
+                if (not saved or (saved["sha256"], saved["raw_ref"]) != (request["sha256"], request["raw_ref"])
+                        or self._identity_file_signature(path) != signature):
+                    valid = False
+                    break
+            if valid:
+                self._identity_view_cache.move_to_end(key)
+                return {**item, **entry[0], "analysis": {**analysis, **entry[0]["analysis"]}}
+        dependencies, parsed, post_ids = [], {}, set()
+        def read_list(request):
+            request = dict(request)
+            if request["id"] in parsed:
+                return parsed[request["id"]]
+            if len(parsed) >= 32:
+                raise ValueError("原列表证据数量超出单次诊断上限")
+            raw_ref = request.get("raw_ref")
+            path = self.data_dir / raw_ref if isinstance(raw_ref, str) else self.raw_dir / "missing"
+            dependencies.append((request, path, self._identity_file_signature(path)))
+            if (not raw_ref or not path.resolve().is_relative_to(self.raw_dir.resolve()) or path.is_symlink()
+                    or request["kind"] != "list" or request["http_status"] != 200 or request["finished"] is None
+                    or request["url"] != list_url(request["stock"], request["page"])
+                    or request["final_url"] != request["url"]):
+                raise ValueError("原列表响应路径或来源身份无法核实")
+            owner = self.db.execute("SELECT 1 FROM tasks WHERE id=? AND job=? AND stock=? AND kind='list' AND page=?",
+                                    (request["task"], request["job"], request["stock"], request["page"])).fetchone()
+            if not owner:
+                raise ValueError("原列表请求归属无法核实")
+            body = path.read_bytes()
+            if len(body) != request["response_bytes"] or hashlib.sha256(body).hexdigest() != request["sha256"]:
+                raise ValueError("原列表响应 SHA-256 或字节数不一致")
+            headers = request.get("headers") or {}
+            headers = json.loads(headers) if isinstance(headers, str) else headers
+            self._validate_framing(body, headers)
+            html = body.decode("utf-8-sig", errors="strict")
+            if challenge_evidence(html)["challenge"]:
+                raise ValueError("原列表响应包含访问验证，不能重建字段比较")
+            parsed[request["id"]] = guba.parse_list_page(html, request["stock"])
+            return parsed[request["id"]]
+        display = {}
+        try:
+            if item.get("outcome") != "schema_error" or item.get("probe_only"):
+                raise ValueError("该记录不是原列表字段校验失败")
+            revision = self.db.execute("SELECT config,effective_to FROM job_revisions WHERE job=? AND changed<=? "
+                                       "ORDER BY changed DESC,revision DESC LIMIT 1", (item["job"], item["started"])).fetchone()
+            if not revision:
+                raise ValueError("失败时的任务日期配置证据缺失")
+            config = json.loads(revision["config"])
+            page = read_list(item)
+            post_ids = {row.source_item_id for row in page.rows}
+            for new in page.rows:
+                if (not config["from_date"] <= new.published_at.date().isoformat() <= config["to_date"]
+                        or new.published_at.timestamp() > revision["effective_to"]):
+                    continue
+                prior = self.db.execute("SELECT list_request,item FROM http_posts WHERE post_id=?", (new.source_item_id,)).fetchone()
+                if not prior or prior["list_request"] >= item["id"]:
+                    continue
+                old_request = self.db.execute("SELECT * FROM requests WHERE id=?", (prior["list_request"],)).fetchone()
+                if not old_request or old_request["finished"] is None or old_request["finished"] > item["started"]:
+                    raise ValueError("原帖子观察时序无法核实")
+                old_request = dict(old_request)
+                if not CompatibleDataStore._permitted_request(old_request, ("real_data",)):
+                    raise ValueError("原帖子列表未成功校验")
+                old = next((row for row in read_list(old_request).rows if row.source_item_id == new.source_item_id), None)
+                stored = _item_load(prior["item"])
+                fields = ("source_item_id", "published_at", "canonical_bar_code", "author_id", "author_name", "title")
+                if not old or any(getattr(old, field) != getattr(stored, field) for field in fields):
+                    raise ValueError("原帖子与其首次来源观察不一致")
+                if any(getattr(old, field) != getattr(new, field) for field in ("published_at", "canonical_bar_code", "author_id")):
+                    raise ValueError("已记录的昵称错误与留存字段比较不一致")
+                if old.author_name != new.author_name:
+                    fact = source_field_fact(old, new, "author_name", old_request=old_request, new_request=item)
+                    display = {"analysis": {"identity_conflicts": [fact]}, "display_error": str(SourceFieldConflict([fact]))}
+                    break
+                if old.title and new.title and old.title != new.title:
+                    raise ValueError("已记录的昵称错误与留存标题比较不一致")
+            if not display:
+                raise ValueError("留存原列表中未找到可核实的昵称差异")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            display = {"analysis": {"identity_conflicts_unavailable": "历史冲突证据无法还原：" + str(exc)}}
+        self._identity_view_cache[key] = (display, dependencies, post_ids,
+                                        self._identity_db_signature(item, dependencies, post_ids))
+        self._identity_view_cache.move_to_end(key)
+        while len(self._identity_view_cache) > 32:
+            self._identity_view_cache.popitem(last=False)
+        return {**item, **display, "analysis": {**analysis, **display["analysis"]}}
 
     def requests(self, limit=50):
         limit = self._limit(limit)

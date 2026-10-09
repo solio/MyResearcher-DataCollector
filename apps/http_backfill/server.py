@@ -27,6 +27,14 @@ sys.path.insert(0, str(HERE.parent.parent / "src"))
 from activity import activity_page, activity_query
 
 
+def _error_payload(exc):
+    result = {"error": str(exc)}
+    conflicts = getattr(exc, "conflicts", None)
+    if isinstance(conflicts, list) and conflicts:
+        result["identity_conflicts"] = conflicts
+    return result
+
+
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -154,11 +162,11 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             self.send(200, result)
         except FleetError as exc:
-            self.send(exc.status_code, {"error": exc.error, "ambiguous": exc.ambiguous})
+            self.send(exc.status_code, {**_error_payload(exc), "error": exc.error, "ambiguous": exc.ambiguous})
         except ValueError as exc:
-            self.send(400, {"error": str(exc)})
+            self.send(400, _error_payload(exc))
         except RuntimeError as exc:
-            self.send(409, {"error": str(exc)})
+            self.send(409, _error_payload(exc))
         return True
 
     def download_node_posts(self, alias, query):
@@ -227,9 +235,9 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             self.send(200, result)
         except ValueError as exc:
-            self.send(400, {"error": str(exc)})
+            self.send(400, _error_payload(exc))
         except (RuntimeError, OSError, sqlite3.Error) as exc:
-            self.send(409, {"error": str(exc)})
+            self.send(409, _error_payload(exc))
         return True
 
     def download_posts(self, query):
@@ -271,7 +279,7 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     self.close_connection = True  # A closed download does not affect acquisition.
         except ValueError as exc:
-            self.send(400, {"error": str(exc)})
+            self.send(400, _error_payload(exc))
         except (OSError, sqlite3.Error):
             if headers_sent:
                 self.close_connection = True
@@ -317,7 +325,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "api/jobs":
                     return self.send(200, self.server.engine.jobs())
             except ValueError as exc:
-                return self.send(400, {"error": str(exc)})
+                return self.send(400, _error_payload(exc))
             return self.send(404, {"error": "接口不存在"})
         asset = (HERE / "static" / (path or "index.html")).resolve()
         static = (HERE / "static").resolve()
@@ -357,9 +365,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("切换出口请求不接受额外参数")
                 return self.send(200, self.server.engine.rotate_proxy())
             elif re.fullmatch(r"api/stocks/[0-9]{6}/control", path):
-                if set(obj) - {"action", "job_id"} or obj.get("action") not in {"start", "pause", "retry"}:
+                if set(obj) - {"action", "job_id", "retry_request_id"} or obj.get("action") not in {"start", "pause", "retry"}:
                     raise ValueError("逐股控制只接受 action=start/pause/retry 和可选 job_id")
-                getattr(self.server.engine, obj["action"])(path.split("/")[2], job=obj.get("job_id"))
+                if "retry_request_id" in obj and obj["action"] != "retry":
+                    raise ValueError("重试记录编号只用于单次重试")
+                if "retry_request_id" in obj and obj["retry_request_id"] is None:
+                    raise ValueError("重试记录编号必须为正整数")
+                kwargs = {"job": obj.get("job_id")}
+                if "retry_request_id" in obj:
+                    kwargs["retry_request_id"] = obj["retry_request_id"]
+                getattr(self.server.engine, obj["action"])(path.split("/")[2], **kwargs)
             elif re.fullmatch(r"api/stocks/[0-9]{6}/proxy/config", path):
                 return self.send(200, self.server.engine.configure_stock_proxy(path.split("/")[2], obj))
             elif re.fullmatch(r"api/stocks/[0-9]{6}/start-page", path):
@@ -377,9 +392,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(404, {"error": "接口不存在"})
             return self.send(200, self.server.engine.status())
         except ValueError as exc:
-            self.send(400, {"error": str(exc)})
+            self.send(400, _error_payload(exc))
         except RuntimeError as exc:
-            self.send(409, {"error": str(exc)})
+            self.send(409, _error_payload(exc))
 
     def do_PATCH(self):
         path = unquote(urlparse(self.path).path).lstrip("/")
@@ -394,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.fleet_route("PATCH", path, obj=self.read_json())
             except ValueError as exc:
-                self.send(400, {"error": str(exc)})
+                self.send(400, _error_payload(exc))
             return
         if path != "api/jobs/current":
             return self.send(404, {"error": "接口不存在"})
@@ -402,9 +417,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.engine.update_job(self.read_json())
             self.send(200, self.server.engine.status())
         except ValueError as exc:
-            self.send(400, {"error": str(exc)})
+            self.send(400, _error_payload(exc))
         except RuntimeError as exc:
-            self.send(409, {"error": str(exc)})
+            self.send(409, _error_payload(exc))
 
     def do_DELETE(self):
         path = unquote(urlparse(self.path).path).lstrip("/")
@@ -428,9 +443,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.engine.remove_stock(path[len("api/jobs/current/stocks/"):])
                 return self.send(200, self.server.engine.status())
             except ValueError as exc:
-                return self.send(400, {"error": str(exc)})
+                return self.send(400, _error_payload(exc))
             except RuntimeError as exc:
-                return self.send(409, {"error": str(exc)})
+                return self.send(409, _error_payload(exc))
         if path != "api/session":
             return self.send(404, {"error": "接口不存在"})
         jar = cookies.SimpleCookie()

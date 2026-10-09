@@ -1,5 +1,43 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## Actionable post-field conflict evidence
+
+Every source-field conflict must identify the post, the exact field, old/new
+values, both observed author IDs/names and original/current request IDs. Store
+structured identity_conflicts in request analysis and halt evidence; retain raw
+references and a readable error message. This applies to list re-observation,
+list/detail validation and compatibility/fleet evidence validation, without
+relaxing any identity guard. Nickname-change observations should also retain
+their old/new values, not only a count and post ID.
+
+Conflict object keys: post_id, field, field_label, old_value, new_value,
+old_author_id, new_author_id, old_author_name, new_author_name,
+old_request_id, new_request_id, old_raw_ref, new_raw_ref, post_url,
+job, stock, page. Missing evidence remains null, never inferred from current
+data. Dates use source-observed ISO timestamps. Only these public source facts
+are exposed; no arbitrary source payload/credentials. Messages may abbreviate
+long values, while structured values remain exact and render safely as text.
+
+Existing generic failures can be described through read-only request views:
+verify retained original/current raw hashes, identities and temporal ownership,
+then reconstruct the recorded comparison. Preserve the original outcome/error
+and ledger; missing evidence gets an explicit unavailable indicator. Current
+stock cards and request records show ID plus field/old/new comparison without
+opening raw JSON. Display the original/current request IDs and a source-post
+link. Do not hide the evidence in tooltip-only text or add a large help panel.
+
+Retain the original task for single manual retry. A current conflict card labels
+that control "重试本页"/"重试正文"; the historical record cannot retry an unrelated
+current target. A validated retry leaves the stock paused with manual collect
+available. Never ignore conflicts, overwrite old identity facts, skip a page,
+reset navigation or clear authentication by acknowledging an error. Distinguish
+historical nickname failures from an independently active source challenge.
+
+The scoped retry control may include retry_request_id. Validate it under the
+control lock against the current halt evidence and its exact original request
+task/job/stock; stale controls return409 without queueing or dispatch. It is
+invalid on start/pause or global controls. Existing retry payloads remain valid.
+
 ## 2026-10-09 list re-observation of an author's display name
 
 Remote601888 list594 requests781/786 both contain post1670807485 with the same

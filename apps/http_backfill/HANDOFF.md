@@ -2,7 +2,39 @@
 
 Date: 2026-10-09, Asia/Shanghai. Version: http-backfill.v5.
 
-## Latest change: author display-name changes are retained observations
+## Latest change: actionable field-conflict evidence and exact-record retry
+
+User requires post ID, old/new author names and inspectable recovery, rather
+than a generic field mismatch. SourceFieldConflict retains structured comparisons
+through list/detail acceptance, compatible projection, fleet validation and API
+errors. Request analysis/halt/current runtime expose identity_conflicts arrays;
+normal nickname drift likewise includes exact changes. H5 shows the post/field,
+full old/new values/authors, original/current requests and a validated source
+link directly in the request/card. Long values wrap as text, never HTML.
+
+Known generic historical nickname errors reconstruct display-only comparisons
+from hash-verified original/current raw and failure-time task config/ownership.
+Original outcome/error/rows remain unchanged; unrecoverable evidence is explicit.
+Read-only32-entry cache invalidates on evidence changes. Remote source evidence
+confirms post1670807485: initial728 list593 nickname挣钱去三亚啊, failed781/786
+list594 nickname从1000到2000的, author ID5669276195505658 unchanged.
+
+Current conflict controls say重试本页/重试正文. The supplied retry_request_id must
+match the retained current halt, job/stock and exact original task inside the
+control lock; stale/unrelated controls send nothing. Valid retry still pauses
+before manual collect; no skip/overwrite or authentication-stop acknowledgement
+bypass is introduced. Historical records never control an unrelated current
+target. API/fleet forwarding preserves conflicts while keeping token redaction.
+
+Focused temporary Engine/Clock/Wire, raw-history, compatible/fleet and isolated
+actual-app DOM checks passed, with no suites or live source request. They verify
+full field facts; cached history/tamper detection and unchanged original ledger;
+ordinary exact-target retry and source-auth-barrier retention; a stale marker
+gets409/no dispatch, exact marker gets200 and successful response pauses; safe
+full text/mobile wrapping/links, UI target ownership and one-probe restriction.
+Syntax/diff checks pass; temporary verification directories removed.
+
+## Previous change: author display-name changes are retained observations
 
 Remote601888 source594 requests781/786 failed with duplicate-ID author_name
 because post1670807485 had changed user_nickname despite identical nonempty

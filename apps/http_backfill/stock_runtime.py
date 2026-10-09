@@ -441,8 +441,11 @@ class StockRuntimeMixin:
             self._publish_stock_summary()
             return self.status()
 
-    def retry(self, stock=None, *, job=None, automatic=False):
+    def retry(self, stock=None, *, job=None, automatic=False, retry_request_id=None):
         with self._mutex:
+            if retry_request_id is not None and (isinstance(retry_request_id, bool)
+                    or not isinstance(retry_request_id, int) or retry_request_id <= 0):
+                raise ValueError("重试记录编号必须为正整数")
             if self._node_source_auth_barrier() and stock is None and not self._stock_scope():
                 raise RuntimeError("本节点已停止来源请求；请在股票卡片上选择一只股票单次探测")
             if self._get_global("legacy_stock_halt_barrier"):
@@ -456,6 +459,16 @@ class StockRuntimeMixin:
                 if len(choices) != 1:
                     raise RuntimeError("请在股票卡片上选择需要单次探测的股票")
                 scope = choices[0]["job"], choices[0]["stock"]
+            if retry_request_id is not None:
+                runtime = self._stock_runtime(*scope)
+                if automatic or not runtime["active_halt"] or (runtime["block_evidence"] or {}).get("id") != retry_request_id:
+                    raise RuntimeError("这条记录已不是当前阻断；请刷新后重试当前记录，未发送请求")
+                request = self.db.execute("SELECT task,job,stock FROM requests WHERE id=?", (retry_request_id,)).fetchone()
+                with self._stock_context(scope[1], scope[0]):
+                    target = self._halt_target()
+                if (not request or (request["job"], request["stock"]) != scope
+                        or not target or target["id"] != request["task"]):
+                    raise RuntimeError("这条报错的原请求目标无法核实；保留阻断，未发送请求")
             with self._stock_context(scope[1], scope[0]):
                 self._retry_one(automatic=automatic)
             self._publish_stock_summary()

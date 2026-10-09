@@ -178,10 +178,54 @@
     display("help-node-name", `${nodeName()}（${selectedNode}）`);
     $("help-panel").showModal(); $("help-toggle").setAttribute("aria-expanded", "true"); $("help-close").focus();
   }
-  function notice(message, error = false) {
+  function conflictFacts(value) {
+    const candidates = [value?.identity_conflicts, value?.analysis?.identity_conflicts, value?.block_evidence?.identity_conflicts, value?.block_evidence?.analysis?.identity_conflicts];
+    const facts = candidates.find((entry) => Array.isArray(entry) && entry.length);
+    return facts ? facts.filter((fact) => fact && typeof fact === "object" && !Array.isArray(fact)) : [];
+  }
+  function conflictValue(value) { return value == null ? "未留存" : value === "" ? "（空字符串）" : textValue(value); }
+  function conflictField(fact) {
+    const labels = { author_name: "作者昵称", author_id: "作者 ID", published_at: "发布时间", canonical_bar_code: "所属股吧", title: "标题", content: "正文" };
+    return fact.field_label || labels[fact.field] || fact.field || "来源字段";
+  }
+  function appendConflictFacts(parent, facts, displayNameChange = false) {
+    for (const fact of facts) {
+      const card = el("div", `post-conflict${displayNameChange ? " display-name-change" : ""}`);
+      card.append(el("strong", "post-conflict-title", `帖子 ${conflictValue(fact.post_id)} · ${conflictField(fact)}${displayNameChange ? "变化（已保留）" : "不一致"}`));
+      const columns = el("div", "post-conflict-columns");
+      for (const [side, label] of [["old", "原观察"], ["new", "本次观察"]]) {
+        const column = el("div", "post-conflict-column");
+        column.append(el("span", "post-conflict-side", label), el("div", "post-conflict-value", conflictValue(fact[`${side}_value`])));
+        column.append(el("div", "post-conflict-author", `作者 ID：${conflictValue(fact[`${side}_author_id`])}`), el("div", "post-conflict-author", `作者昵称：${conflictValue(fact[`${side}_author_name`])}`));
+        column.append(el("div", "post-conflict-request", fact[`${side}_request_id`] == null ? "请求编号：未留存" : `请求 #${fact[`${side}_request_id`]}`));
+        columns.append(column);
+      }
+      card.append(columns);
+      if (fact.post_url) {
+        try {
+          const url = new URL(fact.post_url);
+          const sourcePost = url.pathname.match(/^\/news,\d{6},(\d+)\.html$/);
+          if (url.protocol === "https:" && url.hostname === "guba.eastmoney.com" && !url.username && !url.password && !url.port && !url.search && !url.hash && sourcePost && String(fact.post_id) === sourcePost[1]) {
+            const link = el("a", "post-conflict-link", "打开来源帖子"); link.href = url.href; link.target = "_blank"; link.rel = "noopener noreferrer"; card.append(link);
+          }
+        } catch { /* An unverified source link is not actionable. */ }
+      }
+      parent.append(card);
+    }
+  }
+  function conflictUnavailable(value) { return value?.identity_conflicts_unavailable || value?.analysis?.identity_conflicts_unavailable || value?.block_evidence?.analysis?.identity_conflicts_unavailable; }
+  function runtimeConflictRetry(runtime) { return runtime?.active_halt === "schema_error" && (conflictFacts(runtime).length > 0 || Boolean(conflictUnavailable(runtime))); }
+  function stockRetryLabel(runtime) { return runtimeConflictRetry(runtime) ? first(runtime, ["current", "current_target", "target"])?.kind === "detail" ? "重试正文" : "重试本页" : "探测"; }
+  function historicalConflictRuntime(request, data = status) {
+    if (!request || request.id == null || request.job == null || request.stock == null || !conflictFacts(request).length) return null;
+    const runtime = runtimeFor(data, request.stock, request.job);
+    return runtimeConflictRetry(runtime) && runtime.block_evidence?.id != null && String(runtime.block_evidence.id) === String(request.id) ? runtime : null;
+  }
+  function notice(message, error = false, conflicts = []) {
     $("notice").hidden = !message;
     $("notice").classList.toggle("error", error);
     $("notice").textContent = message || "";
+    if (conflicts.length) appendConflictFacts($("notice"), conflicts);
   }
   function authMessage(message, error = false) {
     display("auth-message", message);
@@ -223,6 +267,7 @@
       const err = new Error(message + (ambiguous ? "。该实例可能已执行操作，结果尚未确认；请先刷新状态再决定，系统不会自动重发。" : ""));
       err.status = response.status;
       err.ambiguous = ambiguous;
+      err.identity_conflicts = conflictFacts(data);
       throw err;
     }
     if (data === null) throw new Error("本地接口返回了非 JSON 响应，请检查服务或反向代理配置。");
@@ -441,14 +486,16 @@
     document.querySelectorAll(".task-proxy-form input[name='username'], .task-proxy-form input[name='password']").forEach((input) => { input.value = ""; });
     taskProxyDrafts.clear(); startPageDrafts.clear(); stockEvidenceOpen.clear();
   }
-  function stockButton(action, stock, runtime, detached = false) {
-    const labels = { start: "采集", pause: "暂停", retry: "探测" };
+  function stockButton(action, stock, runtime, detached = false, retryRequest = null) {
+    const labels = { start: "采集", pause: "暂停", retry: stockRetryLabel(runtime) };
+    const expectedRetryRequest = retryRequest ?? (action === "retry" && runtimeConflictRetry(runtime) ? runtime.block_evidence?.id : null);
     const button = el("button", `button ${action === "start" ? "primary" : "secondary"} small stock-control`, labels[action]);
     button.type = "button"; button.dataset.stockAction = action; button.dataset.stock = String(stock);
     if (runtime?.job != null) button.dataset.stockJob = String(runtime.job);
     if (detached) button.dataset.detached = "1";
+    if (expectedRetryRequest != null) button.dataset.retryRequest = String(expectedRetryRequest);
     button.setAttribute("aria-label", `${labels[action]}股票 ${stock}${detached ? " 保留的原目标" : ""}`);
-    button.addEventListener("click", () => { void controlStock(String(stock), action, runtime?.job); });
+    button.addEventListener("click", () => { void controlStock(String(stock), action, runtime?.job, expectedRetryRequest); });
     return button;
   }
   function updateStockControls() {
@@ -459,10 +506,13 @@
       const active = runtime?.state === "running", probe = runtimeProbe(runtime), inFlight = stockInFlight(runtime);
       const detached = button.dataset.detached === "1";
       const action = button.dataset.stockAction;
+      const wrongRetryRequest = button.dataset.retryRequest != null && (!runtimeConflictRetry(runtime) || runtime.block_evidence?.id == null || String(runtime.block_evidence.id) !== button.dataset.retryRequest);
       const authStopped = nodeAuthStopped();
       const nodeLocked = status?.active_halt && !(authStopped && !status?.legacy_stock_halt_barrier && action !== "start");
-      button.disabled = Boolean(locked || !supported || !runtime || status?.storage_halt || nodeLocked || (action === "start" ? detached || active || probe || inFlight || runtime.active_halt || !["paused", "idle"].includes(runtime.state) : action === "pause" ? !(active || probe || runtime.proxy_auto_suspended === false || inFlight) : active || probe || inFlight || (authStopped && (probePending() || status?.request_inflight)) || !["paused", "blocked", "error"].includes(runtime.state) || !first(runtime, ["current", "current_target", "target"])));
+      button.disabled = Boolean(locked || !supported || !runtime || wrongRetryRequest || status?.storage_halt || nodeLocked || (action === "start" ? detached || active || probe || inFlight || runtime.active_halt || !["paused", "idle"].includes(runtime.state) : action === "pause" ? !(active || probe || runtime.proxy_auto_suspended === false || inFlight) : active || probe || inFlight || (authStopped && (probePending() || status?.request_inflight)) || !["paused", "blocked", "error"].includes(runtime.state) || !first(runtime, ["current", "current_target", "target"])));
+      if (action === "retry") { button.textContent = stockRetryLabel(runtime); button.setAttribute("aria-label", `${stockRetryLabel(runtime)}股票 ${button.dataset.stock}${detached ? " 保留的原目标" : ""}`); }
       if (!supported) button.title = "该节点尚不支持逐股控制，请更新节点；不会回退执行全局控制。";
+      else if (wrongRetryRequest) button.title = "这条历史记录已不是本股当前阻断目标，不能重试其他请求。";
       else if (authStopped && action === "start") button.title = "节点遇到验证码或身份核验，后续请求已停止；先选择一只股票单次探测。";
       else if (authStopped && action === "retry") button.title = "全节点仅允许一次人工探测；有效响应解除节点停止，所有股票仍暂停。";
       else if (runtime?.active_halt && action === "start") button.title = "本股原目标阻断仍保留，请先探测成功，再手动采集。";
@@ -482,11 +532,14 @@
     });
     if ($("download-mihomo")) $("download-mihomo").disabled = locked || !supported || mihomoDownloading;
   }
-  async function controlStock(stock, action, job) {
+  async function controlStock(stock, action, job, retryRequest = null) {
     if (!independentStocks()) { notice("所选节点需更新以支持逐股控制；没有发送全局命令。", true); return false; }
+    const runtime = runtimeFor(status, stock, job);
+    if (retryRequest != null && (!runtimeConflictRetry(runtime) || runtime.block_evidence?.id == null || String(runtime.block_evidence.id) !== String(retryRequest))) { notice("这条历史记录已不是本股当前阻断目标，请查看股票卡片；没有安排其他请求。", true); return false; }
     const payload = { action }; if (job != null) payload.job_id = job;
+    if (retryRequest != null) payload.retry_request_id = retryRequest;
     const messages = { start: `${stock} 已提交采集指令，其他股票状态不变。`, pause: `${stock} 已暂停后续采集，已有响应与队列保留。`, retry: `${stock} 已安排一次原目标探测，遵守全局间隔与本股冷却；成功后仍暂停。` };
-    return post(`stocks/${encodeURIComponent(stock)}/control`, payload, messages[action]);
+    return post(`stocks/${encodeURIComponent(stock)}/control`, payload, action === "retry" && runtimeConflictRetry(runtime) ? `${stock} 已安排一次${stockRetryLabel(runtime)}；成功后仍暂停，由你决定继续采集。` : messages[action]);
   }
   function stockTargetText(target) {
     if (!target || typeof target !== "object") return target ? textValue(target) : "等待下一项";
@@ -502,7 +555,10 @@
     const sourceError = objectValue(runtime.source_error_page);
     const displayReason = first(runtime, ["display_reason", "reason"]);
     const issue = runtime.active_halt || ["blocked", "error"].includes(runtime.state) || runtime.network_retry;
-    if (displayReason && issue) facts.append(el("p", "stock-runtime-reason", displayReason));
+    const conflicts = conflictFacts(runtime), unavailable = conflictUnavailable(runtime);
+    if (displayReason && issue && !conflicts.length) facts.append(el("p", "stock-runtime-reason", displayReason));
+    if (conflicts.length) appendConflictFacts(facts, conflicts);
+    if (unavailable) facts.append(el("p", "conflict-unavailable", unavailable));
     if (Object.keys(sourceError).length) appendSourceErrorURLs(facts, sourceError);
     const retry = objectValue(runtime.network_retry), target = first(runtime, ["current", "current_target", "target"]);
     const parts = [stockInFlight(runtime) ? "本股请求中" : runtimeProbe(runtime) ? "单次探测已安排" : states[runtime.state] || runtime.state];
@@ -1463,12 +1519,21 @@
       row.append(el("div", "activity-time", time(first(request, ["started_at", "requested_at", "at", "timestamp"]))));
       const main = el("div", "activity-main"); main.append(el("div", "activity-title", title));
       const profile = objectValue(request.analysis), sourceError = objectValue(profile.source_error_page);
+      const conflicts = conflictFacts(request), unavailable = conflictUnavailable(request);
       const reason = first(request, ["reason", "error", "message"]);
       const displayReason = textValue(first(request, ["display_error"], sourceError.message || reason));
       const shortReason = outcome === "source_error" ? sourceError.message || displayReason || "股吧返回错误页" : displayReason.length <= 120 && !/[\r\n]/.test(displayReason) && !/^[\[{]/.test(displayReason.trim()) ? displayReason : "";
       const elapsed = first(request, ["elapsed_seconds", "duration_seconds", "duration"], epoch(request.finished_at) != null && epoch(request.started_at) != null ? (epoch(request.finished_at) - epoch(request.started_at)) / 1000 : null);
       const bytes = first(request, ["bytes", "body_bytes", "response_bytes", "size"]);
-      if (shortReason) main.append(el("div", "activity-detail", shortReason));
+      if (shortReason && !conflicts.length) main.append(el("div", "activity-detail", shortReason));
+      if (conflicts.length) appendConflictFacts(main, conflicts);
+      if (unavailable) main.append(el("p", "conflict-unavailable", unavailable));
+      const displayNameChanges = profile.list_observation?.author_display_name_changes?.changes;
+      if (Array.isArray(displayNameChanges)) appendConflictFacts(main, displayNameChanges.filter((fact) => fact && typeof fact === "object" && !Array.isArray(fact)), true);
+      const currentConflict = historicalConflictRuntime(request);
+      if (currentConflict) {
+        const actions = el("div", "conflict-actions"); actions.append(stockButton("retry", stock, currentConflict, currentConflict.detached === true, request.id)); main.append(actions);
+      }
       const details = [elapsed == null ? "" : `耗时 ${Number(elapsed).toFixed(2)} 秒`, bytes == null ? "" : `${number(bytes)} 字节`].filter(Boolean).join(" · ");
       if (details) main.append(el("div", "activity-detail", details));
       const url = first(request, ["url", "requested_url"], target.url);
@@ -1494,6 +1559,7 @@
       row.append(main, el("div", `activity-result ${resultClass(outcome)}`, `${outcomes[outcome] || outcome}${http == null ? "" : " · HTTP " + http}`));
       list.append(row);
     }
+    updateStockControls();
   }
   function renderEvents(data) {
     const items = unpack(data, "events"); display("event-count", data.total == null ? items.length : number(data.total));
@@ -1591,7 +1657,7 @@
     } catch (error) {
       if (authenticated) {
         const message = options.proxyOperation ? safeProxyMessage(error.message, options.sensitiveValues || []) : error.message;
-        notice(message, true); if (options.proxyOperation) proxyError(message);
+        notice(message, true, error.identity_conflicts || []); if (options.proxyOperation) proxyError(message);
       }
     } finally { if (options.proxyOperation) clearProxySecrets(); busy = false; controls(); if (authenticated) await poll(); }
     return success;

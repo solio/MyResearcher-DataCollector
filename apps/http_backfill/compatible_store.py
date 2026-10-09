@@ -42,6 +42,53 @@ _NAVIGATION_ERRORS = {
 class CompatibleStorageError(RuntimeError):
     """An offline projection cannot satisfy the existing storage contract."""
 
+    def __init__(self, message, *, conflicts=None):
+        super().__init__(message)
+        self.conflicts = list(conflicts or [])
+
+
+_FIELD_LABELS = {"source_item_id": "帖子 ID", "author_id": "作者 ID", "author_name": "作者昵称",
+                 "canonical_bar_code": "所属股吧", "published_at": "发布时间", "title": "标题",
+                 "content": "正文", "url": "帖子地址", "stock_code": "股票代码"}
+
+
+def source_field_fact(first, second, field, *, old_request=None, new_request=None,
+                      job=None, stock=None, page=None, old_value=None, new_value=None,
+                      explicit_values=False):
+    """Only public source fields enter a conflict, never an arbitrary payload."""
+    def value(item, name):
+        result = item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+        return result.isoformat() if isinstance(result, datetime) else result
+    old_request, new_request = dict(old_request or {}), dict(new_request or {})
+    return {"post_id": value(first, "source_item_id") or value(second, "source_item_id"),
+            "field": field, "field_label": _FIELD_LABELS.get(field, field),
+            "old_value": old_value if explicit_values else value(first, field),
+            "new_value": new_value if explicit_values else value(second, field),
+            "old_author_id": value(first, "author_id"), "new_author_id": value(second, "author_id"),
+            "old_author_name": value(first, "author_name"), "new_author_name": value(second, "author_name"),
+            "old_request_id": old_request.get("id"), "new_request_id": new_request.get("id"),
+            "old_raw_ref": old_request.get("raw_ref"), "new_raw_ref": new_request.get("raw_ref"),
+            "post_url": value(first, "url") or value(second, "url"),
+            "job": job if job is not None else new_request.get("job"),
+            "stock": stock if stock is not None else new_request.get("stock"),
+            "page": page if page is not None else new_request.get("page")}
+
+
+class SourceFieldConflict(ValueError):
+    """Exact source comparisons remain inspectable through every app layer."""
+
+    def __init__(self, conflicts):
+        self.conflicts = list(conflicts)
+        def short(value):
+            result = json.dumps(value, ensure_ascii=False)
+            return result if len(result) <= 100 else result[:97] + "…"
+        message = "；".join(f"帖子 {fact['post_id']} 的{fact['field_label']}不一致："
+                           f"原值 {short(fact['old_value'])} → 新值 {short(fact['new_value'])}"
+                           f"（原请求 #{fact['old_request_id'] if fact['old_request_id'] is not None else '未知'}，"
+                           f"本次请求 #{fact['new_request_id'] if fact['new_request_id'] is not None else '未知'}）"
+                           for fact in self.conflicts)
+        super().__init__(message)
+
 
 def same_http_author_identity(first, second):
     """A display-name change needs an actual, unchanged source author ID."""
@@ -49,17 +96,24 @@ def same_http_author_identity(first, second):
             and first.author_id == second.author_id)
 
 
-def merge_http_observations(item, detail):
+def merge_http_observations(item, detail, *, old_request=None, new_request=None):
     """Validate real list/detail facts, permitting an evidenced nickname snapshot.
 
     The production parser retains its stricter Phase1 contract. A temporary
     comparison object lets that parser continue validating every other field;
     it never replaces the real list observation or its raw provenance.
     """
+    fields = [name for name in ("source_item_id", "author_id", "canonical_bar_code", "published_at")
+              if getattr(item, name) != getattr(detail, name)]
+    if item.author_name != detail.author_name and not same_http_author_identity(item, detail):
+        fields.append("author_name")
+    if item.title and detail.title and item.title != detail.title:
+        fields.append("title")
+    if fields:
+        raise SourceFieldConflict([source_field_fact(item, detail, name, old_request=old_request,
+                                                     new_request=new_request) for name in fields])
     if item.author_name == detail.author_name:
         return guba.merge_list_and_detail(item, detail)
-    if not same_http_author_identity(item, detail):
-        raise guba.GubaDetailMismatch("列表与正文的作者昵称不同，且缺少相同的有效作者 ID")
     merged = guba.merge_list_and_detail(replace(item, author_name=detail.author_name), detail)
     metadata = dict(merged["source_metadata"])
     metadata["extra"] = {**metadata.get("extra", {}), "http_author_name_observations": {
@@ -272,14 +326,17 @@ class CompatibleDataStore:
             if request and request["kind"] == "list":
                 observed_request, html = self._raw_request(engine, request_id)
                 observed_item = self._list_item(engine, html, observed_request["stock"], post["post_id"], observed_request["id"])
-        for field in ("published_at", "canonical_bar_code", "author_id"):
-            if getattr(initial_item, field) != getattr(observed_item, field):
-                raise CompatibleStorageError(f"同一源 ID 的列表 {field} 身份不一致")
+        fields = [field for field in ("published_at", "canonical_bar_code", "author_id")
+                  if getattr(initial_item, field) != getattr(observed_item, field)]
         if (initial_item.author_name != observed_item.author_name
                 and not same_http_author_identity(initial_item, observed_item)):
-            raise CompatibleStorageError("同一源 ID 的作者显示名变化，但没有相同的非空作者 ID")
+            fields.append("author_name")
         if initial_item.title and observed_item.title and initial_item.title != observed_item.title:
-            raise CompatibleStorageError("同一源 ID 的列表标题不一致")
+            fields.append("title")
+        if fields:
+            conflict = SourceFieldConflict([source_field_fact(initial_item, observed_item, field,
+                                         old_request=initial_request, new_request=observed_request) for field in fields])
+            raise CompatibleStorageError(str(conflict), conflicts=conflict.conflicts)
         metadata = list_title_metadata(observed_item.source_metadata, observed_item.title)
         content, detail_request = None, None
         item = self._source_item(observed_item, _time(observed_request["finished"]), observed_item.title or "", metadata,
@@ -290,9 +347,14 @@ class CompatibleDataStore:
                 raise CompatibleStorageError("已完成正文缺少真实详情来源")
             detail_request, detail_html = self._raw_request(engine, post["detail_request"])
             detail = guba.parse_detail_page(detail_html)
-            merged = merge_http_observations(observed_item, detail)
+            merged = merge_http_observations(observed_item, detail, old_request=observed_request,
+                                             new_request=detail_request)
             if merged["content"] != post["content"]:
-                raise CompatibleStorageError("正文与留存详情原始响应不一致")
+                conflict = SourceFieldConflict([source_field_fact(
+                    {"source_item_id": post["post_id"], "url": observed_item.url}, detail, "content",
+                    new_request=detail_request, old_value=post["content"], new_value=merged["content"],
+                    explicit_values=True)])
+                raise CompatibleStorageError(str(conflict), conflicts=conflict.conflicts)
             content = merged["content"]
             metadata = detail_body_metadata(merged["source_metadata"], title=observed_item.title,
                                             trigger=detail_enrichment_trigger(observed_item.title))
@@ -331,8 +393,20 @@ class CompatibleDataStore:
                         "forward_count": item.forward_count, "updated_at": _utc(updated)}
             names = [r[1] for r in store.conn.execute("PRAGMA table_info(posts)")]
             current = dict(existing) if isinstance(existing, sqlite3.Row) else dict(zip(names, existing))
-            if any(current[k] != value for k, value in expected.items()):
-                raise CompatibleStorageError("已有 posts 投影与留存原始响应不一致，不能用旧 fingerprint 跳过验证")
+            conflicts = []
+            for field, expected_value in expected.items():
+                if current[field] != expected_value:
+                    source_request = (detail_request if post["status"] == "complete" else None) if field == "content" else observed_request
+                    source_item = detail if field == "content" and post["status"] == "complete" else observed_item
+                    if field == "updated_at" and detail_request is not None and detail_request["finished"] > observed_request["finished"]:
+                        source_request = detail_request
+                    conflicts.append(source_field_fact(current, source_item, field, new_request=source_request,
+                                     job=observed_request.get("job"), stock=observed_request.get("stock"),
+                                     page=observed_request.get("page"), old_value=current[field],
+                                     new_value=expected_value, explicit_values=True))
+            if conflicts:
+                conflict = SourceFieldConflict(conflicts)
+                raise CompatibleStorageError(str(conflict), conflicts=conflict.conflicts)
             from federation import journal_projection
             journal_projection(engine, store, post["post_id"], fingerprint, observed_request,
                                detail_request, provenance, initial_request=initial_request)
@@ -404,7 +478,8 @@ class CompatibleDataStore:
             except CompatibleStorageError:
                 raise
             except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:
-                raise CompatibleStorageError(f"兼容数据投影失败: {type(exc).__name__}: {exc}") from exc
+                raise CompatibleStorageError(f"兼容数据投影失败: {type(exc).__name__}: {exc}",
+                                             conflicts=getattr(exc, "conflicts", [])) from exc
             finally:
                 self._raw_cache.clear()
                 self._list_cache.clear()
