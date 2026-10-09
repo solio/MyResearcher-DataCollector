@@ -53,13 +53,7 @@
           <div><span class="datum-label">最近一次源成功</span><strong id="last-success">—</strong><small id="observed-rate">实际请求速率尚无观测</small></div>
         </div>
         <div class="run-actions"><button id="start" type="button" class="button primary" disabled>开始采集</button><button id="pause" type="button" class="button secondary" disabled>暂停</button><button id="retry" type="button" class="button secondary" disabled>单次探测重试</button><span id="action-note" class="action-note">保存配置不会发起源请求。</span></div>
-        <div class="recovery-panel rate-panel" aria-labelledby="rate-title"><div class="recovery-heading"><strong id="rate-title">实际源请求间隔审计</strong><span id="rate-state" class="tag">未可核验</span></div><p id="rate-scope" class="field-note">所选实例尚未返回网络请求审计。</p><div id="rate-facts" class="coverage-counts"></div><p id="rate-uncertainty" class="field-note"></p><p class="small-note">帖子数与源请求数不同，一次列表响应可取得多条帖子。此处只审计已标明的近期台账范围；旧版未返回字段时不能核验。全历史可在该采集机使用只读审计 CLI 核对，不会启动采集。</p></div>
-        <div id="recovery-panel" class="recovery-panel" hidden>
-          <div class="recovery-heading"><strong>分页恢复校准</strong><span id="recovery-phase" class="tag">等待校准</span></div>
-          <div id="recovery-facts" class="coverage-counts"></div>
-          <p id="recovery-reason" class="field-note"></p>
-          <p class="small-note">普通恢复先检查末次前进页，变化时转为区间两轮校准；风险或末端检查直接进行区间校准。源页码会随新帖移动，末页稳定只确认导航锚点。校准请求计入全局间隔，预算耗尽仍未完成时停止并保留异常，覆盖仍需核对。</p>
-        </div>
+
       </section>
 
       <section id="block-panel" class="block-card" aria-labelledby="block-title" hidden>
@@ -129,12 +123,10 @@
         </section>
 
         <section class="card coverage-card" aria-labelledby="coverage-title">
-          <div class="section-heading"><div><div class="eyebrow">范围与缺口</div><h2 id="coverage-title">股票覆盖</h2></div><span id="coverage-count" class="tag">未配置</span></div>
-          <p class="section-intro">逐股展示状态、出口、目标窗口与已发现帖子。采集、暂停和探测只作用于所选股票。</p>
+          <div class="section-heading"><div><div class="eyebrow">范围与缺口</div><h2 id="coverage-title">股票覆盖 <button type="button" class="hint-button" data-hint-key="coverage-policy" data-hint-text="窗口内帖子按当前配置日期统计。定位／列表观察可能含窗口外日期，用于导航，不能当作覆盖；跳页不表示中间页已采集。末页稳定或局部两轮校准也不能证明目标窗口无遗漏。" aria-label="说明：股票覆盖">?</button></h2></div><span id="coverage-count" class="tag">未配置</span></div>
           <p id="stock-controls-note" class="field-note">正在读取所选节点的逐股控制能力…</p>
-          <div class="stock-tools"><button id="download-mihomo" type="button" class="button secondary small" disabled>下载 Mihomo 采集分流配置</button><span class="field-note">先保存各股出口。Clash Verge：订阅 → 全局扩展脚本，粘贴并保存；已有脚本要合并采集逻辑，保留原逻辑。下载不会切换日常代理。</span></div>
+          <div class="stock-tools"><button id="download-mihomo" type="button" class="button secondary small" disabled>下载 Mihomo 采集分流配置</button><button type="button" class="hint-button" data-hint-key="mihomo-download" data-hint-text="先保存各股 Mihomo 出口，再下载私密分流配置。在 Clash Verge 的“订阅 → 全局扩展脚本”粘贴并保存；已有脚本须合并采集逻辑，保留原逻辑。下载不会切换日常代理，也不表示监听已可用。" aria-label="说明：Mihomo 分流配置">?</button></div>
           <div id="coverage-list" class="coverage-list"><div class="empty-state">保存股票和日期窗口后，这里会显示覆盖进度。</div></div>
-          <p class="small-note">窗口内帖子按当前配置日期统计。定位／列表观察可能包含窗口外日期，用于定位和核对，不能当作采集覆盖。日期定位跳页不表示中间页面已采集。移动分页通过末页稳定检查或源 ID 与发布时间的局部区间两轮校准核对；旧 ID 不可见或时间次序未核实会保留缺口。校准通过和已发现项完成，仍不能证明目标窗口无遗漏。</p>
         </section>
       </div>
 
@@ -152,9 +144,25 @@
         <div id="events-panel" role="tabpanel" aria-labelledby="events-tab" hidden><div id="event-list" class="activity-list"><div class="empty-state">尚无控制事件。</div></div><nav class="activity-pager" aria-label="控制事件分页"><p id="events-page-info" class="page-info">正在读取记录…</p><div class="pager-actions"><button id="events-prev" type="button" class="button secondary small" disabled>上一页</button><button id="events-next" type="button" class="button secondary small" disabled>下一页</button><button id="events-latest" type="button" class="button quiet small" disabled>回到最新</button></div><p id="events-page-error" class="page-error" role="status" hidden></p></nav></div>
         <p class="small-note activity-note">每 5 秒刷新最新记录；查看历史时保持当前页。</p>
       </section>
+      <button id="help-toggle" type="button" class="help-toggle" aria-label="查看请求间隔与分页校准帮助" aria-controls="help-panel" aria-haspopup="dialog" aria-expanded="false">?</button>
       <footer class="footer"><span>DataCollector / HTTP backfill</span><span>采集数据 · 完整覆盖需逐项核实</span></footer>
     </div>
   </main>
+
+
+  <dialog id="help-panel" class="help-panel" aria-labelledby="help-title">
+    <div class="help-panel-header"><div><div class="eyebrow">当前节点 · <span id="help-node-name">本机采集实例</span></div><h2 id="help-title">请求间隔与分页校准</h2></div><button id="help-close" type="button" class="button quiet small" aria-label="关闭帮助">关闭</button></div>
+    <div class="help-panel-body">
+        <div class="recovery-panel rate-panel" aria-labelledby="rate-title"><div class="recovery-heading"><strong id="rate-title">实际源请求间隔审计</strong><span id="rate-state" class="tag">未可核验</span></div><p id="rate-scope" class="field-note">所选实例尚未返回网络请求审计。</p><div id="rate-facts" class="coverage-counts"></div><p id="rate-uncertainty" class="field-note"></p><p class="small-note">帖子数与源请求数不同，一次列表响应可取得多条帖子。此处只审计已标明的近期台账范围；旧版未返回字段时不能核验。全历史可在该采集机使用只读审计 CLI 核对，不会启动采集。</p></div>
+        <div id="recovery-panel" class="recovery-panel" hidden>
+          <div class="recovery-heading"><strong>分页恢复校准</strong><span id="recovery-phase" class="tag">等待校准</span></div>
+          <div id="recovery-facts" class="coverage-counts"></div>
+          <p id="recovery-reason" class="field-note"></p>
+          <p class="small-note">普通恢复先检查末次前进页，变化时转为区间两轮校准；风险或末端检查直接进行区间校准。源页码会随新帖移动，末页稳定只确认导航锚点。校准请求计入全局间隔，预算耗尽仍未完成时停止并保留异常，覆盖仍需核对。</p>
+        </div>
+    </div>
+  </dialog>
+  <div id="coverage-tooltip" class="coverage-tooltip" role="tooltip" hidden><div id="coverage-tooltip-content"></div></div>
 
   <dialog id="retry-dialog" class="confirm-dialog" aria-labelledby="retry-title">
     <form method="dialog"><div class="eyebrow">明确的单次操作</div><h2 id="retry-title">安排一次探测？</h2><p>服务端会在全局请求间隔和冷却期满足后，向当前源目标发送 <strong>一次真实请求</strong>。该操作不会处理验证码，不会清除已有阻断记录。</p><p>探测成功后仍保持暂停；由你决定是否继续采集。</p><p id="retry-due" class="field-note"></p><div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="confirm" id="confirm-retry" class="button primary">确认单次探测</button></div></form>

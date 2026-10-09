@@ -1,8 +1,43 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-07, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-09, Asia/Shanghai. Version: http-backfill.v5.
 
-## Latest change: source error pages and original-list probes
+## Latest change: floating help and compact coverage explanations
+
+User requests less page space for interval audit, pagination recovery and long
+coverage explanations. SPEC updated before implementation. The complete existing
+rate/recovery panels now live in the closed-by-default floating question-mark
+help dialog, retaining their IDs, selected-node status and existing refresh.
+The help panel supports desktop/mobile scrolling, Escape/outside/close dismissal,
+return focus, current-node labeling and logout cleanup. Opening it sends no API
+or source request. Coverage keeps controls, dates, counts, current target/due,
+actual errors and short gaps visible; repeated count/navigation/Mihomo mechanics
+are available through hover/focus/tap tooltips. Manual unverified upper boundaries
+and old-node unverified statistics stay visible.
+
+One shared viewport-positioned tooltip avoids clipping inside the scrolling
+stock list. Stable node/job/stock/topic identities rebind content and keyboard
+focus after coverage redraw. Preserved form hints use the same suppressed focus
+restore so a tooltip closed with Escape does not reopen on the next refresh.
+Generic runtime reasons identical to the displayed state need no extra tooltip.
+Existing proxy/start-page drafts and all controls remain unchanged.
+
+Validation: independent static review, node --check, unique HTML IDs and
+git diff --check passed. Isolated real Chrome previews at 1440x1100 and 390x844
+show no horizontal overflow; main run-card height decreased from about 737 to 392
+pixels in the same fixture. Help fits mobile bounds, stays closed initially,
+opens without another request, follows selected-node audit values, and closes
+with Escape/outside/logout while restoring focus. Hover/tap tooltips stay inside
+mobile bounds; refresh preserves reading/focus and a draft start page 145, while
+an explicitly closed form hint remains closed. No test suite, new dependency,
+backend/storage change, migration, real-source request, live database mutation,
+training import or collector restart was performed.
+
+Deploy the existing git pull / docker compose up -d --build on the H5 host.
+Collectors accessed only through that updated H5 need no worker update for this
+layout change; a node serving its own H5 needs the same update to show the layout.
+
+## Previous change: source error pages and original-list probes
 
 Retained local3761 requested002463 page763 and received302 Location./error?type=1.
 3762/3763 both fetched the error URL, returned200/12800 bytes and the identical

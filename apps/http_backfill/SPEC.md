@@ -1,5 +1,26 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-09 compact H5 help and coverage tooltips — authorized layout change
+
+Move the actual source-request interval audit and pagination recovery calibration
+panels out of the main run card into a floating question-mark help panel. Keep
+their existing live status fields and selected-node scope; opening or closing
+help only changes presentation and must not request a source, start collection,
+probe a target or change configuration. Help is closed by default, fits desktop
+and mobile viewports, supports Escape/outside dismissal and restores focus.
+
+Coverage keeps stock controls, state, target window, acquired date range and
+post/detail counts visible. Replace repeated explanatory paragraphs with short
+labels and optional tooltips for date observations, date-seek/recovery mechanics,
+count semantics, excluded records, coverage caveats and Mihomo instructions.
+Tooltips must work with mouse, keyboard and touch, stay within the viewport and
+remain readable during polling; native title-only text is insufficient on phones.
+Retain clear visible source/network error and gap indicators, with longer proof
+or explanation available on demand. Do not imply confirmed coverage or hide
+action-blocking errors. Preserve drafts, request pagination, existing actions,
+API routes, collector timing, storage and export semantics. No new dependency,
+backend behavior, migration or deployment configuration is needed.
+
 ## 2026-10-07 source error page and original-list probe — authorized correction
 
 Retained requests3761..3763 show list002463 page763 redirecting to /error?type=1,

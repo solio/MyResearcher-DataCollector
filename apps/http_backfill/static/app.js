@@ -43,6 +43,10 @@
   const startPageDrafts = new Map();
   const stockEvidenceOpen = new Set();
   let mihomoDownloading = false;
+  let tooltipState = null;
+  let tooltipHideTimer = null;
+  let helpReturnFocus = null;
+  let hintFocusSuppressed = false;
 
   function first(object, keys, fallback = null) {
     for (const key of keys) if (object && object[key] !== undefined && object[key] !== null) return object[key];
@@ -99,6 +103,81 @@
     if (text !== undefined) node.textContent = textValue(text);
     return node;
   }
+  function hintIdentity(button) { return `${selectedNode}:${nodeEpoch}:${button.dataset.hintKey}`; }
+  function positionTooltip() {
+    if (!tooltipState || $("coverage-tooltip").hidden || !tooltipState.anchor.isConnected) return;
+    const viewport = window.visualViewport, left = viewport?.offsetLeft || 0, top = viewport?.offsetTop || 0;
+    const width = viewport?.width || window.innerWidth, height = viewport?.height || window.innerHeight;
+    const portal = $("coverage-tooltip"), anchor = tooltipState.anchor.getBoundingClientRect();
+    portal.style.maxWidth = `${Math.max(0, width - 24)}px`; portal.style.maxHeight = `${Math.max(0, height - 24)}px`;
+    const box = portal.getBoundingClientRect();
+    portal.style.left = `${Math.max(left + 12, Math.min(anchor.left, left + width - box.width - 12))}px`;
+    const below = anchor.bottom + 8;
+    portal.style.top = `${Math.max(top + 12, Math.min(below + box.height <= top + height - 12 ? below : anchor.top - box.height - 8, top + height - box.height - 12))}px`;
+  }
+  function closeTooltip(restoreFocus = false) {
+    clearTimeout(tooltipHideTimer); tooltipHideTimer = null;
+    const anchor = tooltipState?.anchor; tooltipState = null;
+    $("coverage-tooltip").hidden = true; $("coverage-tooltip-content").textContent = "";
+    if (anchor) { anchor.removeAttribute("aria-describedby"); anchor.setAttribute("aria-expanded", "false"); }
+    if (restoreFocus && anchor?.isConnected) { hintFocusSuppressed = true; anchor.focus({ preventScroll: true }); hintFocusSuppressed = false; }
+  }
+  function showTooltip(button, pinned = false) {
+    clearTimeout(tooltipHideTimer); tooltipHideTimer = null;
+    const key = hintIdentity(button), previous = tooltipState;
+    if (previous && previous.key !== key) closeTooltip();
+    tooltipState = { key, anchor: button, pinned: pinned || (previous?.key === key && previous.pinned), epoch: nodeEpoch };
+    $("coverage-tooltip-content").textContent = button.dataset.hintText || "";
+    $("coverage-tooltip").hidden = false;
+    button.setAttribute("aria-describedby", "coverage-tooltip"); button.setAttribute("aria-expanded", "true");
+    positionTooltip();
+  }
+  function deferTooltipClose() {
+    clearTimeout(tooltipHideTimer);
+    tooltipHideTimer = setTimeout(() => {
+      if (tooltipState && !tooltipState.pinned && document.activeElement !== tooltipState.anchor && !$("coverage-tooltip").matches(":hover")) closeTooltip();
+    }, 180);
+  }
+  function bindHint(button) {
+    if (button.dataset.hintBound === "1") return button;
+    button.dataset.hintBound = "1"; button.setAttribute("aria-expanded", "false");
+    button.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") showTooltip(button); });
+    button.addEventListener("pointerleave", deferTooltipClose);
+    button.addEventListener("focus", () => { if (!hintFocusSuppressed) showTooltip(button); });
+    button.addEventListener("blur", deferTooltipClose);
+    button.addEventListener("click", () => { if (tooltipState?.key === hintIdentity(button) && tooltipState.pinned) closeTooltip(); else showTooltip(button, true); });
+    return button;
+  }
+  function hintButton(key, content, label) {
+    const button = el("button", "hint-button", "?"); button.type = "button";
+    button.dataset.hintKey = key; button.dataset.hintText = content;
+    button.setAttribute("aria-label", `说明：${label}`); return bindHint(button);
+  }
+  function hintLine(className, text, key, content) {
+    const line = el("div", className); line.append(el("span", "", text), hintButton(key, content, text)); return line;
+  }
+  function syncTooltip(focusedKey = null) {
+    const buttons = [...document.querySelectorAll("[data-hint-key]")];
+    if (tooltipState) {
+      const replacement = buttons.find((button) => hintIdentity(button) === tooltipState.key);
+      if (!replacement || tooltipState.epoch !== nodeEpoch) closeTooltip();
+      else { tooltipState.anchor = replacement; replacement.setAttribute("aria-expanded", "true"); replacement.setAttribute("aria-describedby", "coverage-tooltip"); $("coverage-tooltip-content").textContent = replacement.dataset.hintText || ""; positionTooltip(); }
+    }
+    if (focusedKey) { hintFocusSuppressed = true; buttons.find((button) => hintIdentity(button) === focusedKey)?.focus({ preventScroll: true }); hintFocusSuppressed = false; }
+  }
+  function closeHelp(restoreFocus = true) {
+    closeTooltip();
+    if ($("help-panel").open) $("help-panel").close();
+    $("help-toggle").setAttribute("aria-expanded", "false");
+    const focus = helpReturnFocus; helpReturnFocus = null;
+    if (restoreFocus && focus?.isConnected) focus.focus({ preventScroll: true });
+  }
+  function openHelp() {
+    if (!authenticated) return;
+    closeTooltip(); helpReturnFocus = document.activeElement;
+    display("help-node-name", `${nodeName()}（${selectedNode}）`);
+    $("help-panel").showModal(); $("help-toggle").setAttribute("aria-expanded", "true"); $("help-close").focus();
+  }
   function notice(message, error = false) {
     $("notice").hidden = !message;
     $("notice").classList.toggle("error", error);
@@ -109,6 +188,7 @@
     $("auth-message").classList.toggle("error", error);
   }
   function showAuth(message) {
+    closeHelp(false);
     authenticated = false;
     online = false;
     stopTimers();
@@ -250,7 +330,9 @@
   }
   async function switchNode(id, force = false) {
     if (busy || (!force && id === selectedNode)) return false;
+    closeTooltip();
     selectedNode = id; nodeEpoch += 1; statusGeneration += 1; pollSerial += 1; polling = false;
+    display("help-node-name", `${nodeName()}（${selectedNode}）`);
     updateDownloadLinks();
     status = null; online = false; lastPoll = null; requestItems = []; latestRequestItems = [];
     pendingDeletion = null; retryNodeEpoch = null;
@@ -413,7 +495,8 @@
     const facts = el("div", "stock-runtime-facts");
     const sourceError = objectValue(runtime.source_error_page);
     const displayReason = first(runtime, ["display_reason", "reason"]);
-    if (displayReason) facts.append(el("p", "stock-runtime-reason", displayReason));
+    const issue = runtime.active_halt || ["blocked", "error"].includes(runtime.state) || runtime.network_retry;
+    if (displayReason && issue) facts.append(el("p", "stock-runtime-reason", displayReason));
     if (Object.keys(sourceError).length) appendSourceErrorURLs(facts, sourceError);
     const retry = objectValue(runtime.network_retry), target = first(runtime, ["current", "current_target", "target"]);
     const parts = [stockInFlight(runtime) ? "本股请求中" : runtimeProbe(runtime) ? "单次探测已安排" : states[runtime.state] || runtime.state];
@@ -421,7 +504,8 @@
     const due = first(runtime, ["next_request_at", "next_due_at", "next_due"], retry.retry_at);
     if (due) parts.push(`${runtimeProbe(runtime) ? "探测" : retry.kind ? "重试" : "最早请求"} ${time(due)}`);
     if (retry.kind) parts.push(`${outcomes[retry.kind] || "网络异常"} · 连续 ${number(retry.attempt)} 次`);
-    facts.append(el("p", "field-note", parts.filter(Boolean).join(" · ")));
+    const runtimeLine = parts.filter(Boolean).join(" · ");
+    facts.append(displayReason && !issue && displayReason !== states[runtime.state] ? hintLine("field-note compact-fact", runtimeLine, `${taskKey(runtime.stock, runtime.job)}:runtime`, displayReason) : el("p", "field-note", runtimeLine));
     if (detached) facts.append(el("p", "coverage-gap", `原任务 #${runtime.job} 已移除或归档。仅保留原阻断目标的单次探测，不恢复旧采集队列。`));
     if (runtime.active_halt) {
       const details = el("details", "stock-evidence"), key = taskKey(runtime.stock, runtime.job);
@@ -464,14 +548,14 @@
     fields.append(modeLabel, mode);
     const suggestedEndpoint = proxy.suggested_endpoint || `http://host.docker.internal:${proxy.suggested_port || 17890}`;
     const address = input("endpoint", "本股 HTTP 代理端点", "url", suggestedEndpoint);
-    const endpointHelp = el("p", "field-note", "填写采集节点可访问的 HTTP/mixed 地址。Mac Docker 用 host.docker.internal；原生程序可用 127.0.0.1。Mihomo 为每股使用不同端口，避开日常 7897 端口。");
+    const endpointHelp = hintLine("field-note compact-fact", "采集节点可达的地址", `${key}:proxy-address`, "填写采集节点可访问的 HTTP/mixed 地址。Mac Docker 用 host.docker.internal；原生程序可用127.0.0.1。Mihomo 每股使用不同端口，避开日常7897端口。");
     const httpFields = el("div", "task-http-fields"); httpFields.append(address.wrap, endpointHelp); fields.append(httpFields);
     const outbound = input("outbound", "Mihomo 节点名", "text", "填写 Mihomo 配置里的具体节点完整名称"), listen = input("listen_address", "监听地址", "text", "127.0.0.1 或 0.0.0.0");
-    const mihomoFields = el("div", "task-mihomo-fields"); mihomoFields.append(outbound.wrap, listen.wrap, el("p", "field-note", "保存后下载下方私密分流配置。Clash Verge 在“订阅 → 全局扩展脚本”粘贴并保存；已有自定义脚本时须合并 main 中的采集监听逻辑，保留原逻辑。每个入口绑定具体节点，不切换日常 GLOBAL；节点名不同不证明公网 IP 不同。Docker 访问宿主时监听需接受容器连接，认证由程序生成。")); fields.append(mihomoFields);
+    const mihomoFields = el("div", "task-mihomo-fields"); mihomoFields.append(outbound.wrap, listen.wrap, hintLine("field-note compact-fact", "加载分流配置", `${key}:mihomo`, "保存后下载私密分流配置，在Clash Verge“订阅 → 全局扩展脚本”中合并并保存。已有逻辑须保留。每个入口绑定具体节点，不切换日常GLOBAL；不同节点名不保证不同公网IP。Docker宿主监听需接受容器连接，认证由程序生成。")); fields.append(mihomoFields);
     const authFields = el("div", "task-auth-fields proxy-grid");
     const user = input("username", "代理用户名", "text", settings.has_auth ? "已保存，留空保留" : "可选"), password = input("password", "代理密码", "password", settings.has_auth ? "已保存，留空保留" : "可选");
     const clear = input("clear_auth", "明确移除旧 HTTP 认证", "checkbox"); clear.wrap.classList.add("task-auth-clear"); authFields.append(user.wrap, password.wrap, clear.wrap); fields.append(authFields);
-    const note = el("p", "field-note", runtime?.detached ? "这是已移除或归档的原任务出口，仅供原失败目标的单次探测。保存不会恢复旧采集队列，不清除原阻断或冷却；其他股票状态不变。" : "保存前只暂停本股并等待本股请求结束；保存后仍暂停。其他股票继续按节点全局间隔采集。出口配置不清除本股原阻断或冷却。");
+    const note = hintLine("field-note compact-fact", runtime?.detached ? "原任务出口 · 仅供探测" : "保存后本股暂停", `${key}:proxy-save`, runtime?.detached ? "这是已移除或归档的原任务出口，仅供原失败目标单次探测。保存不会恢复旧队列，不清除原阻断或冷却；其他股票不变。" : "保存前只暂停本股并等待本股请求结束；保存后仍暂停。其他股票按节点全局间隔继续。出口配置不清除本股原阻断或冷却。");
     const actions = el("div", "task-proxy-actions"), save = el("button", "button secondary small", "保存本股出口"), reset = el("button", "button quiet small", "撤销修改"); save.type = "submit"; reset.type = "button"; reset.hidden = !draft.dirty;
     actions.append(save, reset); fields.append(actions); form.append(fields, note);
     const error = el("p", "page-error"); error.hidden = true; error.setAttribute("role", "status"); form.append(error);
@@ -533,7 +617,7 @@
     const form = el("form", "start-page-form"), fields = el("fieldset"); fields.dataset.startPageFields = String(stock); fields.dataset.stockJob = String(runtime.job);
     const label = el("label", "", "从源页码开始"), input = el("input"); input.id = `start-page-${stock}-${runtime.job}`; input.type = "number"; input.min = "1"; input.step = "1"; input.inputMode = "numeric"; input.required = true; input.value = draft.page; label.htmlFor = input.id;
     const save = el("button", "button secondary small", "暂停本股并保存"), cancel = el("button", "button quiet small", "关闭"); save.type = "submit"; cancel.type = "button";
-    const actions = el("div", "start-page-actions"); actions.append(input, save, cancel); fields.append(label, actions); form.append(fields, el("p", "field-note", "只设置本股顺序采集入口；其他股票继续。保存后本股暂停，点击“采集”才请求该页。手动跳页不表示此前页面已采集，也不证明窗口上界完整。"));
+    const actions = el("div", "start-page-actions"); actions.append(input, save, cancel); fields.append(label, actions); form.append(fields, hintLine("field-note compact-fact", "保存后暂停 · 上界未核实", `${key}:start-page`, "只设置本股顺序采集入口，其他股票继续。保存后点击本股“采集”才请求该页；手动跳页不表示此前页面已采集，也不证明窗口上界完整。"));
     const error = el("p", "page-error"); error.hidden = true; error.setAttribute("role", "status"); form.append(error);
     input.addEventListener("input", () => { draft.page = input.value; draft.dirty = true; error.hidden = true; });
     form.addEventListener("submit", async (event) => {
@@ -1022,6 +1106,7 @@
     if (!Array.isArray(items)) items = [];
     const list = $("coverage-list");
     const focused = document.activeElement;
+    const focusedHintKey = focused?.dataset?.hintKey ? hintIdentity(focused) : null;
     const existingPanels = new Map([...list.querySelectorAll("[data-task-proxy-key]")].filter((panel) => taskProxyDrafts.get(panel.dataset.taskProxyKey)?.dirty || panel.contains(focused)).map((panel) => [panel.dataset.taskProxyKey, panel]));
     const existingStartPanels = new Map([...list.querySelectorAll("[data-start-page-key]")].filter((panel) => startPageDrafts.get(panel.dataset.startPageKey)?.dirty || panel.contains(focused)).map((panel) => [panel.dataset.startPageKey, panel]));
     const detachedRuntimes = Array.isArray(data.detached_stock_runtimes) ? data.detached_stock_runtimes : [];
@@ -1032,12 +1117,13 @@
     list.replaceChildren();
     if (!items.length && config && Array.isArray(config.stocks)) items = config.stocks.map((stock) => ({ stock, status: "pending" }));
     display("coverage-count", items.length ? `${items.length} 只股票 · 覆盖未确认` : "未配置");
-    display("stock-controls-note", independentStocks(data) ? "各股独立采集、暂停、探测和出口；一个股票被拦截不会暂停其他股票。节点仍串行请求，共用全局请求间隔。" : "所选节点尚不支持逐股状态与控制，请更新该节点和主控。卡片按钮不会回退为全局命令。");
+    display("stock-controls-note", independentStocks(data) ? "逐股独立控制 · 节点统一请求间隔" : "节点需升级：逐股控制不可用");
     if (!items.length) list.append(el("div", "empty-state", "保存股票和日期窗口后，这里会显示覆盖进度。"));
     for (const item of items) {
       const stock = first(item, ["stock", "stock_code", "bar_code", "code"], "未知代码");
       const seek = windowSeekInfo(data, stock, item);
       const runtime = independentStocks(data) ? item.runtime : null;
+      const hintKey = taskKey(stock, runtime?.job ?? data.job?.id);
       const state = runtime?.state || first(item, ["status", "state", "stop_reason"], Number(item.pages || item.list_pages) > 0 ? data.state === "running" ? "running" : "paused" : "pending");
       const complete = item.date_boundary_reached && item.details_complete && !item.gaps?.length;
       const gaps = first(item, ["gaps", "gap", "coverage_gap"]);
@@ -1067,14 +1153,14 @@
       if (requestedFrom || requestedTo) row.append(el("p", "field-note", `目标窗口：${requestedFrom || "—"} 至 ${requestedTo || "—"}`));
       const windowScoped = Object.hasOwn(item, "post_time_range");
       const postRange = objectValue(item.post_time_range);
-      row.append(el("div", "coverage-range", windowScoped ? postRange.earliest || postRange.latest ? `窗口内帖子：${dateOnly(postRange.earliest)} 至 ${dateOnly(postRange.latest)}` : "尚未取得窗口内帖子。" : "旧节点尚未提供窗口内帖子时间范围。"));
+      row.append(hintLine("coverage-range compact-fact", windowScoped ? postRange.earliest || postRange.latest ? `窗口内帖子：${dateOnly(postRange.earliest)} 至 ${dateOnly(postRange.latest)}` : "窗口内帖子：尚未取得" : "旧节点：窗口统计未核实", `${hintKey}:window`, windowScoped ? "只统计发布时间符合当前目标窗口的已发现帖子；日期范围不证明其中每一页已采集。" : "旧节点没有按当前窗口核对帖子时间范围，请升级节点。其历史记录仍保留。"));
       const navigation = objectValue(item.navigation_time_range);
       const navigationEarliest = first(navigation, ["earliest"], windowScoped ? null : first(item, ["earliest_publish_time", "earliest_published_at", "earliest", "min_published_at", "oldest"]));
       const navigationLatest = first(navigation, ["latest"], windowScoped ? null : first(item, ["latest_publish_time", "latest_published_at", "latest", "max_published_at", "newest"]));
-      if (navigationEarliest || navigationLatest) row.append(el("p", "stock-recovery", `${windowScoped ? "定位／列表观察" : "列表观察（旧节点口径）"}：${dateOnly(navigationEarliest)} 至 ${dateOnly(navigationLatest)} · 不代表采集覆盖`));
+      if (navigationEarliest || navigationLatest) row.append(hintLine("coverage-range compact-fact", `${windowScoped ? "导航观察" : "列表观察（旧口径）"}：${dateOnly(navigationEarliest)} 至 ${dateOnly(navigationLatest)}`, `${hintKey}:navigation`, "这是定位和列表页见到的日期，可能超出目标窗口；仅用于导航和核对，不表示该范围已完整采集。"));
       const forward = objectValue(item.forward_time_range);
-      if (forward.earliest || forward.latest) row.append(el("p", "stock-recovery", `顺序列表页观察：${dateOnly(forward.earliest)} 至 ${dateOnly(forward.latest)} · 页面可能跨越目标窗口`));
-      if (seek) row.append(el("p", "stock-recovery", windowSeekDescription(seek, state)));
+      if (forward.earliest || forward.latest) row.append(hintLine("coverage-range compact-fact", `顺序页观察：${dateOnly(forward.earliest)} 至 ${dateOnly(forward.latest)}`, `${hintKey}:forward`, "顺序列表页可能跨越目标窗口边界；窗口内帖子数量和时间仍按配置日期过滤。"));
+      if (seek) row.append(hintLine(`stock-recovery compact-fact${seek.phase === "error" ? " coverage-gap" : ""}`, windowSeekCompact(seek, state), `${hintKey}:seek`, windowSeekDescription(seek, state)));
       const counters = el("div", "coverage-counts");
       const pages = first(item, ["list_pages", "pages", "pages_completed"]);
       const details = objectValue(item.details);
@@ -1083,13 +1169,16 @@
       const listOnly = first(details, ["list_only"], first(item, ["list_only"]));
       const posts = first(details, ["observed"], first(item, ["unique_posts", "posts", "total_posts"], required == null || listOnly == null ? null : Number(required) + Number(listOnly)));
       const pending = first(item, ["pending", "pending_details"], first(details, ["pending"]));
-      const summary = el("div", "post-summary"); summary.append(el("strong", "", `${windowScoped ? "已发现窗口内帖子" : "帖子记录（旧节点口径）"} ${number(posts)}`));
+      const summary = el("div", "post-summary"), postTotal = el("strong", "", `${windowScoped ? "窗口内帖子" : "帖子记录（旧口径）"} ${number(posts)}`);
+      postTotal.append(hintButton(`${hintKey}:posts`, windowScoped ? "包含定位采样和顺序采集发现的窗口内帖子，不代表连续覆盖。一条帖子保留标题，详情补到同一条记录，不另计帖子。" : "旧节点统计尚未核对当前窗口。一条帖子对应同一条标题／正文记录。", "帖子统计")); summary.append(postTotal);
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", bodies], ["待补详情", pending], ["未触发补详情", listOnly]]) subsets.append(el("span", "", `${label} ${number(value)}`));
-      summary.append(subsets, el("p", "post-record-note", windowScoped ? "含定位采样与顺序采集发现的窗口内帖子，不代表连续覆盖。每条帖子保留标题，详情补到同一条帖子。" : "旧节点统计尚未核对当前窗口。每条帖子保留标题，详情补到同一条帖子。")); row.append(summary);
-      if (Number(item.excluded_posts) > 0) row.append(el("p", "field-note activity-detail", `另有 ${number(item.excluded_posts)} 条历史记录因不在当前窗口或发布时间无法核实，已从本任务统计排除。记录仍保留，节点导出范围不变。`));
+      subsets.append(hintButton(`${hintKey}:details`, "这些数量都是帖子总数的子集。默认仅标准帖子标题去首尾空白后至少40字符才补详情；未触发补详情不代表完整正文。", "详情数量"));
+      summary.append(subsets); row.append(summary);
+      if (Number(item.excluded_posts) > 0) row.append(hintLine("field-note compact-fact", `窗口外／未核实时间 ${number(item.excluded_posts)} 条`, `${hintKey}:excluded`, "这些历史记录不在当前窗口，或发布时间无法核实，已从本任务统计排除。记录仍保留，节点导出范围不变。"));
       const counts = [["前进列表", pages], ["原始列表观察行", first(item, ["rows"])]];
       counts.forEach(([label, value]) => counters.append(el("span", "", `${label} ${number(value)}`)));
+      counters.append(hintButton(`${hintKey}:pages`, "前进列表只计顺序采集页，定位和校准请求另计。列表观察行含重复观察，不能与独立帖子数量等同。", "列表观察计数"));
       row.append(counters);
       if (required != null && bodies != null && Number(required) > 0) {
         const bar = el("div", "coverage-progress");
@@ -1106,8 +1195,11 @@
       };
       const gapText = Array.isArray(gaps) ? gaps.filter(Boolean).map(describeGap).join("；") : describeGap(gaps);
       const reason = first(item, ["reason", "message"]);
-      if (gapText || reason || ["exhausted", "source_exhausted"].includes(state)) row.append(el("p", "coverage-gap", gapText || reason || "源数据已到尾。目标窗口是否有未覆盖历史，请核对保留证据。"));
-      if (item.recovery) row.append(el("div", "stock-recovery", recoveryDescription(item.recovery)));
+      if (gapText || reason || ["exhausted", "source_exhausted"].includes(state)) {
+        const explanation = gapText || reason || "源数据已到尾。目标窗口是否有未覆盖历史，请核对保留证据。";
+        row.append(hintLine("coverage-gap compact-fact", explanation.length > 90 ? explanation.slice(0, 90) + "…" : explanation, `${hintKey}:gaps`, explanation));
+      }
+      if (item.recovery) row.append(hintLine(`stock-recovery compact-fact${["error", "blocked"].includes(item.recovery.phase) ? " coverage-gap" : ""}`, recoveryCompact(item.recovery), `${hintKey}:recovery`, recoveryDescription(item.recovery)));
       if (runtime) appendTaskProxy(row, item, stock, runtime, existingPanels);
       list.append(row);
     }
@@ -1118,7 +1210,8 @@
       appendTaskProxy(row, { task_proxy: runtime.task_proxy }, runtime.stock, runtime, existingPanels); list.append(row);
     }
     updateStockControls();
-    if (focused?.isConnected && document.activeElement !== focused) focused.focus({ preventScroll: true });
+    if (focused?.isConnected && document.activeElement !== focused && !focusedHintKey) focused.focus({ preventScroll: true });
+    syncTooltip(focusedHintKey);
   }
   function windowSeekInfo(data, stock, item) {
     if (item.window_seek && typeof item.window_seek === "object") return item.window_seek;
@@ -1140,6 +1233,12 @@
     if (failed && info.error) facts.push(textValue(info.error));
     else if (reason) facts.push(reasons[reason] || textValue(reason));
     return facts.join(" · ");
+  }
+  function windowSeekCompact(info, state) {
+    if (info.manual_direct === true || info.navigation_mode === "manual_direct" || info.manual === true || Number(info.manual_start_page) > 0 || info.completion_reason === "manual_start_page" || info.reason === "manual_start_page") return `手动入口${info.manual_start_page || info.start_page || info.current_page ? " · 第 " + number(info.manual_start_page || info.start_page || info.current_page) + " 页" : ""} · 上界未核实`;
+    if (info.phase === "error") return `定位异常${info.error ? "：" + textValue(info.error).slice(0, 80) : ""}`;
+    if (info.phase === "complete") return `日期定位完成${info.start_page == null ? "" : " · 入口第 " + number(info.start_page) + " 页"}`;
+    return `${state === "running" ? "日期定位中" : "日期定位待继续"}${info.current_page == null ? "" : " · 第 " + number(info.current_page) + " 页"}`;
   }
   const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", verify_frontier: "检查末次前进页", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
   const recoveryReasons = { process_restart: "进程重启后检查列表位置", manual_resume: "暂停恢复后检查列表位置", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后检查列表位置", list_delay_recheck: "距上次列表已达校准间隔", periodic_recheck: "定期检查列表位置", forward_no_progress: "前进列表没有新增 ID，重新定位", source_count_decrease: "来源计数下降，核对局部区间", forward_time_shift: "前进页时间发生偏移，核对局部区间", nonstandard_page_recheck: "页面锚点不能直接确认，核对局部区间", terminal_recheck: "到达日期或来源尾页边界，核对局部区间", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
@@ -1168,6 +1267,12 @@
     if (info.fallback_reason) facts.push("转为区间校准：" + textValue(info.fallback_reason));
     if (Number(info.resume_count) > 0) facts.push(`本轮按保存断点恢复 ${number(info.resume_count)} 次`);
     if (recoveryProof(info)) facts.push(recoveryProof(info));
+    return facts.join(" · ");
+  }
+  function recoveryCompact(info) {
+    const phase = first(info, ["phase"], "pending"), facts = [recoveryPhases[phase] || phase];
+    if (info.current_page != null) facts.push(`第 ${number(info.current_page)} 页`);
+    if (phase === "error" && (info.error || info.reason)) facts.push(textValue(info.error || info.reason).slice(0, 80));
     return facts.join(" · ");
   }
   function renderRecovery(data) {
@@ -1648,6 +1753,29 @@
       event.preventDefault(); void downloadPosts(scope, format);
     });
   }
+  $("help-toggle").addEventListener("click", openHelp);
+  $("help-close").addEventListener("click", () => closeHelp());
+  $("help-panel").addEventListener("cancel", (event) => { event.preventDefault(); closeHelp(); });
+  $("help-panel").addEventListener("close", () => {
+    $("help-toggle").setAttribute("aria-expanded", "false");
+    const focus = helpReturnFocus; helpReturnFocus = null;
+    if (focus?.isConnected && authenticated) focus.focus({ preventScroll: true });
+  });
+  $("help-panel").addEventListener("click", (event) => {
+    if (event.target !== $("help-panel")) return;
+    const box = $("help-panel").getBoundingClientRect();
+    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeHelp();
+  });
+  $("coverage-tooltip").addEventListener("pointerenter", () => { clearTimeout(tooltipHideTimer); tooltipHideTimer = null; });
+  $("coverage-tooltip").addEventListener("pointerleave", deferTooltipClose);
+  document.querySelectorAll("[data-hint-key]").forEach(bindHint);
+  document.addEventListener("pointerdown", (event) => { if (tooltipState && !$("coverage-tooltip").contains(event.target) && !tooltipState.anchor.contains(event.target)) closeTooltip(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && tooltipState) { event.preventDefault(); closeTooltip(true); } });
+  document.addEventListener("focusin", (event) => { if (tooltipState && !$("coverage-tooltip").contains(event.target) && !tooltipState.anchor.contains(event.target)) closeTooltip(); });
+  window.addEventListener("resize", positionTooltip);
+  window.addEventListener("scroll", positionTooltip, { capture: true, passive: true });
+  window.visualViewport?.addEventListener("resize", positionTooltip);
+  window.visualViewport?.addEventListener("scroll", positionTooltip);
   $("refresh").addEventListener("click", () => { void poll(); });
   for (const kind of ["requests", "events"]) for (const action of ["prev", "next", "latest"]) $(`${kind}-${action}`).addEventListener("click", () => { void loadActivity(kind, action); });
   function switchTab(requests) {
