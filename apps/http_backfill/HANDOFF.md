@@ -50,6 +50,16 @@ frontiers/recovery payloads, individual halt pointers/evidence/due, console toke
 instance UUID and current job. Local update sent no source requests. Other nodes
 were not updated; use the existing git pull && docker compose up -d --build.
 
+Subsequent explicit deployment to36.138.125.17: upgraded clean ce7d30f to89e61fd
+by incremental Git bundle and the existing Docker Compose build. Docker healthy,
+restarts0; local/public health ok and deployed core/runtime/H5 hashes match.
+Before/after preserve7922 posts,972 requests,17840 observations, UUID/token/job,
+job/config revisions, all frontier/recovery payloads and individual halt/due
+facts; node cooldown did not decrease. Source challenge request972 (600312)
+restores the node barrier. Current601888 recovery594 and688676 detail94 retain
+their original halts. No pending/in-flight probe or added source request; no
+stock automatically resumed. Temporary transfer/snapshot files were removed.
+
 ## Previous change: narrow moving-page boundaries and stock target ownership
 
 User reports stock002463 repeatedly calibrating on the local collector; the
