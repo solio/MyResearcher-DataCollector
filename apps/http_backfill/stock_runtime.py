@@ -21,6 +21,7 @@ STOCK_KEYS = frozenset({
     "proxy_control_generation", "last_proxy_error",
 })
 BLOCKED_KINDS = frozenset({"challenge", "http_401", "http_403", "http_407", "http_429"})
+SOURCE_AUTH_KINDS = frozenset({"challenge", "http_401", "http_403", "http_407"})
 
 
 def _json(value):
@@ -35,6 +36,130 @@ def _iso(epoch):
 
 
 class StockRuntimeMixin:
+    def _node_source_auth_barrier(self):
+        value = self._get_global("node_source_auth_barrier")
+        return value if isinstance(value, dict) else None
+
+    def _cancel_node_auth_probe(self, scope=None):
+        barrier = self._node_source_auth_barrier()
+        permit = (barrier or {}).get("manual_probe")
+        # A request already sent remains evidence when it returns. Cancellation
+        # prevents only a queued permission from turning into another request.
+        if (isinstance(permit, dict) and permit.get("state") == "queued"
+                and (scope is None or (permit.get("job"), permit.get("stock")) == scope)):
+            barrier["manual_probe"] = None
+            self._set_global("node_source_auth_barrier", barrier)
+            owner = (permit.get("job"), permit.get("stock"))
+            payload = self._stock_runtime(*owner)
+            payload.update(probe=False, proxy_auto_probe=False)
+            if payload["state"] == "running":
+                payload["state"] = ("blocked" if self._runtime_blocked(payload) else "error") if payload["active_halt"] else "paused"
+                payload["reason"] = (payload["block_evidence"] or {}).get("reason") if payload["active_halt"] else "人工探测已取消；节点停止保留"
+                if payload["segment_id"] is not None:
+                    self.db.execute("UPDATE run_segments SET ended=?,stop_reason='node_auth_probe_cancelled' WHERE id=? AND ended IS NULL",
+                                    (self.clock(), payload["segment_id"]))
+            self._save_stock_runtime(*owner, payload)
+            self._stock_event(*owner, "node_auth_probe_cancelled", "尚未发送的人工探测已取消；节点停止保留",
+                              {"task_id": permit.get("task_id")})
+
+    def _node_auth_probe_matches(self, scope, task=None):
+        barrier = self._node_source_auth_barrier()
+        if not barrier:
+            return True
+        permit = barrier.get("manual_probe") or {}
+        return (permit.get("state") == "queued" and scope is not None
+                and (permit.get("job"), permit.get("stock")) == scope
+                and (task is None or (task["job"], task["stock"], task["id"]) ==
+                     (permit.get("job"), permit.get("stock"), permit.get("task_id"))))
+
+    def _stop_stocks_for_node_auth(self):
+        rows = self.db.execute("SELECT job,stock,payload FROM stock_runtime").fetchall()
+        for row in rows:
+            payload = self._stock_runtime(row["job"], row["stock"])
+            if payload["state"] == "running" or payload["probe"]:
+                if payload["active_halt"]:
+                    payload["state"] = "blocked" if self._runtime_blocked(payload) else "error"
+                    payload["reason"] = (payload["block_evidence"] or {}).get("reason") or "原阻断尚未解除"
+                else:
+                    payload.update(state="paused", reason="同节点出现验证码或身份核验，已暂停", resume_recovery=True)
+                if payload["segment_id"] is not None:
+                    self.db.execute("UPDATE run_segments SET ended=?,stop_reason='node_source_auth' WHERE id=? AND ended IS NULL",
+                                    (self.clock(), payload["segment_id"]))
+            payload.update(probe=False, proxy_auto_suspended=True, proxy_auto_probe=False,
+                           proxy_control_generation=(payload["proxy_control_generation"] or 0) + 1)
+            self._save_stock_runtime(row["job"], row["stock"], payload)
+
+    def _stop_node_for_source_auth(self, kind, reason, evidence, request):
+        if kind not in SOURCE_AUTH_KINDS:
+            return
+        barrier = self._node_source_auth_barrier()
+        first = barrier is None
+        if first:
+            barrier = {"kind": kind, "reason": reason, "job": request["job"],
+                       "stock": request["stock"], "task_id": request["task"],
+                       "request_id": evidence["id"], "created": self.clock(),
+                       "block_evidence": evidence, "manual_probe": None}
+        else:
+            barrier["manual_probe"] = None
+        self._set_global("node_source_auth_barrier", barrier)
+        self._stop_stocks_for_node_auth()
+        if first:
+            self._stock_event(request["job"], request["stock"], "node_source_auth_stopped",
+                              "验证码或身份核验：本节点后续来源请求已停止",
+                              {"request_id": evidence["id"], "task_id": request["task"], "kind": kind})
+
+    def _init_node_source_auth_barrier(self):
+        barrier = self._node_source_auth_barrier()
+        if not barrier:
+            # Upgrade observes the entire serialized source ledger, not just
+            # whichever stock happens to be selected in the current job.
+            for row in self.db.execute("SELECT * FROM requests WHERE outcome='access_block' OR "
+                                       "(outcome='proxy_error' AND http_status=407 AND network_attempted=1) ORDER BY id DESC"):
+                analysis = json.loads(row["analysis"]) if row["analysis"] else {}
+                if analysis.get("proxy_error") and not (row["http_status"] == 407
+                        and row["network_attempted"] == 1 and analysis.get("proxy_error") == "proxy_auth"):
+                    continue
+                kind = "challenge" if analysis.get("challenge") else "http_" + str(row["http_status"])
+                if kind not in SOURCE_AUTH_KINDS:
+                    continue
+                success = self.db.execute("SELECT 1 FROM requests WHERE id>? AND outcome IN ('real_data','detail_unavailable') LIMIT 1",
+                                          (row["id"],)).fetchone()
+                if not success:
+                    evidence = {key: row[key] for key in ("id", "url", "http_status", "raw_ref", "sha256", "started", "finished")}
+                    evidence.update(analysis=analysis, kind=kind, reason=row["error"] or "来源要求验证码或身份核验",
+                                    server_blacklist="unproven")
+                    self._stop_node_for_source_auth(kind, evidence["reason"], evidence, row)
+                break
+        else:
+            # A persisted stop is stronger than later individual probe errors.
+            # Restart never revives a queued or interrupted manual permission.
+            barrier["manual_probe"] = None
+            self._set_global("node_source_auth_barrier", barrier)
+            self._stop_stocks_for_node_auth()
+        self._set_global("node_source_auth_barrier_version", 1)
+
+    def _clear_node_auth_after_manual_success(self, rid, probe):
+        barrier = self._node_source_auth_barrier()
+        permit = (barrier or {}).get("manual_probe") or {}
+        if not probe or permit.get("state") != "dispatched" or permit.get("request_id") != rid:
+            return
+        row = self.db.execute("SELECT job,stock,task,outcome,probe FROM requests WHERE id=?", (rid,)).fetchone()
+        if (not row or not row["probe"] or row["outcome"] not in {"real_data", "detail_unavailable"}
+                or (row["job"], row["stock"], row["task"]) !=
+                   (permit.get("job"), permit.get("stock"), permit.get("task_id"))):
+            return
+        self._set_global("node_source_auth_barrier", None)
+        self._stock_event(row["job"], row["stock"], "node_source_auth_cleared",
+                          "人工单次探测取得有效来源响应；节点停止已解除，各股票保持暂停或原阻断",
+                          {"request_id": rid, "stopped_request_id": barrier.get("request_id")})
+
+    def _finish_node_auth_probe(self, rid):
+        barrier = self._node_source_auth_barrier()
+        permit = (barrier or {}).get("manual_probe") or {}
+        if permit.get("state") == "dispatched" and permit.get("request_id") == rid:
+            barrier["manual_probe"] = None
+            self._set_global("node_source_auth_barrier", barrier)
+
     @staticmethod
     def _stock_key(key):
         return key in STOCK_KEYS
@@ -211,6 +336,7 @@ class StockRuntimeMixin:
             self._set_global("stock_runtime_version", 1)
             self._set_global("stock_runtime_schema", 1)
             self._stock_runtime_ready = True
+            self._init_node_source_auth_barrier()
             for job, stock in scopes:
                 with self._stock_context(stock, job):
                     if not self._get("active_halt") and self._get("state") != "completed":
@@ -288,6 +414,8 @@ class StockRuntimeMixin:
 
     def start(self, stock=None, *, job=None):
         with self._mutex:
+            if self._node_source_auth_barrier():
+                raise RuntimeError("本节点遇到验证码或身份核验；请先选择一只股票人工单次探测")
             if self._get_global("legacy_stock_halt_barrier"):
                 raise RuntimeError("旧阻断目标缺失，须恢复原目标证据后继续")
             scopes = [self._resolve_stock_scope(stock, job)] if stock is not None or self._stock_scope() else self._current_stock_scopes()
@@ -315,6 +443,8 @@ class StockRuntimeMixin:
 
     def retry(self, stock=None, *, job=None, automatic=False):
         with self._mutex:
+            if self._node_source_auth_barrier() and stock is None and not self._stock_scope():
+                raise RuntimeError("本节点已停止来源请求；请在股票卡片上选择一只股票单次探测")
             if self._get_global("legacy_stock_halt_barrier"):
                 raise RuntimeError("旧阻断目标缺失，不能猜测单次探测目标")
             if stock is not None or self._stock_scope():
@@ -337,9 +467,10 @@ class StockRuntimeMixin:
                     or self._get_global("legacy_stock_halt_barrier")):
                 return {"attempted": False}
             scopes = self._current_stock_scopes()
-            for scope in scopes:
-                with self._stock_context(scope[1], scope[0]):
-                    self._maybe_proxy_recovery()
+            if not self._node_source_auth_barrier():
+                for scope in scopes:
+                    with self._stock_context(scope[1], scope[0]):
+                        self._maybe_proxy_recovery()
             # Detached targets participate only after an explicit one-shot probe.
             scopes += [(r["job"], r["stock"]) for r in self._stock_runtimes(include_detached=True)
                        if r["detached"] and r["probe"] and r["state"] == "running"]
@@ -353,6 +484,7 @@ class StockRuntimeMixin:
             with self._mutex:
                 runtime = self._stock_runtime(*scope)
                 if (runtime["state"] != "running" or runtime["active_halt"] and not runtime["probe"]
+                        or self._node_source_auth_barrier() and (not runtime["probe"] or not self._node_auth_probe_matches(scope))
                         or self.clock() < (runtime["next_due"] or 0)):
                     continue
                 with self.db:
@@ -376,6 +508,8 @@ class StockRuntimeMixin:
             node_due = self._get_global("node_next_due", 0) or 0
             eligible = [runtime for runtime in self._stock_runtimes(include_detached=True)
                         if runtime["state"] == "running" and (not runtime["active_halt"] or runtime["probe"])
+                        and (not self._node_source_auth_barrier() or runtime["probe"]
+                             and self._node_auth_probe_matches((runtime["job"], runtime["stock"])))
                         and (not runtime["detached"] or runtime["probe"])]
             if not eligible:
                 return 0.5
@@ -386,10 +520,13 @@ class StockRuntimeMixin:
         active = self._stock_runtimes()
         detached = [r for r in self._stock_runtimes(include_detached=True) if r["detached"]]
         barrier, storage = self._get_global("legacy_stock_halt_barrier"), self._get_global("storage_halt")
+        source_barrier = self._node_source_auth_barrier()
         running = [r for r in active + detached if r["state"] == "running"]
         blocked = [r for r in active if r["active_halt"]]
         if storage or barrier:
             state, reason = "error", (barrier or {}).get("reason") or "本地存储尚未修复，节点暂停来源请求"
+        elif source_barrier:
+            state, reason = "blocked", "本节点遇到验证码或身份核验；后续请求已停止"
         elif running:
             state, reason = "running", f"{len(running)} 只股票运行；{len(blocked)} 只股票阻断，其余任务独立调度"
         elif active and all(r["state"] == "completed" for r in active):
@@ -406,7 +543,9 @@ class StockRuntimeMixin:
                         "next_request_epoch": max(node_due, runtime["next_due"] or 0),
                         "next_request_at": _iso(max(node_due, runtime["next_due"] or 0))}
             public.append(item)
-            if runtime["state"] == "running" and (not runtime["active_halt"] or runtime["probe"]):
+            if (runtime["state"] == "running" and (not runtime["active_halt"] or runtime["probe"])
+                    and (not source_barrier or runtime["probe"]
+                         and self._node_auth_probe_matches((runtime["job"], runtime["stock"])))):
                 candidate_due = item["next_request_epoch"]
                 if due is None or candidate_due < due:
                     due, current = candidate_due, item["current"]
@@ -415,13 +554,14 @@ class StockRuntimeMixin:
                 "next_request_epoch": due if due is not None else node_due,
                 "next_request_at": _iso(due) if due is not None else None,
                 "last_success": _iso(max(successes)) if successes else None,
-                "active_halt": barrier.get("kind") if barrier else None,
-                "block_evidence": barrier.get("block_evidence") if barrier else None,
+                "active_halt": (barrier or source_barrier or {}).get("kind"),
+                "block_evidence": (barrier or source_barrier or {}).get("block_evidence"),
                 "probe_pending": any(r["probe"] for r in active + detached), "network_retry": None,
                 "stock_runtimes": [r for r in public if not r["detached"]],
                 "detached_stock_runtimes": [r for r in public if r["detached"]],
                 "blocked_stocks": [r["stock"] for r in blocked], "runtime_scope": "stock",
-                "node_next_request_epoch": node_due, "legacy_stock_halt_barrier": barrier}
+                "node_next_request_epoch": node_due, "legacy_stock_halt_barrier": barrier,
+                "node_source_auth_barrier": source_barrier}
 
     def _publish_stock_summary(self):
         summary = self._stock_summary()

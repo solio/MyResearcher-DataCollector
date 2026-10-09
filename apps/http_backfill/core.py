@@ -1330,10 +1330,14 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def _start_one(self):
         with self._mutex:
+            if self._node_source_auth_barrier():
+                raise RuntimeError("本节点遇到验证码或身份核验；请先选择一只股票人工单次探测")
             if self._get("storage_halt"):
                 self._sync_storage()
                 return self.status()
         with self._mutex, self.db:
+            if self._node_source_auth_barrier():
+                raise RuntimeError("本节点遇到验证码或身份核验；请先选择一只股票人工单次探测")
             if self._inflight and (not self._stock_scope() or self._inflight_stock == self._stock_scope()):
                 raise RuntimeError("当前请求尚在执行，请等待其结果保存后继续")
             if not self._config():
@@ -1360,6 +1364,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def _pause_one(self):
         with self._mutex, self.db:
+            self._cancel_node_auth_probe(self._stock_scope())
             self._suspend_proxy_recovery()
             self._set("probe", False)
             self._set("resume_recovery", True)
@@ -1376,6 +1381,12 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._sync_storage()
                 return self.status()
         with self._mutex, self.db:
+            barrier = self._node_source_auth_barrier()
+            if barrier:
+                if automatic:
+                    raise RuntimeError("本节点遇到验证码或身份核验；禁止自动恢复探测")
+                if self._inflight or barrier.get("manual_probe"):
+                    raise RuntimeError("本节点已有一次人工探测执行或排队，请等待结束")
             if (self._inflight and (not self._stock_scope() or self._inflight_stock == self._stock_scope())) or self._get("probe"):
                 raise RuntimeError("请求或单次探测已在执行/排队")
             if self._get("state") == "running":
@@ -1385,6 +1396,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 if self._get("active_halt"):
                     raise RuntimeError("原阻断目标缺失或归属不符；保留阻断，请先恢复原请求证据")
                 raise RuntimeError("没有待请求目标")
+            if barrier and (target["job"], target["stock"]) != self._stock_scope():
+                raise RuntimeError("探测目标归属不符；节点停止保留")
             if not automatic:
                 if self._get("active_halt") in {"source_error", "schema_error"}:
                     info = _source_error_page(target, target["url"])
@@ -1395,6 +1408,10 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._proxy_for_stock().prepare_manual_probe()
             self._set("probe", True)
             self._suspend_proxy_recovery()
+            if barrier:
+                barrier["manual_probe"] = {"state": "queued", "job": target["job"], "stock": target["stock"],
+                                           "task_id": target["id"], "queued": self.clock()}
+                self._set_global("node_source_auth_barrier", barrier)
             self._set("state", "running")
             self._set("reason", "单次探测已排队；遵守原有请求间隔和冷却，结束后暂停")
             self.db.execute("UPDATE jobs SET started=COALESCE(started,?) WHERE id=?", (self.clock(), self._get("job_id")))
@@ -1403,6 +1420,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         return self.status()
 
     def _suspend_proxy_recovery(self):
+        self._cancel_node_auth_probe(self._stock_scope())
         self._set("proxy_auto_suspended", True)
         self._set("proxy_auto_probe", False)
         self._set("proxy_control_generation", self._get("proxy_control_generation", 0) + 1)
@@ -1427,8 +1445,10 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 raise RuntimeError("代理切换无法持久保存，请检查节点数据目录") from None
             self._set("proxy_control_generation", self._get("proxy_control_generation", 0) + 1)
             self._set("proxy_auto_probe", False)
+            self._cancel_node_auth_probe(self._stock_scope())
             self._event("proxy_rotation_requested", "更换下一次来源请求的出口；不改变原冷却和断点")
-            if not self._inflight and self._get("state") in {"blocked", "error"} and not self._get("storage_halt"):
+            if (not self._inflight and self._get("state") in {"blocked", "error"}
+                    and not self._get("storage_halt") and not self._node_source_auth_barrier()):
                 self.retry()
         return self.status()
 
@@ -1436,6 +1456,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         """Only schedule one existing target; never perform network I/O here."""
         with self._mutex, self.db:
             if (self._closed or self._inflight or self._get("storage_halt")
+                    or self._node_source_auth_barrier()
                     or self._get("proxy_auto_suspended", True)
                     or self._get("state") not in {"blocked", "error"}):
                 return
@@ -1499,8 +1520,12 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         with self._mutex, self.db:
             if self._closed or self._inflight or self._get("storage_halt") or self._get("state") != "running":
                 return {"attempted": False}
+            if self._node_source_auth_barrier() and (not self._get("probe")
+                    or not self._node_auth_probe_matches(self._stock_scope())):
+                return {"attempted": False}
             if self._get("active_halt"):
                 if not self._halt_target():
+                    self._cancel_node_auth_probe(self._stock_scope())
                     reason = "原阻断目标缺失或归属不符；保留阻断，未发送探测"
                     if self._get("reason") != reason:
                         self._event("halt_target_missing", reason,
@@ -1516,7 +1541,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     return {"attempted": False}
                 if not self._get("probe", False):
                     return {"attempted": False}
-            if self.clock() < self._get("next_due", 0):
+            if self.clock() < max(self._get("next_due", 0), self._get_global("node_next_due", 0) or 0):
                 return {"attempted": False}
             if self._get("network_retry") and not self._network_retry_target():
                 self._set("network_retry", None)
@@ -1533,11 +1558,31 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 if task and not self._ordinary_task_needed(task):
                     return {"attempted": False}
             if not task:
+                if self._node_source_auth_barrier():
+                    self._cancel_node_auth_probe(self._stock_scope())
+                    self._set("probe", False)
+                    self._set("state", "paused")
+                    self._set("reason", "人工探测目标缺失；本节点停止保留，未发送请求")
+                    self._end_segment("node_auth_probe_target_missing")
+                    return {"attempted": False}
                 self._finish_job()
                 return {"attempted": False}
             if not self._get("probe", False) and not self._get("active_halt"):
                 task = self._prepare_forward_target(task)
             task = dict(task)
+            # The final reservation checks the actual retained target. A queued
+            # permission cannot authorize a replacement created by later edits.
+            barrier = self._node_source_auth_barrier()
+            if barrier and (not self._get("probe") or self._get("proxy_auto_probe")
+                            or not self._node_auth_probe_matches(self._stock_scope(), task)):
+                self._cancel_node_auth_probe(self._stock_scope())
+                self._set("probe", False)
+                self._set("state", "blocked" if self._runtime_blocked({"active_halt": self._get("active_halt"),
+                             "last_proxy_error": self._get("last_proxy_error")}) else "error" if self._get("active_halt") else "paused")
+                self._set("reason", "人工探测目标已变化；本节点停止保留，未发送请求")
+                self._end_segment("node_auth_probe_target_changed")
+                self._event("node_auth_probe_target_changed", self._get("reason"))
+                return {"attempted": False}
             config, now = self._config(), self.clock()
             probe = self._get("probe", False)
             auto_probe = probe and self._get("proxy_auto_probe", False)
@@ -1547,6 +1592,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             if halted and probe and halted["id"] == task["id"]:
                 config = self._get("halted_config") or self._get("halt_config") or json.loads(self.db.execute("SELECT config FROM jobs WHERE id=?", (task["job"],)).fetchone()[0])
             if config is None:
+                if barrier:
+                    self._cancel_node_auth_probe(self._stock_scope())
+                    self._set("probe", False)
+                    self._set("state", "error")
+                    self._set("reason", "探测缺少原任务配置；本节点停止保留，未发送请求")
+                    self._end_segment("node_auth_probe_config_missing")
+                    return {"attempted": False}
                 raise RuntimeError("请求缺少原任务配置，无法安全探测")
             probe_only = probe and (self._get("halted_probe_only", False) or not self._task_in_active_scope(task))
             profile = self._request_profile(task)
@@ -1556,6 +1608,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self._set_global("node_next_due", max(now, self._get_global("node_next_due", 0)) + interval)
             rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only,analysis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                                   (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only), _dump(profile))).lastrowid
+            if barrier:
+                barrier["manual_probe"].update(state="dispatched", request_id=rid, dispatched=now)
+                self._set_global("node_source_auth_barrier", barrier)
             self.db.execute("UPDATE tasks SET status='inflight' WHERE id=?", (task["id"],))
             self._inflight = True
             self._inflight_stock = (task["job"], task["stock"])
@@ -1617,6 +1672,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     self._halt("error", "internal_error", self._sanitize(f"结果保存/解析错误，需要人工处理: {exc}"), rid)
             finally:
                 with self.db:
+                    self._finish_node_auth_probe(rid)
                     self._set_global("node_next_due", max(self._get_global("node_next_due", 0), self.clock() + interval))
                 self._inflight = False
                 self._inflight_stock = None
@@ -1624,6 +1680,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._inflight_task = None
             self._sync_storage(rid)
             if (auto_probe and not probe_only and not self._get("proxy_auto_suspended", True)
+                    and not self._node_source_auth_barrier()
                     and self._get("proxy_control_generation", 0) == control_generation
                     and not self._get("active_halt") and not self._get("storage_halt")
                     and self._get("state") == "paused" and self._task_in_active_scope(task)
@@ -1682,7 +1739,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._outcome(rid, "unexpected_final_url", "transport 不得自动重定向或请求外部地址")
                 self._halt("error", "unexpected_final_url", "transport 返回意外最终地址，拒绝接受数据", rid)
                 return
-            if response.status in {401, 403, 407, 429} and not response.proxy_error:
+            source_auth_response = (not response.proxy_error or response.status == 407
+                                    and response.proxy_error == "proxy_auth" and response.network_attempted)
+            if response.status in {401, 403, 407, 429} and source_auth_response:
                 due = self._retry_after(headers.get("retry-after"))
                 self._set("next_due", max(self._get("next_due"), due))
                 self._outcome(rid, "access_block", response.error, {"http_status": response.status, "retry_after": headers.get("retry-after")})
@@ -1795,6 +1854,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     self._set("last_success", self.clock())
                     self._halt("error", "calibration_limit", str(exc), rid)
                     self._set("halted_probe_only", True)
+                    self._clear_node_auth_after_manual_success(rid, probe)
                     return
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
@@ -1884,15 +1944,17 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         evidence = dict(row)
         evidence["analysis"] = json.loads(evidence["analysis"]) if evidence["analysis"] else None
         evidence.update({"kind": kind, "reason": reason, "server_blacklist": "unproven"})
-        failed = self.db.execute("SELECT task,job FROM requests WHERE id=?", (rid,)).fetchone()
+        failed = self.db.execute("SELECT task,job,stock FROM requests WHERE id=?", (rid,)).fetchone()
         self._set("halted_task_id", failed["task"])
         self._set("halt_task_id", failed["task"])
         config_row = self.db.execute("SELECT config FROM jobs WHERE id=?", (failed["job"],)).fetchone()
         self._set("halt_config", json.loads(config_row[0]) if config_row else self._config())
         self._set("block_evidence", evidence)
         self._event(kind, reason, evidence)
+        self._stop_node_for_source_auth(kind, reason, evidence, failed)
 
     def _after_success(self, rid, probe):
+        self._clear_node_auth_after_manual_success(rid, probe)
         self._set("network_retry", None)
         self._set("last_success", self.clock())
         if probe:

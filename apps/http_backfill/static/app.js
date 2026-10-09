@@ -421,6 +421,8 @@
     return !!first(status, ["retry_pending", "probe_pending", "retry_scheduled"], false);
   }
   function independentStocks(data = status) { return data?.runtime_scope === "stock"; }
+  function nodeAuthSupported(data = status) { return Boolean(data && Object.hasOwn(data, "node_source_auth_barrier")); }
+  function nodeAuthStopped(data = status) { return Boolean(data?.node_source_auth_barrier); }
   function stockEntries(data = status) {
     const entries = first(data, ["coverage", "stock_coverage", "per_stock"], []);
     return Array.isArray(entries) ? entries : Object.entries(objectValue(entries)).map(([stock, item]) => ({ stock, ...objectValue(item) }));
@@ -457,8 +459,12 @@
       const active = runtime?.state === "running", probe = runtimeProbe(runtime), inFlight = stockInFlight(runtime);
       const detached = button.dataset.detached === "1";
       const action = button.dataset.stockAction;
-      button.disabled = Boolean(locked || !supported || !runtime || status?.storage_halt || status?.active_halt || (action === "start" ? detached || active || probe || inFlight || runtime.active_halt || !["paused", "idle"].includes(runtime.state) : action === "pause" ? !(active || probe || runtime.proxy_auto_suspended === false || inFlight) : active || probe || inFlight || !["paused", "blocked", "error"].includes(runtime.state) || !first(runtime, ["current", "current_target", "target"])));
+      const authStopped = nodeAuthStopped();
+      const nodeLocked = status?.active_halt && !(authStopped && !status?.legacy_stock_halt_barrier && action !== "start");
+      button.disabled = Boolean(locked || !supported || !runtime || status?.storage_halt || nodeLocked || (action === "start" ? detached || active || probe || inFlight || runtime.active_halt || !["paused", "idle"].includes(runtime.state) : action === "pause" ? !(active || probe || runtime.proxy_auto_suspended === false || inFlight) : active || probe || inFlight || (authStopped && (probePending() || status?.request_inflight)) || !["paused", "blocked", "error"].includes(runtime.state) || !first(runtime, ["current", "current_target", "target"])));
       if (!supported) button.title = "该节点尚不支持逐股控制，请更新节点；不会回退执行全局控制。";
+      else if (authStopped && action === "start") button.title = "节点遇到验证码或身份核验，后续请求已停止；先选择一只股票单次探测。";
+      else if (authStopped && action === "retry") button.title = "全节点仅允许一次人工探测；有效响应解除节点停止，所有股票仍暂停。";
       else if (runtime?.active_halt && action === "start") button.title = "本股原目标阻断仍保留，请先探测成功，再手动采集。";
       else button.title = action === "retry" ? "只请求本股保留的当前目标一次，遵守全局间隔和本股冷却；成功后仍暂停。" : action === "pause" ? "只暂停本股的后续请求，当前请求结束后保留响应。" : "只采集本股，其他股票状态不变。";
     });
@@ -839,7 +845,8 @@
     $("proxy-save").disabled = locked || proxySupported !== true || proxyLoading;
     display("proxy-save", awaitingStop ? "暂停并保存代理配置" : "保存代理配置");
     $("proxy-reset").hidden = !proxyDirty; $("proxy-reset").disabled = busy || !authenticated;
-    $("proxy-rotate").disabled = locked || proxySupported !== true || proxyDirty || pending || !!status?.storage_halt || (["blocked", "error"].includes(state) && status?.request_inflight);
+    $("proxy-rotate").disabled = locked || proxySupported !== true || proxyDirty || pending || nodeAuthStopped() || !!status?.storage_halt || (["blocked", "error"].includes(state) && status?.request_inflight);
+    $("proxy-rotate").title = nodeAuthStopped() ? "节点已停止；可保存代理配置，再在一只股票卡片安排单次探测。" : "";
     const proxyMode = first(proxyState?.settings, ["mode"], proxyState?.mode);
     const blockedProxy = ["blocked", "error"].includes(state);
     display("proxy-rotate", dynamicProxyMode(proxyMode) ? (blockedProxy ? "更换 IP 并单次探测" : "更换下一次出口") : (blockedProxy ? "重选出站并单次探测" : "重选下一次出站"));
@@ -849,8 +856,9 @@
     document.querySelectorAll("[data-fleet-action]").forEach((button) => { button.disabled = busy || !authenticated || button.dataset.current === "1"; });
     updatePager("requests"); updatePager("events");
     if (status?.storage_halt) display("action-note", "采集数据库写入异常，源采集已暂停。重试仅修复本地写入，成功后仍暂停。");
+    else if (nodeAuthStopped()) display("action-note", "验证码或身份核验已停止整个节点。选择一只股票探测一次；成功后再手动采集。");
     else if (scoped && status?.active_halt) display("action-note", "旧阻断记录无法定位到原股票任务，节点保持保护暂停。需要恢复原任务与请求证据，不能猜测目标探测或直接开始。");
-    else if (scoped) display("action-note", "各股控制在下方股票卡片右上角。批量采集只启动可继续的股票，保留其他股票的阻断；暂停作用于全部股票。多个探测目标请按卡片分别探测。");
+    else if (scoped) display("action-note", nodeAuthSupported() ? "逐股控制在卡片右上角；遇到验证码或身份核验会停止整个节点。" : "节点需更新：验证码联动停止不可用。逐股控制在卡片右上角。");
     else if (pending) display("action-note", "已安排单次探测；成功后保持暂停。");
     else if (state === "running" && status?.network_retry) display("action-note", "网络异常会按退避时间自动重试；点击暂停可停止后续请求。");
     else if (state === "running") display("action-note", "关闭页面后服务端仍继续采集。暂停将在当前请求结束后生效。");
@@ -948,7 +956,10 @@
       display("state-label", `${states[state] || state}${runtimes.length ? ` · 采集 ${active} / 阻断 ${blocked}${probes ? " / 探测 " + probes : ""}` : ""}`);
       if (!data.storage_halt && !data.active_halt) {
         display("run-title", active ? "各股独立调度，按节点间隔采集" : probes ? "等待各股单次探测" : blocked ? "部分股票等待处理，逐股查看状态" : titles[state] || "逐股查看采集状态");
-        display("run-reason", textValue(data.reason) || "每只股票独立保存状态与出口。一股阻断或网络退避不暂停其他股票，节点仍共用一个请求间隔。");
+        display("run-reason", nodeAuthSupported(data) ? textValue(data.reason) || "逐股保存进度；验证码或身份核验停止整个节点，网络异常按原规则处理。" : "节点需更新：验证码联动停止不可用。");
+      } else if (!data.storage_halt && nodeAuthStopped(data)) {
+        display("state-label", pending ? "节点停止 · 单次探测" : "节点停止");
+        display("run-title", pending ? "仅执行这一次人工探测" : "验证码 / 身份核验，已停止后续请求");
       }
     }
     $("network-retry-note").hidden = !hasNetworkRetry;
@@ -1088,7 +1099,7 @@
     const info = objectValue(currentEvidence);
     const reason = first(info, ["reason", "error", "message"], data.reason || (data.state === "error" ? "当前异常尚未处理。" : "当前来源阻断尚未解除。"));
     const kind = first(info, ["outcome", "kind", "type"], data.active_halt || "待检查");
-    display("block-title", independentStocks(data) ? "节点保护暂停，需检查原始证据" : data.state === "error" ? "采集已暂停，需检查异常" : "当前来源阻断尚未解除");
+    display("block-title", nodeAuthStopped(data) ? "验证码 / 身份核验，后续请求已停止" : independentStocks(data) ? "节点保护暂停，需检查原始证据" : data.state === "error" ? "采集已暂停，需检查异常" : "当前来源阻断尚未解除");
     display("block-kind", outcomes[kind] || kind);
     display("block-reason", reason);
     const facts = [
@@ -1117,7 +1128,7 @@
     list.replaceChildren();
     if (!items.length && config && Array.isArray(config.stocks)) items = config.stocks.map((stock) => ({ stock, status: "pending" }));
     display("coverage-count", items.length ? `${items.length} 只股票 · 覆盖未确认` : "未配置");
-    display("stock-controls-note", independentStocks(data) ? "逐股独立控制 · 节点统一请求间隔" : "节点需升级：逐股控制不可用");
+    display("stock-controls-note", independentStocks(data) ? nodeAuthStopped(data) ? "节点已停止 · 仅允许一次人工探测" : nodeAuthSupported(data) ? "逐股控制 · 验证码或身份核验停止整个节点" : "节点需更新：验证码联动停止不可用" : "节点需升级：逐股控制不可用");
     if (!items.length) list.append(el("div", "empty-state", "保存股票和日期窗口后，这里会显示覆盖进度。"));
     for (const item of items) {
       const stock = first(item, ["stock", "stock_code", "bar_code", "code"], "未知代码");
@@ -1132,7 +1143,7 @@
       const header = el("div", "coverage-item-header");
       const hasGap = Array.isArray(gaps) ? gaps.length > 0 : !!gaps;
       const actions = el("div", "coverage-item-actions");
-      const runtimeLabel = runtime ? runtimeProbe(runtime) ? "探测已安排" : runtime.state === "running" && runtime.network_retry ? "等待网络重试" : states[runtime.state] || runtime.state : complete ? "已发现项完成" : hasGap ? "存在缺口" : item.date_boundary_reached ? "已到窗口边界" : labels[state] || state;
+      const runtimeLabel = runtime ? runtimeProbe(runtime) ? "探测已安排" : nodeAuthStopped(data) && !runtime.active_halt && runtime.state !== "completed" ? "节点暂停" : runtime.state === "running" && runtime.network_retry ? "等待网络重试" : states[runtime.state] || runtime.state : complete ? "已发现项完成" : hasGap ? "存在缺口" : item.date_boundary_reached ? "已到窗口边界" : labels[state] || state;
       actions.append(el("span", `tag${runtime?.active_halt || state === "error" ? " warning" : state === "completed" || (!runtime && complete) ? " success" : ""}`, runtimeLabel));
       if (/^\d{6}$/.test(String(stock))) for (const action of ["start", "pause", "retry"]) actions.append(stockButton(action, stock, runtime));
       if (config && config.stocks?.includes(String(stock)) && /^\d{6}$/.test(String(stock))) {

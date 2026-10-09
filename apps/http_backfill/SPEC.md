@@ -1,5 +1,40 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-09 node stop after source captcha or authentication
+
+Latest user instruction supersedes independent-stock dispatch and automatic
+dynamic-proxy recovery after source captcha/identity authentication. One
+serialized node must stop ALL subsequent automatic source requests as soon as
+any stock returns positive challenge evidence or source HTTP401/403. A source
+HTTP407 also represents authentication and stops dispatch; proxy-only407/auth
+failure without a source request remains an individual proxy fault. HTTP429,
+TLS/timeout and structure/page errors retain their existing individual handling.
+This is a conservative operator policy, not proof of an IP blacklist or a
+24-hour server ban. Do not invent a 24-hour timer.
+
+Persist a node authentication barrier with the actual owning job/stock/request
+evidence. Pause the other running stocks, cancel all queued probes and automatic
+proxy-recovery intent, retaining each original halt, cooldown, task, frontier,
+recovery checkpoint and acquired data. Starting/configuring/archiving/changing
+proxy or restarting must not bypass the barrier. Distinct per-stock proxy exits
+do not bypass this user-requested node stop.
+
+The operator may explicitly queue ONE stock's existing-target probe, including
+an otherwise healthy paused stock. No batch probes or background recovery are
+allowed under the barrier. The permission is bound to its job, stock and task,
+is consumed by one dispatch, and is cancelled by pause/restart. A failed,
+redirected, partial or structurally invalid probe keeps the barrier. Only a
+validated manual source response clears the node barrier; other stocks' own
+halts remain, and no stock automatically resumes. Manual collection resumes
+only after the operator chooses it, using the preserved navigation.
+
+Upgrade restores the latest unresolved authentication evidence unless a later
+validated source response already demonstrates access; old unresolved stock
+halts remain independently retained. Persisted new barriers survive restart
+even when a later failed probe changed the stock's individual error category.
+H5 shows one short node-stop reason, allows the selected stock's single probe,
+and refuses collection while the stop is active. No new large explanation panel.
+
 ## 2026-10-09 narrow moving-page boundary recovery
 
 Local002463 evidence confirms expensive valid recovery: forward804 at11:15:37

@@ -2,7 +2,55 @@
 
 Date: 2026-10-09, Asia/Shanghai. Version: http-backfill.v5.
 
-## Latest change: narrow moving-page boundaries and stock target ownership
+## Latest change: stop the node after source captcha or authentication
+
+Latest user instruction replaces the previous independent-stock continuation
+after source authentication: one captcha/identity response stops all subsequent
+automatic source requests on that node, including dynamic proxy recovery.
+Read-only local evidence confirms the sequence: request4589 (002463,
+recovery835) access_block, then4590 (300054,detail270) access_block35 seconds
+later; manual002463 probe4591 was also access_block. The local operator pause
+was applied before implementation; no source diagnostic probe was sent.
+
+core.py and stock_runtime.py add durable node_source_auth_barrier with original
+owner/evidence. Positive challenge or source401/403/407 pauses other running
+stocks, cancels queued probes and automatic recovery, preserves individual
+halts/cooldowns/targets/frontiers and blocks start/reservation across proxy
+routes. Timeout/TLS,429 and proxy-only authentication retain individual handling.
+An explicit selected-stock probe is a single exact-owner/task permission. Only
+a validated manual source response clears the node barrier; no stock auto
+resumes, and other stock halts remain. Pause/target changes/restart cancel an
+unsent permission; restart retains an existing stop even after later individual
+probe errors. Upgrade checks original authentication ledger plus later source
+success, rather than blindly promoting old historical blocks. No24-hour expiry
+or IP-blacklist claim is introduced.
+
+H5 permits the selected card's probe under the stop, disables a second queued
+probe and collection, and shows a short node-stop label. Old nodes lacking the
+new status field show an upgrade notice instead of an unsupported guarantee.
+Global proxy rotate/probe is disabled while stopped; save proxy settings then
+choose one stock explicitly. README/SPEC record the new policy.
+
+Validation: Python AST, node --check and git diff --check passed. Independent
+real Engine/injected Wire/Clock temporary replays passed15 focused paths:
+cross-stock atomic stop, healthy manual success with other halts retained,
+timeout/schema/redirect failures, pause/restart cancellation, pause during I/O,
+queued B probe cancelled by A challenge, TLS/429/proxy-only407 isolation,
+source partial407 classification, overwritten legacy authentication migration,
+exact-target replacement refusal, proxy auto-recovery no-send gate, and later
+validated success not resurrecting the node barrier at restart. All temporary
+directories removed. No test suite or real source/provider request was run.
+
+Local rollout: existing docker compose up -d --build completed with cached
+dependency layers. API health is ok; deployed core/runtime/H5 hashes match the
+working tree. Authentication barrier restored from request4591 (002463). Both
+002463 and300054 remain blocked, with no pending probe or in-flight request.
+Before/after checks preserve33681 posts,4591 requests,125202 observations, all
+frontiers/recovery payloads, individual halt pointers/evidence/due, console token,
+instance UUID and current job. Local update sent no source requests. Other nodes
+were not updated; use the existing git pull && docker compose up -d --build.
+
+## Previous change: narrow moving-page boundaries and stock target ownership
 
 User reports stock002463 repeatedly calibrating on the local collector; the
 previous cross-stock restart report occurred on another Windows laptop, whose
