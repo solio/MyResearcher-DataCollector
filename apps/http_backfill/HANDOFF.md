@@ -2,7 +2,69 @@
 
 Date: 2026-10-09, Asia/Shanghai. Version: http-backfill.v5.
 
-## Latest change: floating help and compact coverage explanations
+## Latest change: narrow moving-page boundaries and stock target ownership
+
+User reports stock002463 repeatedly calibrating on the local collector; the
+previous cross-stock restart report occurred on another Windows laptop, whose
+node/stock/request evidence has not yet been supplied. Do not present the local
+finding as that Windows incident's confirmed cause.
+
+Read-only local evidence:10:55:53..11:28:34 has23 list requests,19 calibration.
+The completed prior recovery was followed by a process restart and an801
+one-row shift, causing799..802 twice. Later forward803 request4183 reported
+328288,804 request4189 reported328270; the slightest decrease forced802/803
+three times, then804 again. Calibration4199 really recovered13 previously
+missed standard posts between old803 tail2025-12-08 10:30:34 and incoming804
+head09:55:51. Wide first/second signatures differed only by two already-acquired
+IDs outside that boundary. Never solve this by ignoring count decreases.
+
+SPEC updated before implementation. Standard, ordered same-page edge shifts
+with unchanged contiguous shared IDs/timestamps now use a fixed narrow tail
+boundary; interior changes keep the wider protections. A declining-count next
+page remains acquired progress, and recovery examines only old-tail/new-head
+boundary. Two independent matching passes must include both explicit ID/time
+endpoints. A held first-pass candidate requires same-owner original success,
+raw/hash validation and a count still matching the freshly read prior page;
+known-changed candidates are fetched fresh. Reuse never duplicates discoveries,
+observations or forward counts. Boundary failure preserves a gap and falls back
+within the same generation and cumulative64-request/6-pass budget. Unchanged
+ordered IDs/timestamps accept the new count in one check. New proof is
+two_matching_page_boundary_observations, never whole-window completeness.
+
+Independent real retained-response replays used temporary Engine/Wire/Clock:
+g51 old8014163→fresh8014165→8024173→8014171→8024181 finishes in four fresh
+checks with no799/800, then continues803. For g52, fresh4199(803)/4209(804),
+then4207(803)/an independent mock request returning the captured4209 snapshot,
+form two matching passes: all13 original missing posts plus4 later posts survive,
+calibration discoveries17, frontier804, pending805 and pages802/803/804 each
+counted once. The second mocked804 is not a new real-source observation.
+Same-count candidate reuse, interior changes, unknown top markers, missing
+endpoints, terminal checks, budget exhaustion and paused checkpoints also passed.
+No suite, real-source request or live DB write was used for these validations.
+
+Separate confirmed safety flaw: missing halt pointers selected any stock's last
+failed request, and retry pointers lacked exact owner validation. Targets now
+belong to the original job/stock, with only that halt's retained request evidence
+as fallback. Missing targets refuse probing/dispatch, retain halt/due/evidence,
+and cannot fall through to ordinary work or completion. Temporary Engine cases
+verify A start leaves B140→142/blocked143 unchanged; foreign and cross-job targets
+are rejected, damaged queued probes emit no request, and detached original
+probes remain one-shot/paused. H5 labels consumed manual entry as historical and
+shows actual current target separately; narrow proof details live in help/tooltips.
+AST, JS syntax and diff checks passed; no new dependency or migration.
+
+Local rollout verified: drained source I/O after pausing only the previously
+running002463/300487, rebuilt the existing Compose service and verified healthy
+with zero restarts and deployed core SHA matching this checkout. Before resuming,
+posts31162/requests4296/observations118322 were unchanged, as were owner UUID,
+job, token hash, all stock halt pointers/due and frontier page/request identities.
+Restored only those two originally running stocks through their scoped controls:
+002463 retains frontier810 and pending detail work;300487 retains frontier73.
+The previously paused002353 stays paused. Operational temporary files are
+removed. Other collectors require the existing compose rebuild for this backend
+correction; no other collector or Mihomo configuration was updated.
+
+## Previous change: floating help and compact coverage explanations
 
 User requests less page space for interval audit, pagination recovery and long
 coverage explanations. SPEC updated before implementation. The complete existing

@@ -1221,7 +1221,13 @@
     return null;
   }
   function windowSeekDescription(info, state) {
-    if (info.manual_direct === true || info.navigation_mode === "manual_direct" || info.manual === true || Number(info.manual_start_page) > 0 || info.completion_reason === "manual_start_page" || info.reason === "manual_start_page") return `手动从第 ${number(info.manual_start_page || info.start_page || info.current_page)} 页开始，尚未核实窗口上界${info.entry_verified === true ? " · 所选源页响应已核实" : ""}`;
+    if (info.manual_direct === true || info.navigation_mode === "manual_direct" || info.manual === true || Number(info.manual_start_page) > 0 || info.completion_reason === "manual_start_page" || info.reason === "manual_start_page") {
+      const page = info.manual_start_page || info.start_page || info.current_page;
+      const facts = [page == null ? "手动入口页码未返回" : `最初设置入口：源第 ${number(page)} 页`, info.manual_start_pending === true ? "尚未使用，下次从该页开始" : info.manual_start_pending === false ? "入口已使用，此页码不是当前进度" : "入口使用状态未返回", "尚未核实窗口上界"];
+      if (info.entry_verified === true) facts.push("所选源页响应已核实");
+      if (info.entry_request_id != null) facts.push(`入口响应请求 #${number(info.entry_request_id)}`);
+      return facts.join(" · ");
+    }
     const complete = info.phase === "complete";
     const failed = info.phase === "error";
     const label = failed ? "结束日期定位异常，已暂停" : complete ? "结束日期定位已完成" : state === "running" ? "正在定位结束日期" : "结束日期定位待继续";
@@ -1235,7 +1241,11 @@
     return facts.join(" · ");
   }
   function windowSeekCompact(info, state) {
-    if (info.manual_direct === true || info.navigation_mode === "manual_direct" || info.manual === true || Number(info.manual_start_page) > 0 || info.completion_reason === "manual_start_page" || info.reason === "manual_start_page") return `手动入口${info.manual_start_page || info.start_page || info.current_page ? " · 第 " + number(info.manual_start_page || info.start_page || info.current_page) + " 页" : ""} · 上界未核实`;
+    if (info.manual_direct === true || info.navigation_mode === "manual_direct" || info.manual === true || Number(info.manual_start_page) > 0 || info.completion_reason === "manual_start_page" || info.reason === "manual_start_page") {
+      const page = info.manual_start_page || info.start_page || info.current_page;
+      const label = info.manual_start_pending === true ? page == null ? "下一次从手动入口开始" : `下一次从第 ${number(page)} 页开始` : info.manual_start_pending === false ? "手动入口已使用" : "手动入口 · 使用状态未核实";
+      return `${label} · 上界未核实`;
+    }
     if (info.phase === "error") return `定位异常${info.error ? "：" + textValue(info.error).slice(0, 80) : ""}`;
     if (info.phase === "complete") return `日期定位完成${info.start_page == null ? "" : " · 入口第 " + number(info.start_page) + " 页"}`;
     return `${state === "running" ? "日期定位中" : "日期定位待继续"}${info.current_page == null ? "" : " · 第 " + number(info.current_page) + " 页"}`;
@@ -1245,6 +1255,7 @@
   function recoveryProof(info) {
     if (info.time_fallback || info.proof_level === "time_boundary_with_gap") return "旧 ID 不可见，仅按时间回扫，缺口保留。";
     if (info.time_order_verified === false || info.proof_level === "id_interval_time_order_unverified") return "发布时间次序尚未核实，局部覆盖不能确认。";
+    if (info.proof_level === "two_matching_page_boundary_observations") return "已观察分页交界两轮一致；仅核实该交界，整体覆盖未确认。";
     if (info.proof_level === "two_matching_anchor_interval_observations") return "已观察的 ID 与时间局部区间两轮一致；整体覆盖仍未确认。";
     if (info.proof_level === "last_forward_page_stable") return "末次前进页的 ID 与发布时间一致、来源计数未下降；仅确认导航锚点稳定，窗口覆盖仍未确认。";
     return "";
@@ -1256,12 +1267,24 @@
     return facts;
   }
   function recoveryStrategy(info) {
-    return { stable_frontier: "末页单次检查", two_pass: "区间两轮校准" }[info.strategy] || "";
+    return { stable_frontier: "末页单次检查", boundary_two_pass: "分页交界两轮核对", two_pass: "区间两轮校准" }[info.strategy] || "";
+  }
+  function recoveryPhaseLabel(info, phase) {
+    const boundaryPhases = { pending: "交界核对待继续", scheduled: "交界核对待继续", seek: "定位分页交界", anchor: "检查分页交界", probe: "检查分页交界", backtrack: "定位分页交界", scan: "核对分页交界", scanning: "核对分页交界", verify: "核对分页交界", reconciling: "核对分页交界", complete: "交界核对完成", completed: "交界核对完成", done: "交界核对完成", paused: "交界核对已暂停", blocked: "交界核对被拦截", error: "交界核对异常" };
+    return (info.strategy === "boundary_two_pass" ? boundaryPhases[phase] : null) || recoveryPhases[phase] || phase;
+  }
+  function recoveryBoundaryFacts(info) {
+    const facts = [];
+    if (Array.isArray(info.boundary_endpoints)) info.boundary_endpoints.slice(0, 2).forEach((point, index) => {
+      if (Array.isArray(point) && point[0] != null) facts.push(`交界端点 ${index + 1}：${textValue(point[0])}${point[1] == null ? "" : " · " + time(point[1])}`);
+    });
+    if (info.initial_boundary_request != null) facts.push(`初始交界请求 #${number(info.initial_boundary_request)}`);
+    return facts;
   }
   function recoveryDescription(recovery) {
     const info = objectValue(recovery);
     const phase = first(info, ["phase"], "pending");
-    const facts = [recoveryPhases[phase] || phase, recoveryStrategy(info), info.anchor_page == null ? "" : `原始源页码 ${number(info.anchor_page)}`, info.current_page == null ? "" : `当前源页码 ${number(info.current_page)}`, info.passes == null ? "" : `当前校准轮次 ${number(info.passes)}`, ...recoveryUsage(info), info.new_posts == null ? "" : `新增发现 ${number(info.new_posts)} 帖`].filter(Boolean);
+    const facts = [recoveryPhaseLabel(info, phase), recoveryStrategy(info), info.anchor_page == null ? "" : `原始源页码 ${number(info.anchor_page)}`, info.current_page == null ? "" : `当前源页码 ${number(info.current_page)}`, info.passes == null ? "" : `当前校准轮次 ${number(info.passes)}`, ...recoveryUsage(info), ...recoveryBoundaryFacts(info), info.new_posts == null ? "" : `新增发现 ${number(info.new_posts)} 帖`].filter(Boolean);
     const trigger = first(info, ["trigger_reason", "reason"]);
     if (trigger) facts.push("触发原因：" + (recoveryReasons[trigger] || textValue(trigger)));
     if (info.fallback_reason) facts.push("转为区间校准：" + textValue(info.fallback_reason));
@@ -1270,7 +1293,7 @@
     return facts.join(" · ");
   }
   function recoveryCompact(info) {
-    const phase = first(info, ["phase"], "pending"), facts = [recoveryPhases[phase] || phase];
+    const phase = first(info, ["phase"], "pending"), facts = [recoveryPhaseLabel(info, phase)];
     if (info.current_page != null) facts.push(`第 ${number(info.current_page)} 页`);
     if (phase === "error" && (info.error || info.reason)) facts.push(textValue(info.error || info.reason).slice(0, 80));
     return facts.join(" · ");
@@ -1290,12 +1313,13 @@
       return;
     }
     const phase = first(info, ["phase"], "pending");
-    display("recovery-phase", recoveryPhases[phase] || phase);
+    display("recovery-phase", recoveryPhaseLabel(info, phase));
     const strategy = recoveryStrategy(info);
     if (strategy) facts.append(el("span", "", `校准方式 ${strategy}`));
     const values = [["股票", first(info, ["stock", "stock_code"], data.current?.stock)], ["原始源页码", info.anchor_page], ["当前源页码", info.current_page], ["当前校准轮次", info.passes], ["偏移观察", info.drift_count], ["新增发现帖", info.new_posts]];
     values.forEach(([label, value]) => { if (value != null) facts.append(el("span", "", `${label} ${label === "股票" ? textValue(value) : number(value)}`)); });
     recoveryUsage(info).forEach((value) => facts.append(el("span", "", value)));
+    recoveryBoundaryFacts(info).forEach((value) => facts.append(el("span", "", value)));
     const trigger = first(info, ["trigger_reason", "reason"]);
     display("recovery-reason", [trigger ? "触发原因：" + (recoveryReasons[trigger] || textValue(trigger)) : "校准进度由服务端保存。暂停、编辑和刷新不会自动开始采集。", info.fallback_reason ? "转为区间校准：" + textValue(info.fallback_reason) : "", recoveryProof(info)].filter(Boolean).join(" · "));
   }

@@ -1,5 +1,56 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-09 narrow moving-page boundary recovery
+
+Local002463 evidence confirms expensive valid recovery: forward804 at11:15:37
+decreased source_count328288 to328270, forcing three scans of802/803 before804
+was fetched again. Recovery found13 previously missed posts between the prior
+803 tail10:30:34 and incoming804 head09:55:51. The third pass arose from two
+already-acquired IDs outside that page boundary. Restart after a tiny page801
+shift likewise reread799..802 twice. Count changes cannot simply be ignored.
+
+When validated standard, ordered rows provide an explicit page-boundary anchor,
+recover the narrow old/new boundary time interval instead of repeatedly scanning
+the whole preceding two-page interval. Keep two matching observations of that
+fixed boundary, preserve any missing-anchor/time-order gap, all acquired rows,
+and the existing cumulative request/pass limits. Reuse the current validated
+response when establishing the first boundary pass; an already-acquired forward
+candidate must not be discarded just because the total count declined. A held
+candidate may join the first pass only after owner/raw verification and when
+its source count still matches the freshly read preceding page; otherwise fetch
+the candidate page again for a current boundary observation. Never reuse a
+response across the matching passes or count already-acquired candidate posts
+again as calibration discoveries. Publish
+a distinct boundary-proof scope, never full-window completeness. Same-page
+checks whose ordered IDs/timestamps are unchanged may accept a changed count;
+actual time reversal, no progress, unverified/nonstandard rows, terminal checks
+and insufficient boundary evidence retain the broader recovery protections.
+
+Do not rewrite historical requests or existing completed recoveries. Incomplete
+checkpoints retain their saved owner, current page and budget, and cannot receive
+a fresh budget merely because of pause/restart or upgrade.
+
+## 2026-10-09 stock target ownership and consumed-entry presentation
+
+User reports starting stock A while blocked B resumes around an old entry.
+The reported incident's node and stocks still need identification. Independent
+code inspection confirms a separate unsafe fallback: _halt_target can select
+the latest failed request from any stock, and retry pointers lack exact context
+ownership validation. Restrict every retained halt/retry target to its original
+job and stock context. A missing or foreign target must not fall through to an
+ordinary pending task, another stock or another job. Resolve only explicit
+same-owner retained request evidence; if the original target cannot be verified,
+keep the halt and refuse probe/dispatch without marking the job completed.
+Preserve raw responses, ledger, cooldown, progress, source halt and provider
+automatic-recovery authorization. Starting one stock never grants another
+stock recovery permission or resets its navigation.
+
+The manual start page is an initial entry, not the current page. Once consumed,
+show it as historical information on demand, while the visible stock target
+continues to use its actual current task. Keep the unverified-window-upper-bound
+indicator visible. Do not claim that these proven risks caused the reported
+incident unless that node's retained controls/requests confirm the chain.
+
 ## 2026-10-09 compact H5 help and coverage tooltips — authorized layout change
 
 Move the actual source-request interval audit and pagination recovery calibration
