@@ -1,6 +1,32 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-10, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-11, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest operation: 28-second native task and SSH-readable collection logs
+
+User requests interval 28 seconds and a direct way to see whether the SSH-only
+node is blocked. Read-only status initially shows 603129 running, page 50,
+259 posts, 25 requests and no source barrier; recent requests are real_data.
+Paused the selected task via API, drained any inflight request, PATCHed only
+interval_seconds from 60 to 28, verified saved frontiers unchanged, and resumed
+only the previously running unblocked task. Stock/window/client stay unchanged;
+no direct SQLite writes, target reset, retry or node/service restart was used.
+
+console_cli.py provides authenticated GET-only status and recent/follow request
+views for native nodes. It does not instantiate Engine or touch database state.
+Uses the private token file without displaying credentials, bypasses management
+proxy environment, prints Chinese state/halt evidence and Shanghai timestamps.
+Follow mode reads ID snapshot pages to catch intervening records, waits for
+reserved requests to finish, prints state transitions and distinguishes API
+unavailability from source block. Exit viewing does not stop collection.
+Native wrappers backfill-status and backfill-logs point to this source tool.
+
+Syntax/help and actual native status/recent/follow views pass; the same read-only
+tool also reads the local node without changing its tasks. Native
+status shows page 52, 387 posts, 22 bodies, 31 requests, interval 28 and no block.
+Latest normal starts 00:17:07, 00:17:36, 00:18:04 Shanghai on Oct 11 confirm the
+28-second configured interval plus response time. No extra diagnostic source
+request, service restart, training write or change to another node was made.
 
 ## Latest operation: native background deployment behind SSH-only NAT
 

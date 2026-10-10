@@ -1,5 +1,19 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## Native background-node status and request logs
+
+For SSH-only native nodes, provide read-only command-line status and recent/follow
+request views through the authenticated localhost API. Show Chinese task state,
+active node/stock halt with actual evidence request, current page/detail target,
+configured interval, post/request counts and Shanghai timestamps. Follow mode
+prints existing recent records once, then newly observed records in ID order and
+meaningful state transitions; reserved records are printed when finished. Recover
+later rows through bounded ID pagination rather than silently skipping a burst.
+Only GET requests; never construct Engine, edit SQLite, retry a target or resume
+collection. Read token from the node's private file, bypass environment proxies
+for management traffic, never print token/headers/source bodies. Display missing
+data explicitly. Service/API unavailability must be distinct from source block.
+
 ## Actionable post-field conflict evidence
 
 Every source-field conflict must identify the post, the exact field, old/new

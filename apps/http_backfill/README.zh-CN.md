@@ -617,6 +617,25 @@ systemctl stop http-backfill
 systemctl start http-backfill
 ```
 
+`journalctl` 是服务日志；当前采集是否被 block 和逐次请求结果使用只读命令
+查看。本次原生节点已安装以下入口：
+
+```bash
+backfill-status          # 当前状态、阻断请求编号、页码、间隔和数据量
+backfill-logs -n 20       # 最近 20 条采集请求，按北京时间显示
+backfill-logs -f          # 持续查看新请求和采集/暂停/阻断状态变化；Ctrl+C 退出
+```
+
+命令仅读取鉴权 API，不请求股吧、不触发探测、不改变任务。日志会直接显示
+“正常”“验证码/身份核验”“传输异常”等结果及实际错误；API 不可达则单独
+说明连接失败，不能把连接失败当作来源 block。退出查看不停止采集。
+其他原生部署可直接调用同一工具：
+
+```bash
+python3 -B apps/http_backfill/console_cli.py --data-dir /var/lib/http-backfill status
+python3 -B apps/http_backfill/console_cli.py --data-dir /var/lib/http-backfill logs -f
+```
+
 源码在 `/opt/MyResearcher-DataCollector`；数据库、raw、任务状态与令牌在
 `/var/lib/http-backfill`，更新源码不改运行数据。访问令牌读取命令是
 `cat /var/lib/http-backfill/console.token`，不把令牌写入 Git 或服务日志。
