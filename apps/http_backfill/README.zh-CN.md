@@ -593,67 +593,105 @@ docker compose exec -T collector-console python - \
 
 ## 不安装 Docker 的后台节点
 
-已有容器或 Linux 节点可以直接运行 Python，不需要在里面再安装 Docker。
-需要 Python 3.11+、系统 curl 和 CA 证书；应用没有额外 pip 依赖。
-没有公网 HTTP 端口时，使用仅 API 模式并监听回环地址：
+原生 Linux 部署入口已经在仓库：`native.py` 负责安装/更新/服务操作，
+`console_cli.py` 负责状态、采集日志和明确的任务操作，复用
+`deploy/collector-console.service` 模板和现有 Python server。
+不是只在某台服务器上临时写几个 shell。需要 Linux/systemd、系统 curl、
+CA 证书和可运行安装入口的 Python 3.10+；采集服务需要 Python 3.11+，
+应用没有额外 pip 依赖。
+
+在仓库根目录，以 root 首次安装：
 
 ```bash
-cd /opt/MyResearcher-DataCollector
-BACKFILL_API_ONLY=1 BACKFILL_FLEET_SYNC_ENABLED=0 \
-  /opt/http-backfill-runtime/bin/python3 -B apps/http_backfill/server.py \
-  --host 127.0.0.1 --port 8790 --data-dir /var/lib/http-backfill
+python3 apps/http_backfill/native.py install --install-python
 ```
 
-这里的 Python 路径是本次独立运行时的位置；已有合适 Python 时可替换为
-其绝对路径。当前原生节点使用 `/etc/systemd/system/http-backfill.service`，
-以同样参数运行，开机启动，`Restart=on-failure`、`RestartSec=5`，停止宽限
-45 秒。进程在后台运行，关闭 SSH、控制台或管理隧道不停止采集。
-进程重启仍遵守原有安全暂停和认证阻断规则，不自动恢复股票任务。
+已有适用 Python 时直接复用，不下载。只有缺少 3.11+ 且明确给了
+`--install-python` 才校验下载固定版 uv 并安装独立的 Python 3.12，位于
+`/opt/http-backfill-runtime`，不替换系统 Python。也可明确指定：
 
 ```bash
-systemctl status http-backfill --no-pager
-journalctl -u http-backfill -n 50 --no-pager
-systemctl stop http-backfill
-systemctl start http-backfill
+python3 apps/http_backfill/native.py install --python /path/to/python3
 ```
 
-`journalctl` 是服务日志；当前采集是否被 block 和逐次请求结果使用只读命令
-查看。本次原生节点已安装以下入口：
+默认生成 `http-backfill.service`，绑定 `127.0.0.1:8790`，仅 API 模式、
+主控同步关闭、开机启动、`Restart=on-failure`、5 秒重启等待、45 秒停止
+宽限。默认数据目录 `/var/lib/http-backfill`，数据库、raw、令牌和任务状态
+独立于代码；不自动创建或开始任务。安装元数据保存在生成的 unit 中，
+后续命令自动沿用实际 Python/代码/数据/地址/端口，不用重复填参数。
+重复安装不会重启参数未变的活动服务，不更换已有节点数据目录。
+`--host`、`--port`、`--data-dir`、`--console` 用于明确的首次配置；修改
+活动服务运行参数前需先停止服务。`install --dry-run` 只输出配置预览。
+
+后台服务不依赖 SSH 或管理页面保持打开，查看命令不请求股吧。
+
+```bash
+python3 apps/http_backfill/native.py status
+python3 apps/http_backfill/native.py logs -f
+python3 apps/http_backfill/native.py service-logs
+python3 apps/http_backfill/native.py stop
+python3 apps/http_backfill/native.py start
+```
+
+安装也会生成熟悉的命令入口，它们调用同一份仓库 Python 工具：
 
 ```bash
 backfill-status          # 当前状态、阻断请求编号、页码、间隔和数据量
 backfill-logs -n 20       # 最近 20 条采集请求，按北京时间显示
-backfill-logs -f          # 持续查看新请求和采集/暂停/阻断状态变化；Ctrl+C 退出
+backfill-logs -f          # 持续查看新请求和状态变化；Ctrl+C 只退出查看
 ```
 
-命令仅读取鉴权 API，不请求股吧、不触发探测、不改变任务。日志会直接显示
-“正常”“验证码/身份核验”“传输异常”等结果及实际错误；API 不可达则单独
-说明连接失败，不能把连接失败当作来源 block。退出查看不停止采集。
-其他原生部署可直接调用同一工具：
+`journalctl -u http-backfill -f` 是服务进程日志。上述状态/采集日志命令
+只读鉴权 API，会显示“正常”“验证码/身份核验”“传输异常”等结果和实际
+错误。API 不可达单独显示，不猜测来源 block。令牌仍在数据目录的
+`console.token`，不写入代码、Git 或日志。
+
+下面是**新空节点**首次配置任务的示例；已有节点不要重复创建任务：
 
 ```bash
-python3 -B apps/http_backfill/console_cli.py --data-dir /var/lib/http-backfill status
-python3 -B apps/http_backfill/console_cli.py --data-dir /var/lib/http-backfill logs -f
+python3 apps/http_backfill/native.py configure --stocks 603129 \
+  --from-date 2025-05-30 --to-date 2025-09-30 --interval 28 --client curl
+python3 apps/http_backfill/native.py start-page 603129 47
+python3 apps/http_backfill/native.py collect 603129
 ```
 
-源码在 `/opt/MyResearcher-DataCollector`；数据库、raw、任务状态与令牌在
-`/var/lib/http-backfill`，更新源码不改运行数据。访问令牌读取命令是
-`cat /var/lib/http-backfill/console.token`，不把令牌写入 Git 或服务日志。
-正常代码更新在仓库根目录执行 `git pull && systemctl restart http-backfill`；
-无法直接访问仓库的节点仍可通过 SSH 传入 Git bundle 后快进更新。
+已有股票可通过 SSH 操作：
 
-只有 SSH 入口也可以管理。需要时在**控制台所在机器**建立隧道：
+```bash
+python3 apps/http_backfill/native.py pause 603129
+python3 apps/http_backfill/native.py interval 28
+python3 apps/http_backfill/native.py collect 603129
+python3 apps/http_backfill/native.py probe 603129
+```
+
+修改间隔先暂停并等待当前请求完成；API 会拒绝仍在执行请求的修改。
+`collect` 只继续明确指定的股票；仍有验证阻断时会拒绝。`probe` 是操作者
+明确安排的一次原目标请求，不自动循环、不解除其他股票阻断。任务配置和
+起始页仍调用原有 API 并保持暂停，不直接改数据库。
+
+在仓库根目录更新代码：
+
+```bash
+git pull && python3 apps/http_backfill/native.py update
+```
+
+也支持先通过 SSH/Git bundle 快进代码，再执行同一 `update`。
+更新先通过 API 暂停派发、等待当前请求结束，再重启服务。股票窗口、28 秒
+等已保存配置、数据、原阻断和采集进度保留；任务按现有重启规则暂停，检查
+`status` 后按股 `collect`，有阻断的股票先明确 `probe`。
+无需重装 Docker、修改系统 Python、删除库或重新创建任务。旧版
+`experiment.sqlite3` 需要先用原有迁移工具处理，安装入口不会自动删除它。
+
+只有 SSH 入口也可以从主控制台管理。需要时在**控制台所在机器**建立隧道：
 
 ```bash
 ssh -N -L 127.0.0.1:18791:127.0.0.1:8790 -p SSH_PORT root@SSH_HOST
 ```
 
-隧道运行期间，在现有主控登记节点地址 `http://127.0.0.1:18791` 和这个
-节点的令牌。仅 API 节点没有网页登录入口，直接打开该地址返回 404 是正常
-行为；`/healthz` 和鉴权 API 可访问。隧道关闭后主控暂时无法管理或同步该
-节点，后台采集继续，数据留在节点，之后重连并同步或导出。无需开放新的
-公网端口、部署 nginx 或给节点配置域名。首启没有任务且暂停，需明确创建
-股票/日期/间隔配置并开始；部署和健康检查不会请求股吧。
+隧道运行期间，在现有主控登记 `http://127.0.0.1:18791` 和节点令牌。
+仅 API 节点没有网页登录入口，直接打开该地址返回 404 是正常行为。
+隧道关闭后主控暂时无法管理或同步，后台采集继续，之后重连即可。
+无需新的公网端口、nginx 或域名。
 
 ## 服务器部署
 
@@ -788,7 +826,7 @@ curl --connect-timeout 3 --max-time 5 -fsS http://10.0.0.12:8790/healthz
 
 新增接口均需现有控制台鉴权：`GET api/fleet` 查看实例与汇总状态，`POST api/fleet/nodes` 登记，`PATCH/DELETE api/fleet/nodes/{id}` 修改/移除，`POST api/fleet/sync` 以 `{node_id:"all"}` 或指定实例安排后台同步。直接登记请求使用 `{id,name,host,port,scheme,token}`，`host` 为裸 IPv4/IPv6、`port` 为 1–65535 整数、`scheme` 默认 `http`；旧 `{id,name,base_url,token}` 接口继续兼容，不能同时提交两种地址。`api/nodes/{id}/...` 转发受限的现有采集接口；`GET api/federation/export` 与 `GET api/federation/raw` 提供可校验的增量证据。所有转发都在服务器端完成，浏览器不直接连接采集机，也无需跨域配置。
 
-不用 Docker 时可用 [deploy/collector-console.service](deploy/collector-console.service)，按实际路径与服务用户修改模板，准备可写的数据目录并安装系统 curl（如果选 curl 客户端）。服务和网页可重启，数据与暂停原因均持久化。
+不用 Docker 时使用上方 `native.py install` 原生入口，它会渲染 [deploy/collector-console.service](deploy/collector-console.service) 模板并生成实际路径配置，不直接复制带占位符的模板。服务和网页可重启，数据与暂停原因均持久化。
 
 ## 验证与长时间试验
 

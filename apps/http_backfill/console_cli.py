@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only status and request logs for a native HTTP backfill node."""
+"""Status, request logs and explicit task controls for a native backfill node."""
 from __future__ import annotations
 
 import argparse
@@ -51,13 +51,28 @@ class Client:
         self.token = (data_dir / "console.token").read_text().strip()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def get(self, path, query=None):
+    def request(self, path, *, query=None, body=None, method="GET"):
         url = self.url + "/api/" + path
         if query:
             url += "?" + urlencode(query)
-        request = urllib.request.Request(url, headers={"Authorization": "Bearer " + self.token})
+        request = urllib.request.Request(url, method=method,
+            data=json.dumps(body).encode() if body is not None else None,
+            headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
         with self.opener.open(request, timeout=10) as response:
             return json.load(response)
+
+    def get(self, path, query=None):
+        return self.request(path, query=query)
+
+    def control(self, stock, action, job=None):
+        if not re.fullmatch(r"[0-9]{6}", stock):
+            raise ValueError("股票代码须为六位数字")
+        if action not in {"start", "pause", "retry"}:
+            raise ValueError("不支持的逐股控制动作")
+        body = {"action": action}
+        if job is not None:
+            body["job_id"] = job
+        return self.request(f"stocks/{stock}/control", body=body, method="POST")
 
 
 def state_signature(status):
@@ -162,6 +177,22 @@ def main():
     log_parser = sub.add_parser("logs", help="查看采集请求记录")
     log_parser.add_argument("-f", "--follow", action="store_true")
     log_parser.add_argument("-n", "--lines", type=int, default=20)
+    for action, label in [("collect", "继续本股采集"), ("pause", "暂停本股"), ("probe", "单次探测原目标")]:
+        control = sub.add_parser(action, help=label)
+        control.add_argument("stock")
+        control.add_argument("--job-id", type=int)
+    configure = sub.add_parser("configure", help="创建明确的股票/日期任务，保持暂停")
+    configure.add_argument("--stocks", nargs="+", required=True)
+    configure.add_argument("--from-date", required=True)
+    configure.add_argument("--to-date", required=True)
+    configure.add_argument("--interval", type=float, default=60)
+    configure.add_argument("--client", choices=["curl", "urllib"], default="curl")
+    page = sub.add_parser("start-page", help="为本股设置起始页，保持暂停")
+    page.add_argument("stock")
+    page.add_argument("page", type=int)
+    page.add_argument("--job-id", type=int)
+    interval = sub.add_parser("interval", help="修改已暂停任务的请求间隔")
+    interval.add_argument("seconds", type=float)
     args = parser.parse_args()
     if args.action == "logs" and not 1 <= args.lines <= 200:
         parser.error("记录数量须为 1～200")
@@ -169,10 +200,37 @@ def main():
         client = Client(args.url, args.data_dir)
         if args.action == "status":
             print_status(client.get("status"))
-        else:
+        elif args.action == "logs":
             logs(client, args.lines, args.follow)
+        elif args.action == "configure":
+            print_status(client.request("jobs", method="POST", body={"stocks": args.stocks,
+                "from_date": args.from_date, "to_date": args.to_date,
+                "interval_seconds": args.interval, "client": args.client}))
+        elif args.action == "start-page":
+            if not re.fullmatch(r"[0-9]{6}", args.stock):
+                raise ValueError("股票代码须为六位数字")
+            body = {"page": args.page}
+            if args.job_id is not None:
+                body["job_id"] = args.job_id
+            print_status(client.request(f"stocks/{args.stock}/start-page", method="POST", body=body))
+        elif args.action == "interval":
+            config = client.get("status").get("config")
+            if not config:
+                raise ValueError("尚未创建任务")
+            print_status(client.request("jobs/current", method="PATCH",
+                                        body={**config, "interval_seconds": args.seconds}))
+        else:
+            result = client.control(args.stock, {"collect": "start", "pause": "pause", "probe": "retry"}[args.action], args.job_id)
+            print_status(result)
     except KeyboardInterrupt:
         return 0
+    except urllib.error.HTTPError as exc:
+        try:
+            message = json.loads(exc.read(16384)).get("error") or "节点 API 拒绝请求"
+        except (ValueError, OSError):
+            message = "节点 API 拒绝请求"
+        print(f"HTTP {exc.code}：{text(message)}", file=sys.stderr)
+        return 1
     except (OSError, ValueError) as exc:
         print(f"无法读取节点状态（{type(exc).__name__}）；请检查服务和令牌文件", file=sys.stderr)
         return 1

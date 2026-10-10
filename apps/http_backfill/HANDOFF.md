@@ -2,6 +2,37 @@
 
 Date: 2026-10-11, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: repository-owned native Linux operations
+
+User requires reusable native Linux capabilities rather than one-server shell
+setup. native.py now owns install/update/service operations using the existing
+server, console_cli.py and deploy/collector-console.service template. Default
+installation is SSH-only loopback/API-only, /var/lib/http-backfill, fleet sync
+off; explicit optional standalone runtime bootstrap verifies pinned uv 0.13.0
+and installs managed Python 3.12 without replacing system Python. Suitable
+existing Python needs no download or apt/pip/Docker installation.
+
+Generated unit records nonsecret Python/repo/data/host/port/role identity;
+operations recover the actual settings and reject unrelated/stale units,
+drop-in overrides, wrapper collisions and implicit data-directory changes.
+Repeated install on the same active instance regenerates unit/wrappers without
+restarting the service or affecting task state. Update explicitly pauses through
+API, drains any inflight request, stops/starts the service and leaves tasks
+paused/blocked under the existing restart rules. No automatic collect/probe.
+
+console_cli.py and native.py expose explicit configure/start-page/interval and
+per-stock collect/pause/probe through existing APIs. Status/logs remain GET-only;
+mutations retain normal engine validation and public readable HTTP error reasons.
+No direct database mutation or source/parser changes. README includes install,
+new-task setup, operations, safe update and SSH-only hub access; the older manual
+copy-unit instruction now points to the renderer instead of copying placeholders.
+
+Syntax/help, install preview, old-unit adoption and generated identity round-trip,
+unrelated/stale unit rejection and data-path protection pass. Temporary actual
+Engine/HTTP-server checks verify configure/manual page47, selected collect/pause,
+interval-only PATCH and retained page; source transport is disabled and request
+ledger remains empty. No test suites or diagnostic source probes were run.
+
 ## Latest operation: 28-second native task and SSH-readable collection logs
 
 User requests interval 28 seconds and a direct way to see whether the SSH-only

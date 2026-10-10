@@ -1,5 +1,32 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## Reproducible native Linux deployment
+
+Native Linux support must be repository-owned, using the existing server, CLI
+and deploy/collector-console.service template. Provide install/update and service
+operations, generating the same http-backfill service and backfill-status/logs
+wrappers as the SSH-only deployment. Default to loopback, API-only, fleet sync
+off, /var/lib/http-backfill. Save nonsecret install identity in the generated
+unit so later commands recover the actual Python/repo/data/host/port settings.
+Repeated installation must preserve identity/data and avoid restarting an active
+service whose effective settings are unchanged. Refuse unrelated service/wrapper
+collisions or an implicit change of existing data directory. Never install Docker,
+nginx, open firewall ports, overwrite system Python, import training data or create
+a source task during installation. A missing Python >=3.11 can be installed only
+with an explicit runtime-install option, using checksum-verified pinned uv and an
+isolated managed runtime; existing suitable interpreters need no download.
+
+Update stops dispatch through the existing API, drains the current request, then
+restarts the service. Source tasks retain normal restart pause/authentication
+barriers and original progress; no automatic retry or collect follows update.
+CLI collect/pause/probe require an explicit stock and call only its existing
+scoped control endpoint. Probe is one user-authorized request, never automatic.
+API errors show the server's readable reason. Status/log views remain GET-only.
+Explicit configure/start-page commands delegate to the existing task APIs and
+leave tasks paused. Interval changes PATCH only the current config's interval,
+requiring the existing paused/drained edit checks. No direct database mutation
+or implicit replacement, start, skip or challenge acknowledgement is introduced.
+
 ## Native background-node status and request logs
 
 For SSH-only native nodes, provide read-only command-line status and recent/follow
