@@ -2,6 +2,39 @@
 
 Date: 2026-10-10, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest operation: native background deployment behind SSH-only NAT
+
+User authorized deployment to SSH 223.109.239.36:14124 as root and explicitly
+forbids installing Docker. The target has Ubuntu 22.04, Python 3.10, curl 7.81
+and working systemd; internal address 192.168.122.5. User reports no available
+public HTTP mapping and asks for pure background operation. No Docker, nginx,
+firewall rule or public port mapping was installed or changed.
+
+Git bundle clone at /opt/MyResearcher-DataCollector deploys d41c44e, with normal
+GitHub origin restored. Verified official uv 0.13.0 archive checksum and installed
+managed CPython 3.12.15 under /opt/http-backfill-runtime; system Python stays 3.10.
+Existing curl and CA certificates suffice; no apt/pip dependencies were added.
+/etc/systemd/system/http-backfill.service is enabled and active, restarts 0,
+Restart=on-failure, RestartSec=5, TimeoutStopSec=45. It runs the existing server
+with BACKFILL_API_ONLY=1 and BACKFILL_FLEET_SYNC_ENABLED=0, listening only on
+127.0.0.1:8790. Runtime data is /var/lib/http-backfill; token permissions 0600.
+
+Initial authenticated status shows a fresh paused instance with no config,
+0 requests and 0 posts. Health returns 200, the disabled H5 root returns 404,
+and a temporary local SSH forward to port 18791 also returns healthy. User then
+specified 603129, starting page 47, 2025-05-30 through 2025-09-30, curl. Created
+job 1 and set manual starting page 47 while still paused, then started it. Request
+interval is the original/default 60 seconds, explicitly communicated to user.
+First actual source request 1 is list page 47, HTTP 200, 139055 bytes, real_data;
+47 posts are retained and the next target is a required detail from that page.
+State is running, no authentication barrier, service restarts 0. No additional
+diagnostic source probe was sent. Initial-list success is not long-run proof.
+A master
+console can manage it over an on-demand SSH tunnel without public HTTP resources;
+losing that management connection does not stop the systemd worker. Startup and
+updates retain the existing safety-pause/authentication rules. Token/password are
+not recorded in repository artifacts. Other nodes and the training DB are untouched.
+
 ## Latest change: actionable field-conflict evidence and exact-record retry
 
 User requires post ID, old/new author names and inspectable recovery, rather

@@ -591,6 +591,51 @@ docker compose exec -T collector-console python - \
 
 历史页使用固定快照和降序 ID 游标，新请求到达不会挤乱正在浏览的分页。原 `api/requests`、`api/events` 默认数组接口仍兼容；分页查询使用 `?paged=1&limit=30`，返回 `items`、`has_more`、`next_cursor`、`snapshot_id` 和 `total`，下一页带上 `before_id=next_cursor&snapshot_id=...`。
 
+## 不安装 Docker 的后台节点
+
+已有容器或 Linux 节点可以直接运行 Python，不需要在里面再安装 Docker。
+需要 Python 3.11+、系统 curl 和 CA 证书；应用没有额外 pip 依赖。
+没有公网 HTTP 端口时，使用仅 API 模式并监听回环地址：
+
+```bash
+cd /opt/MyResearcher-DataCollector
+BACKFILL_API_ONLY=1 BACKFILL_FLEET_SYNC_ENABLED=0 \
+  /opt/http-backfill-runtime/bin/python3 -B apps/http_backfill/server.py \
+  --host 127.0.0.1 --port 8790 --data-dir /var/lib/http-backfill
+```
+
+这里的 Python 路径是本次独立运行时的位置；已有合适 Python 时可替换为
+其绝对路径。当前原生节点使用 `/etc/systemd/system/http-backfill.service`，
+以同样参数运行，开机启动，`Restart=on-failure`、`RestartSec=5`，停止宽限
+45 秒。进程在后台运行，关闭 SSH、控制台或管理隧道不停止采集。
+进程重启仍遵守原有安全暂停和认证阻断规则，不自动恢复股票任务。
+
+```bash
+systemctl status http-backfill --no-pager
+journalctl -u http-backfill -n 50 --no-pager
+systemctl stop http-backfill
+systemctl start http-backfill
+```
+
+源码在 `/opt/MyResearcher-DataCollector`；数据库、raw、任务状态与令牌在
+`/var/lib/http-backfill`，更新源码不改运行数据。访问令牌读取命令是
+`cat /var/lib/http-backfill/console.token`，不把令牌写入 Git 或服务日志。
+正常代码更新在仓库根目录执行 `git pull && systemctl restart http-backfill`；
+无法直接访问仓库的节点仍可通过 SSH 传入 Git bundle 后快进更新。
+
+只有 SSH 入口也可以管理。需要时在**控制台所在机器**建立隧道：
+
+```bash
+ssh -N -L 127.0.0.1:18791:127.0.0.1:8790 -p SSH_PORT root@SSH_HOST
+```
+
+隧道运行期间，在现有主控登记节点地址 `http://127.0.0.1:18791` 和这个
+节点的令牌。仅 API 节点没有网页登录入口，直接打开该地址返回 404 是正常
+行为；`/healthz` 和鉴权 API 可访问。隧道关闭后主控暂时无法管理或同步该
+节点，后台采集继续，数据留在节点，之后重连并同步或导出。无需开放新的
+公网端口、部署 nginx 或给节点配置域名。首启没有任务且暂停，需明确创建
+股票/日期/间隔配置并开始；部署和健康检查不会请求股吧。
+
 ## 服务器部署
 
 沿用 labelapp 的服务器和现有 HTTPS，新增入口 `https://testapi.zuzurent.com.cn/collector/`。以下命令由服务器执行；仓库包含部署文件，尚未自动修改远程服务器。应用使用独立端口 8790 和 SQLite，不需要 labelapp 的 MySQL 配置。
