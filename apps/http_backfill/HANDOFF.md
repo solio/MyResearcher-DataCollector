@@ -33,6 +33,25 @@ Engine/HTTP-server checks verify configure/manual page47, selected collect/pause
 interval-only PATCH and retained page; source transport is disabled and request
 ledger remains empty. No test suites or diagnostic source probes were run.
 
+Native rollout receipt: implementation commit 58458d7 fast-forwarded the existing
+SSH-only node from 3c0f29d using a Git bundle. Ran the repository installer with
+the node's system Python 3.10: install --dry-run, install, then repeated install.
+Each step retained the same active MainPID 1963, NRestarts 0, runtime Python
+/opt/http-backfill-runtime/bin/python3, /var/lib/http-backfill data directory,
+loopback port 8790, API-only/fleet-off roles, database inode, instance identity,
+token digest, task configuration and saved runtime cursor. The generated unit
+passed systemd-analyze verify and the wrappers/native status/recent logs work.
+No runtime download, apt/pip/Docker install, source probe or service restart.
+
+At 2026-10-11 00:47 Shanghai, 603129 is blocked on identity challenge request #75,
+started 00:39:15, source page 56. Last successful request #73 was a detail at
+00:38:09; #74 was an SSL connection timeout, followed by the actual challenge.
+Task remains curl, 2025-05-30 through 2025-09-30, 28-second interval, 700 posts,
+54 completed bodies and 75 request records. The challenge arose during ordinary
+collection before this installer rollout; installer checks did not add source
+requests or reset/unblock the task. Operational update is documented but was
+not invoked on this node, to preserve its current process and task state.
+
 ## Latest operation: 28-second native task and SSH-readable collection logs
 
 User requests interval 28 seconds and a direct way to see whether the SSH-only
