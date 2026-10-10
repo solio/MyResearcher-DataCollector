@@ -2,6 +2,21 @@
 
 Date: 2026-10-11, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest operation: download blocked native node's collected posts
+
+User requested export to the local machine after the native node's challenge.
+Used the existing read-only data_export.py against /var/lib/http-backfill/collector.db
+on SSH223.109.239.36:14124, then downloaded the JSONL to local Downloads:
+collector-local-posts-20261010T173021Z.jsonl, plus its .manifest.json receipt.
+Snapshot 2026-10-11 01:30:21 Shanghai contains 700 unique 603129 posts, including
+54 acquired bodies and 646 missing bodies, 406446 bytes. Local JSON parsing,
+identity uniqueness, missing-body flags, counts, bytes and SHA256 match the
+remote export (2f58a5849e4bc69ce26a5b035db431e128ab643530c3b173095b140804bcace7).
+Node instance/task/config/cursor/counts/auth barrier remained unchanged and
+blocked on request75. No source request, probe, service restart or training
+database write; export is the existing compatible posts projection, not a raw
+evidence/database backup. Temporary transfer files are removed after download.
+
 ## Latest change: repository-owned native Linux operations
 
 User requires reusable native Linux capabilities rather than one-server shell
