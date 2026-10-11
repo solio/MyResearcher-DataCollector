@@ -2,6 +2,31 @@
 
 Date: 2026-10-11, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest operation: changed SSH entry and pending two-stock gap configuration
+
+User supplies replacement SSH223.109.239.11:24452 for the same retained disk,
+requests 20-second curl gap backfill for601012/601888, reporting77/51 missing
+trading sessions but no exact dates. Connected and verified instance identity
+9a25fe25-4814-402c-b377-2f8284b94276, original job1/603129, 700 posts/54 bodies/
+75 requests, auth barrier request75/source56 and native code26d65b8. Service
+is active MainPID1484/NRestarts0 after the provider restart; no reinstall needed.
+
+Created a private consistent SQLite backup at /var/lib/http-backfill/backups/
+before-gap-config-20261011T144827Z/collector.db; quick_check=ok. PATCHed only
+interval_seconds28->20 on the current task through the existing API, verifying
+instance/cursor/counts/auth barrier unchanged. No source request, probe, service
+restart or training database write. Current configured stock remains603129;
+601012/601888 are not configured yet, pending the requested date clarification.
+
+Read-only authoritative local training posts show longest date gaps between
+601012 observed2025-08-19 and2025-12-15 (candidate2025-08-20..2025-12-14), and
+601888 observed2025-10-17 and2025-12-30 (candidate2025-10-18..2025-12-29).
+These are observed-data absences, not independently proved complete-source
+coverage or a verified trading-calendar count. Date question remains pending.
+After the user supplies dates, configure the authorized scope via existing APIs;
+the persistent node authentication barrier must still be respected, never erased
+because the public SSH address changed. Credentials remain outside repository.
+
 ## Latest operation: download blocked native node's collected posts
 
 User requested export to the local machine after the native node's challenge.
