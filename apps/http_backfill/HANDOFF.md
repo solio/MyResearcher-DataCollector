@@ -2,6 +2,35 @@
 
 Date: 2026-10-11, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest operation: configure both gaps from the authoritative collector database
+
+User directs deriving the gap dates from collector.db without another question.
+Read-only source-filtered publication-day queries on local data/collector.db
+identify601012's longest absent span2025-08-20..2025-12-14, between observed
+2025-08-19/2025-12-15, and601888's2025-10-18..2025-12-29, between observed
+2025-10-17/2025-12-30. No trading-calendar count or full-source coverage claim.
+
+On SSH223.109.239.11:24452, scheduled exactly one explicit original603129 page56
+probe before resuming source work. Request76 at2026-10-11 22:57:31 Shanghai
+again returns HTTP200 identity challenge. Original node-stop owner request75
+remains; detached stock evidence now points to76. No further source requests.
+
+The current app supports one shared date window for its stock list. Configured
+both601012/601888 through PATCH jobs/current, curl/20seconds, union window
+2025-08-20..2025-12-29 covering both identified gaps. Both stock queues are paused
+and date seeking is initialized; node remains blocked. The shared window also
+includes dates outside each individual gap; it is not two independent windows.
+Old603129 is retained as a detached original-halt target. Its700 posts/54 bodies,
+76 request rows, original config revision and navigation snapshot remain.
+Verified its former frontier appears unchanged in the before-snapshot of the
+latest job revision, and all existing posts/body/request counts are unchanged
+by configuration. Backup quick_check=ok at /var/lib/http-backfill/backups/
+before-two-gaps-20261011T150029Z/collector.db. Exact inferred gaps and actual
+applied configuration are recorded in /var/lib/http-backfill/gap-backfill-config.json.
+MainPID1484/NRestarts0 remain; no service restart, code deployment, challenge
+reset or training database write. Configuration is saved, collection cannot
+start until a validated operator probe clears the persistent node barrier.
+
 ## Latest operation: changed SSH entry and pending two-stock gap configuration
 
 User supplies replacement SSH223.109.239.11:24452 for the same retained disk,
