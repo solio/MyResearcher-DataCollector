@@ -81,18 +81,20 @@ SOURCE = "eastmoney_guba"
 MIN_TITLE_LEN = 40
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Read-only connection with the skip ledger attached when it is readable.
 
     A broken/absent ledger degrades to "no exclusions" rather than failing the
     plan, matching the drivers' own behaviour. That trades a possible extra
     request for never blocking the run; the ledger is a best-effort sidecar.
     """
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
-    if not LEDGER.exists():
+    db_path = Path(db_path or DB).resolve()
+    ledger = db_path.with_name(f"{db_path.stem}.detail_enrichment_skips.db") if db_path != DB.resolve() else LEDGER
+    con = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+    if not ledger.exists():
         return con
     try:
-        con.execute(f"ATTACH DATABASE 'file:{LEDGER}?mode=ro' AS skips")
+        con.execute("ATTACH DATABASE ? AS skips", (f"{ledger.resolve().as_uri()}?mode=ro",))
         present = con.execute(
             "SELECT COUNT(*) FROM skips.sqlite_master"
             " WHERE type='table' AND name='detail_enrichment_skips'"
@@ -118,11 +120,11 @@ def _exclusion(con: sqlite3.Connection) -> str:
     )
 
 
-def pending_for(codes: list[str]) -> list[tuple[str, int]]:
+def pending_for(codes: list[str], db_path: Path | None = None) -> list[tuple[str, int]]:
     """[(stock_code, pending)] for the given codes, skipping zero-pending ones."""
     if not codes:
         return []
-    con = _connect()
+    con = _connect(db_path)
     try:
         exclude = _exclusion(con)
         placeholders = ",".join("?" * len(codes))
@@ -166,9 +168,9 @@ def queue_for(path: Path, role: str) -> list[str]:
     return [code for r, code, _ in plan_rows(path) if r == role]
 
 
-def backlog() -> list[tuple[str, int]]:
+def backlog(db_path: Path | None = None) -> list[tuple[str, int]]:
     """[(stock_code, pending)] for every stock with pending work, desc by size."""
-    con = _connect()
+    con = _connect(db_path)
     try:
         exclude = _exclusion(con)
         rows = con.execute(

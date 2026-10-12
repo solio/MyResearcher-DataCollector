@@ -287,6 +287,95 @@ cd <repo>
 
 ## `backfill_all_stocks.sh`
 
+### Native Windows browser jobs (2026-10-12)
+
+`browser_jobs.py` is a native Python entry for managed-chromium list backfill
+and chrome-cdp detail enrichment, usable from PowerShell without zsh/WSL or
+Unix sockets. Backfill calls the existing BrowserSession directly, preserving
+one runtime/context/tab for the queue and per-stock CLI reports, dates, resume
+and coverage semantics. Its default roster comes from the existing literal
+all_stocks array; --stocks overrides it without creating a second registry.
+An explicit from/to window is respected; from-only extends to each stock's
+existing coverage floor, matching the Mac driver. Plans create no browser/data.
+
+Enrich uses the existing >=40-character backlog/skip-ledger predicate and actual
+enrich-details CLI, with CDP connection-only cleanup and existing pacing/manual
+challenge behavior. A stopped stock or unreadable report stops the batch,
+without trying another stock or rotating identity. Ordinary skipped/deleted
+posts retain the Mac driver's continuation behavior. Use the same selected
+collector.db for both phases; no HTTP console DB merge or training import occurs.
+Read-only planning supports Windows paths containing spaces, Unicode and URI
+characters. Mac scripts and source parsing remain unchanged.
+
+open-cdp finds installed Windows Chrome (or uses --chrome), launches one normal
+Chrome with a dedicated repo-local profile and loopback CDP port, and leaves it
+open for manual use/enrichment. Refuse an occupied port rather than silently
+attaching to an unrelated browser. The user can explicitly enrich against an
+already-open CDP endpoint. Do not launch a source page as a connectivity probe.
+
+Remove the unconditional POSIX fcntl import inherited through Xueqiu from the
+common CLI import path. Xueqiu profile-lock operations still require their actual
+POSIX lock; this does not introduce or weaken Windows Xueqiu acquisition.
+
+Windows setup (PowerShell, repository root; Python 3.11+ and installed Google
+Chrome):
+
+```powershell
+git pull
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[browser]"
+```
+
+Managed backfill for selected stocks, or omit --stocks to use the existing
+backfill roster. The same browser/context/tab is kept across stocks:
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\ops\browser_jobs.py backfill --stocks 601012 601888 --days 14
+```
+
+Use --from 2025-07-31 --to 2026-05-06 instead of --days for an explicit window;
+--start-page 47 is an optional explicit entry page. Add --plan-only to inspect
+the window/resume plan without opening a browser or writing data.
+
+Open one CDP Chrome, then enrich the database backlog (or add --stocks):
+
+```powershell
+.\.venv\Scripts\python.exe -X utf8 scripts\ops\browser_jobs.py open-cdp
+.\.venv\Scripts\python.exe -X utf8 scripts\ops\browser_jobs.py enrich
+```
+
+The default CDP address is http://127.0.0.1:9222. Chrome remains open after
+enrichment. open-cdp uses .runtime/browser-profiles/eastmoney-enrich-cdp instead
+of the everyday Chrome profile; Chrome 136+ requires a nondefault data directory
+for remote debugging. If Chrome is installed elsewhere, pass --chrome
+"D:\Apps\Chrome\chrome.exe" to open-cdp. An existing operator-opened CDP Chrome
+can be used directly via enrich --cdp-endpoint http://127.0.0.1:9333.
+
+Both phases default to this checkout's data/collector.db. To use another
+collector database, pass --data-dir "D:\采集数据" to both commands. Copying or
+synchronizing a Mac database is a separate explicit operation. Per-stock output
+stays in runtime/logs/backfill-<stock>-<UTC date>.json/.err and
+runtime/enrich-runs/<stock>.json/.err; the existing detail request log stays in
+runtime/logs/eastmoney-detail-enrichment.jsonl. Interrupt with Ctrl+C; rerunning
+uses the existing backfill resume/coverage and enrich missing-content/skip ledger.
+
+Platform scope: Playwright currently documents Windows 11+, Windows Server
+2019+ and WSL support ([official requirements](https://playwright.dev/python/docs/intro));
+the dedicated CDP profile follows [Chrome's debugging requirement](https://developer.chrome.com/blog/remote-debugging-port).
+Actual Windows GUI/browser behavior has not been measured on this Mac host.
+
+Handoff/validation: 27 focused offline checks pass via
+`pytest -q tests/unit/test_browser_jobs.py tests/unit/test_backfill_session.py tests/unit/test_chrome_cdp_attach.py tests/unit/test_xueqiu_dedicated_chrome.py::test_dedicated_profile_lock_rejects_a_second_runtime tests/integration/test_enrich_plan_flags.py`.
+New checks exercise two real backfill CLI/store runs through the native batch,
+missing fcntl/AF_UNIX imports in a fresh interpreter, selected databases/skip
+ledgers in Unicode/URI-character paths, coverage-floor versus explicit windows,
+CDP child-process arguments and block/deleted-post outcomes, plan-only behavior,
+Windows Chrome discovery, dedicated profile flags and occupied-port refusal.
+Browser/source responses and process launches are offline doubles; temporary
+databases carry all test writes. Existing planner compatibility checks read the
+collector database and write only temporary plan output. No live source request,
+actual Chrome launch or production DB write was used for validation.
+
 ### Browser lifetime when switching stocks (2026-10-12)
 
 The normal driver reuses one managed browser/context/tab for its entire stock

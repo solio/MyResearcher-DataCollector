@@ -15,7 +15,6 @@ prevents the parser/backfill layers from retaining invalid raw ``Page`` objects.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -321,6 +320,10 @@ class XueqiuDedicatedChromePage:
         self.focus_samples.append(self.focus_observer(action))
 
     def _acquire_profile_lock(self) -> None:
+        try:
+            import fcntl
+        except ImportError as exc:
+            raise XueqiuDomTransportError("dedicated Xueqiu profile locking requires POSIX; use Eastmoney managed-chromium/chrome-cdp on Windows") from exc
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         lock_path = self.profile_dir.parent / f".{self.profile_dir.name}.collector.lock"
         lock_file = lock_path.open("a+", encoding="utf-8")
@@ -340,6 +343,7 @@ class XueqiuDedicatedChromePage:
     def _release_profile_lock(self) -> None:
         if self._lock_file is None:
             return
+        import fcntl
         try:
             fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
         finally:
