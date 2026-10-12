@@ -354,7 +354,7 @@ class CoreTests(unittest.TestCase):
     def test_two_old_pages_confirm_boundary_without_body_fetch(self):
         a = row("1001", published="2024-12-31 23:59:59")
         b = row("1002", published="2024-12-30 00:00:00")
-        e = self.started(Wire(*[ok(list_html(rows)) for rows in ([a], [a], [a], [b], [a], [b], [a], [b])]))
+        e = self.started(Wire(*[ok(list_html(rows)) for rows in ([a], [b], [a], [b], [a], [b])]))
         e.tick()
         self.assertEqual(e.status()["current"]["kind"], "list")
         for _ in range(7):
@@ -365,6 +365,27 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(status["coverage_complete"])
         self.assertTrue(status["observed_work_complete"])
         self.assertEqual(status["aggregate"]["body_complete"], 0)
+
+    def test_two_stable_old_forward_pages_stop_without_terminal_rechecks(self):
+        a = row("1001", published="2024-12-31 23:59:59")
+        b = row("1002", published="2024-12-30 00:00:00")
+        wire = Wire(ok(list_html([a], count=2)), ok(list_html([b], count=2)))
+        e = self.engine(wire)
+        e.create_job(CONFIG)
+        e.set_start_page("601012", 1)
+        e.start("601012")
+        self.tick_due(e)
+        self.assertFalse(e.status()["coverage"][0]["list_complete"])
+        self.tick_due(e)
+        self.assertTrue(e.status()["coverage"][0]["list_complete"])
+        self.tick_due(e)
+        self.assertEqual(e.status()["state"], "completed")
+        self.assertEqual(len(wire.calls), 2)
+        self.assertEqual(e.status()["aggregate"]["body_complete"], 0)
+        proof = e._frontier(1, "601012")["reconciliation"]
+        self.assertTrue(proof["boundary_only"])
+        self.assertEqual(proof["request_ids"], [1, 2])
+        self.assertFalse(e.status()["coverage_complete"])
 
     def test_duplicate_forward_repositions_then_pauses_if_no_progress(self):
         a = row(published="2025-02-01 00:00:00")

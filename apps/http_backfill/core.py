@@ -2163,6 +2163,14 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             shifted_newer = (previous_standard and standard and min(r["post_publish_time"] for r in standard)
                              > min(r["post_publish_time"] for r in previous_standard))
             terminal = "date_boundary_confirmed" if boundary else "source_exhausted" if exhausted else None
+            boundary_stop = (boundary and previous is not None and previous_standard and standard
+                             and task["page"] == previous["page"] + 1
+                             and previous_count is not None and previous_count == page.source_count
+                             and self._stable_page_signature(previous["rows"]) is not None
+                             and self._stable_page_signature(rows) is not None
+                             and all(r["post_publish_time"][:10] < start for r in previous_standard)
+                             and min(r["post_publish_time"] for r in previous_standard)
+                                 >= max(r["post_publish_time"] for r in standard))
             if previous and (shrink or shifted_newer):
                 old_boundary, new_boundary = self._boundary_navigation(previous["rows"]), self._boundary_navigation(rows)
                 if (shrink and not shifted_newer and not terminal and not previous.get("terminal")
@@ -2186,14 +2194,23 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     return stats
                 self._begin_recovery(task["job"], task["stock"], previous, "source_count_decrease" if shrink else "forward_time_shift")
                 return stats
-            self.db.execute("UPDATE coverage SET pages=pages+1,under_pages=?,boundary=?,list_complete=0,stop_reason=? WHERE job=? AND stock=?",
-                            (under, int(boundary), terminal, task["job"], task["stock"]))
+            self.db.execute("UPDATE coverage SET pages=pages+1,under_pages=?,boundary=?,list_complete=?,stop_reason=? WHERE job=? AND stock=?",
+                            (under, int(boundary), int(bool(boundary_stop)), terminal, task["job"], task["stock"]))
             if rows:
                 frontier = {"page": task["page"], "rows": rows, "request_id": rid, "source_count": page.source_count, "reconciled": False,
                             "anchor_page": previous["page"] if previous else task["page"],
                             "anchor_rows": previous["rows"] if previous else rows, "terminal": terminal}
+                if boundary_stop:
+                    frontier.update(reconciled=True, checked_at=self.clock(), reconciliation={
+                        "proof_level": "two_ordered_below_window_pages", "boundary_only": True,
+                        "request_ids": [previous["request_id"], rid], "from_date": start})
                 self._save_frontier(task["job"], task["stock"], frontier)
-                if terminal or (cov["pages"] + 1) % 25 == 0 or not standard:
+                if boundary_stop:
+                    self.db.execute("UPDATE tasks SET status='superseded' WHERE job=? AND stock=? "
+                                    "AND kind='list' AND status='pending'", (task["job"], task["stock"]))
+                    self._event("date_boundary_stopped", "连续两页均早于开始日期；列表采集结束，仅继续窗口内待补详情",
+                                {"stock": task["stock"], "page": task["page"], **frontier["reconciliation"]})
+                elif terminal or (cov["pages"] + 1) % 25 == 0 or not standard:
                     self._begin_recovery(task["job"], task["stock"], frontier,
                                          "terminal_recheck" if terminal else "periodic_recheck" if standard else "nonstandard_page_recheck")
                 else:

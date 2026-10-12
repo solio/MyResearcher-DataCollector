@@ -1,6 +1,40 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-11, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-12, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest change: finish a stable lower boundary without extra outside-window passes
+
+Local002028 window2025-07-31..2026-03-05 had forward232/request7079 spanning
+2025-07-25..2025-08-05, forward233/request7097 spanning2025-07-18..2025-07-25,
+and forward234/request7099 spanning2025-07-16..2025-07-18. The mixed232 page
+still contains window data;233/234 are both fully below it. Coverage correctly
+had under_pages2/boundary1/stop_reason=date_boundary_confirmed, but then launched
+terminal_recheck over233/234 twice (first pass requests7101/7103), keeping the
+stock running after the boundary was already confirmed.
+
+SPEC and core now allow those two consecutive ordered standard pages with
+matching non-null source counts to finish list traversal immediately. Persist
+both request IDs as boundary-only evidence, retain all gaps and pending details,
+and supersede only that job/stock's pending list tasks. Changed/missing counts,
+uncertain row flags/order and source-tail cases retain existing calibration.
+No parser, data schema, source challenge behavior or whole-window proof changes.
+
+Four temporary offline real-response replays pass:233/234 completes in2 calls;
+mixed232 and its7 real in-window details completes in10 calls; changed count
+retains calibration; missing count retains6 list calls. No network source traffic
+in verification. The two focused core boundary tests pass; a new regression
+requires exactly2 stable-page calls, and the existing unknown-count fixture is
+aligned with already-existing head reuse instead of repeating a fabricated head
+as the next physical page. No broad suites or extra live probes.
+
+During initial diagnosis002028 alone was paused. Current configuration then
+changed externally to002463/300666;002028 was removed. Preserved that current
+configuration (job3, window2025-07-31..2026-03-05, curl/35sec), paused its two
+previously-running healthy stocks, drained requests and rebuilt/recreated only
+the local Compose service. Verified instance/config identity and no extra source
+request during restart, then resumed only002463/300666. Container core SHA256
+b567730c487607019e48f4397d1445699c5dbf963f33f3138bcfaf0b3fa30c99 matches
+the saved source. No training writes or remote-node rollout.
 
 ## Latest operation: configure both gaps from the authoritative collector database
 

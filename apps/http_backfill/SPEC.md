@@ -1,5 +1,19 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## Stop after two stable pages below the window
+
+Two consecutive ordinary forward pages may finish list traversal immediately
+when both have source-explicit, ordered non-pinned standard rows entirely before
+from_date, their physical page numbers are adjacent, their non-null source counts
+match, and their cross-page timestamps do not reverse. Keep the existing two-page
+confirmation; a mixed window page or one full old page does not suffice. Record
+both request IDs as lower-bound evidence, retain pending in-window details and
+all existing gaps, and supersede only this job/stock's pending list tasks. Do not
+schedule two further passes through these already-outside-window pages. This
+proves the stopping boundary only, never completeness of the requested window.
+Uncertain row flags/order, shifted pages or changed counts retain the existing
+terminal calibration. Source-exhaustion behavior and authentication stops remain.
+
 ## Reproducible native Linux deployment
 
 Native Linux support must be repository-owned, using the existing server, CLI
