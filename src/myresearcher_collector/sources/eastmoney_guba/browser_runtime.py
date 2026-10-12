@@ -204,6 +204,11 @@ class ManagedChromiumTransport:
             detail_dwell_seconds=self.detail_dwell_seconds,
         )
 
+    def reset_run_observations(self) -> None:
+        """Reset per-stock navigation evidence while keeping the context/tab."""
+        if self.delegate is not None:
+            self.delegate = self._new_delegate()
+
     def _bind_dialog_handler(self, page) -> None:
         page.on("dialog", self._on_dialog)
 

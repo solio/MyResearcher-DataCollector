@@ -4,7 +4,8 @@
 #
 # See scripts/ops/README.md for the full operating contract. Summary:
 #   * each stock runs as its own `backfill` invocation, managed-chromium,
-#     list-only, writing to the legacy mutable `posts` table;
+#     list-only, borrowing one browser for the queue and writing the legacy
+#     mutable `posts` table;
 #   * the range is `--days DAYS` ending today (Asia/Shanghai), so the windows
 #     overlap on re-run -- that is intentional and free: a fully covered range
 #     short-circuits to SUCCESS with 0 pages (`already_covered`);
@@ -85,6 +86,8 @@ FROM=${FROM:-}
 # local date, which is the same end the DAYS path would have chosen.
 TO=${TO:-$(date +%F)}
 CHALLENGE_WAIT=${CHALLENGE_WAIT:-180}
+BACKFILL_BROWSER_REUSE=${BACKFILL_BROWSER_REUSE:-1}
+BACKFILL_ACQ_MODE=${BACKFILL_ACQ_MODE:-managed-chromium}
 # Turn pages after the first by clicking the page's own pager anchor instead of
 # navigating to `f_<n>.html`, so each page request is a same-origin in-page
 # navigation carrying a Referer. OFF by default -- it changes the shape of every
@@ -233,6 +236,42 @@ if [ "${DRIFT_CHECK_ONLY:-0}" = "1" ]; then
   echo "DRIFT_CHECK_OK $(date -u +%FT%TZ)"
   exit 0
 fi
+
+# One owned local worker keeps the browser/context/tab alive across stocks.
+# Read-only checks above never start it; EXIT closes only this batch's runtime.
+SESSION_PID=""
+SESSION_DIR=""
+cleanup_browser_session() {
+  if [ -n "$SESSION_PID" ]; then
+    kill -TERM "$SESSION_PID" 2>/dev/null || true
+    wait "$SESSION_PID" 2>/dev/null || true
+  fi
+  if [ -n "$SESSION_DIR" ]; then
+    rm -f "$SESSION_DIR/browser.sock"
+    rmdir "$SESSION_DIR" 2>/dev/null || true
+  fi
+}
+trap cleanup_browser_session EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [ "$BACKFILL_BROWSER_REUSE" = "1" ]; then
+  SESSION_DIR=$(mktemp -d /tmp/backfill-session.XXXXXX) || exit 3
+  PYTHONPATH=src "$PY" scripts/ops/backfill_session.py serve --socket "$SESSION_DIR/browser.sock" &
+  SESSION_PID=$!
+  for _ready in {1..100}; do
+    [ -S "$SESSION_DIR/browser.sock" ] && break
+    kill -0 "$SESSION_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [ ! -S "$SESSION_DIR/browser.sock" ]; then
+    echo "HALT_ON_BROWSER_SESSION_START_FAILED"
+    echo "ALL_DONE_HALTED $(date -u +%FT%TZ)"
+    exit 1
+  fi
+  BACKFILL_COMMAND=("$PY" scripts/ops/backfill_session.py call --socket "$SESSION_DIR/browser.sock")
+else
+  BACKFILL_COMMAND=("$PY" -m myresearcher_collector.cli.main)
+fi
 for s in "${stocks[@]}"; do
   out="$LOG_DIR/backfill-$s-$RUN_TAG.json"
   err="$LOG_DIR/backfill-$s-$RUN_TAG.err"
@@ -281,14 +320,19 @@ for s in "${stocks[@]}"; do
   echo "===== stock=$s window=${RANGE_FLAG[*]} entry=${START_FLAG[*]:-seek} start=$(date -u +%FT%TZ) ====="
   # Drop any stale report so the post-run read can only see this invocation.
   rm -f "$out"
-  PYTHONPATH=src "$PY" -m myresearcher_collector.cli.main backfill \
+  : > "$err"
+  SESSION_REPORT_FLAGS=()
+  if [ "$BACKFILL_BROWSER_REUSE" = "1" ]; then
+    SESSION_REPORT_FLAGS=(--report "$out" --error "$err" --)
+  fi
+  PYTHONPATH=src "${BACKFILL_COMMAND[@]}" "${SESSION_REPORT_FLAGS[@]}" backfill \
     --source eastmoney_guba --stock "$s" --data-dir data \
-    --list-only --acquisition-mode managed-chromium --confirm-live \
+    --list-only --acquisition-mode "$BACKFILL_ACQ_MODE" --confirm-live \
     --challenge-wait "$CHALLENGE_WAIT" \
     "${RANGE_FLAG[@]}" \
     "${START_FLAG[@]}" \
     "${LIST_CLICK_PAGING_FLAG[@]}" \
-    > "$out" 2> "$err"
+    > "$out" 2>> "$err"
   rc=$?
 
   verdict=$("$PY" - "$s" "$out" <<'PY'

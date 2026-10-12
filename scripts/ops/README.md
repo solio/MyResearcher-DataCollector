@@ -287,6 +287,35 @@ cd <repo>
 
 ## `backfill_all_stocks.sh`
 
+### Browser lifetime when switching stocks (2026-10-12)
+
+The normal driver reuses one managed browser/context/tab for its entire stock
+queue. A local batch worker owns that runtime; per-stock calls borrow it and
+keep the existing CLI acquisition, report, coverage and challenge-wait behavior.
+Switching stocks navigates the existing tab, without launching another browser,
+closing its window, activating an app or calling bring_to_front. The first launch
+and final batch cleanup still occur normally. Per-stock navigation counters
+reset, and the configured minimum interval also applies across stock boundaries.
+Any failed stock still stops the driver; session reuse never rotates identity or
+tries the next stock after a challenge. No personal browser is auto-attached.
+
+Existing commands work unchanged. BACKFILL_BROWSER_REUSE=0 explicitly restores
+the old per-stock process/browser lifecycle. BACKFILL_ACQ_MODE=chrome-cdp uses
+the existing operator-supplied CDP browser and disconnects without closing it;
+managed-chromium remains the default. Read-only drift checks create no session.
+Owned session resources are cleaned on normal exit, failure and interruption.
+
+Handoff/validation: six focused offline checks pass via
+`pytest -q tests/unit/test_backfill_session.py tests/unit/test_chrome_cdp_attach.py -k 'backfill_session or close_disconnects_without_closing or close_is_safe_before'`.
+They exercise two actual CLI/store runs with synthetic source responses and one
+borrowed runtime, report serialization, the interval across stocks, failure
+stopping, preserved context/tab and the local client protocol. Attached-browser
+cleanup remains disconnect-only. `zsh -n` and `git diff --check` pass. No live
+source request/browser launch or production DB write was used for validation;
+foreground behavior under the user's running desktop has not been measured.
+An already-running old driver must finish/stop and be launched again to use the
+new process lifetime. Existing stock-roster edits remain untouched.
+
 Resume-safe, fail-closed historical **collection** driver over the same 16
 Eastmoney stocks. This is the counterpart to `enrich_all_stocks.sh`: enrich
 fills `content` for rows that already exist, backfill acquires the list rows
