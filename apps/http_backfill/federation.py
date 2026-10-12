@@ -364,7 +364,11 @@ class MergeStore:
                 if (p.hostname != "guba.eastmoney.com" or not isinstance(request.get("post_id"), str)
                         or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(request["post_id"]) + r"\.html", p.path)):
                     raise FederationError("详情原请求源 URL/ID 不一致")
-                if request["outcome"] == "real_data" and request["http_status"] == 200:
+                from compatible_store import LEGACY_DETAIL_SCOPE_ERROR
+                if (request["http_status"] == 200 and (request["outcome"] == "detail_out_of_scope"
+                        or (request["outcome"] == "schema_error" and request.get("error") == LEGACY_DETAIL_SCOPE_ERROR))):
+                    parsed_requests[request_id] = {"out_of_scope_payload": guba._embedded_json(html, "post_article")}
+                elif request["outcome"] == "real_data" and request["http_status"] == 200:
                     parsed_requests[request_id] = guba.parse_detail_page(html)
                 elif request["outcome"] == "detail_unavailable" and request["http_status"] in {200, 404} and guba.is_not_found_page(html):
                     parsed_requests[request_id] = None
@@ -409,6 +413,16 @@ class MergeStore:
         if fields:
             exc = SourceFieldConflict(fields)
             raise FederationError(str(exc), conflicts=exc.conflicts)
+        if isinstance(detailed, dict) and "out_of_scope_payload" in detailed:
+            from compatible_store import detail_scope_fact
+            scope = detail_scope_fact(listed, detailed["out_of_scope_payload"],
+                                      old_request=requests[links["list"]], new_request=requests[links["detail"]])
+            if (not scope or post["content"] is not None or provenance.get("source_status") != "out_of_scope"
+                    or provenance.get("detail_required") is not False or provenance.get("detail_skip") != scope):
+                raise FederationError("跳过正文的类型/状态/证据不一致")
+            detailed = None
+        elif provenance.get("source_status") == "out_of_scope" or provenance.get("detail_skip") is not None:
+            raise FederationError("跳过正文缺少原始非普通帖响应")
         if post["content"] is not None:
             if detailed is None:
                 exc = SourceFieldConflict([source_field_fact(post, {"source_item_id": post["source_item_id"]},

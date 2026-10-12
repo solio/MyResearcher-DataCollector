@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 APP = Path(__file__).resolve().parents[1]
 REPO = Path(__file__).resolve().parents[3]
@@ -305,10 +306,116 @@ class CoreTests(unittest.TestCase):
         e = self.started(Wire(ok(list_html([a])), ok(detail_html(a, post_id="999"))))
         e.tick()
         self.tick_due(e)
-        self.assertEqual(e.status()["state"], "error")
+        self.assertEqual(e.status()["stock_runtimes"][0]["state"], "error")
         self.assertEqual(e.status()["aggregate"]["body_complete"], 0)
         self.assertEqual(e.status()["aggregate"]["pending"], 1)
-        self.assertEqual(e.status()["current"]["post_id"], a["post_id"])
+        self.assertEqual(e.status()["stock_runtimes"][0]["current"]["post_id"], a["post_id"])
+
+    def test_nonstandard_detail_skips_and_next_post_collects_and_exports(self):
+        from federation import MergeStore, export_page, export_raw
+        from contextlib import closing
+        import sqlite3
+        a, b = row(), row("1002")
+        wire = Wire(ok(list_html([a, b])), ok(detail_html(a, post_type=42)), ok(detail_html(b)))
+        e = self.started(wire)
+        e.tick()
+        self.tick_due(e)
+        status = e.status()
+        self.assertEqual(status["stock_runtimes"][0]["state"], "running")
+        self.assertIsNone(status["stock_runtimes"][0]["active_halt"])
+        self.assertEqual(status["aggregate"]["skipped"], 1)
+        self.assertEqual(status["aggregate"]["pending"], 1)
+        self.assertEqual(status["aggregate"]["body_complete"], 0)
+        self.assertEqual(status["aggregate"]["failures"], 0)
+        self.assertEqual(e.requests()[0]["outcome"], "detail_out_of_scope")
+        self.assertIn("详情类型 42", e.requests()[0]["error"])
+        self.assertEqual(e.requests()[0]["analysis"]["detail_skip"]["post_id"], a["post_id"])
+        self.tick_due(e)
+        self.assertIn("1002", wire.calls[-1][0])
+        self.assertEqual(e.status()["aggregate"]["body_complete"], 1)
+        self.assertIsNone(e.status()["storage_halt"])
+        exported = export_page(e)
+        record = next(r for r in reversed(exported["items"]) if r["post"]["source_item_id"] == "1001")
+        self.assertIsNone(record["post"]["content"])
+        self.assertEqual(record["provenance"]["source_status"], "out_of_scope")
+        self.assertFalse(record["provenance"]["body_complete"])
+        self.assertFalse(record["provenance"]["detail_required"])
+        with tempfile.TemporaryDirectory() as hub:
+            merged = MergeStore(hub)
+            merged.merge_page(e._get("instance_id"), exported, lambda rid: export_raw(e, rid))
+            with closing(sqlite3.connect(merged.db_path)) as db:
+                stored = db.execute("SELECT title,content FROM posts WHERE source_item_id='1001'").fetchone()
+                self.assertEqual(stored[0], a["post_title"])
+                self.assertIsNone(stored[1])
+
+    def test_detail_scope_missing_type_or_wrong_id_still_halts(self):
+        for fields in ({"post_type": None}, {"post_type": True}, {"post_type": "garbage"},
+                       {"post_type": 42, "post_id": "999"}):
+            with self.subTest(fields=fields), tempfile.TemporaryDirectory() as tmp:
+                a = row()
+                e = Engine(tmp, transport=Wire(ok(list_html([a])), ok(detail_html(a, **fields))), clock=self.clock)
+                try:
+                    e.create_job(CONFIG)
+                    e.start()
+                    e.tick()
+                    self.tick_due(e)
+                    status = e.status()
+                    self.assertEqual(status["stock_runtimes"][0]["active_halt"], "schema_error")
+                    self.assertEqual(status["aggregate"]["skipped"], 0)
+                    self.assertEqual(status["aggregate"]["pending"], 1)
+                finally:
+                    e.close()
+
+    def test_nonstandard_detail_with_challenge_still_stops_node(self):
+        a = row()
+        body = detail_html(a, post_type=42) + CHALLENGE.encode()
+        e = self.started(Wire(ok(list_html([a])), ok(body)))
+        e.tick()
+        self.tick_due(e)
+        status = e.status()
+        self.assertEqual(status["stock_runtimes"][0]["active_halt"], "challenge")
+        self.assertIsNotNone(status["node_source_auth_barrier"])
+        self.assertEqual(status["aggregate"]["skipped"], 0)
+        self.assertEqual(status["aggregate"]["pending"], 1)
+
+    def test_legacy_nonstandard_detail_halt_resolves_offline_preserving_ledger(self):
+        from compatible_store import LEGACY_DETAIL_SCOPE_ERROR
+        from myresearcher_collector.sources.eastmoney_guba import parser as guba
+        a = row()
+        e = self.started(Wire(ok(list_html([a])), ok(detail_html(a, post_type=42))))
+        e.tick()
+        with patch("core.detail_scope_fact", side_effect=guba.GubaSchemaMismatch(LEGACY_DETAIL_SCOPE_ERROR)):
+            self.tick_due(e)
+        before = [tuple(r) for r in e.db.execute("SELECT * FROM requests ORDER BY id")]
+        e.close()
+        wire = Wire()
+        restored = self.engine(wire)
+        status = restored.status()
+        self.assertEqual(status["stock_runtimes"][0]["state"], "paused")
+        self.assertIsNone(status["stock_runtimes"][0]["active_halt"])
+        self.assertEqual(status["aggregate"]["skipped"], 1)
+        self.assertEqual(status["aggregate"]["pending"], 0)
+        self.assertIsNone(status["storage_halt"])
+        self.assertEqual([tuple(r) for r in restored.db.execute("SELECT * FROM requests ORDER BY id")], before)
+        self.assertEqual(wire.calls, [])
+        self.assertIn("详情类型 42", restored.requests()[0]["display_error"])
+
+    def test_legacy_scope_halt_does_not_skip_tampered_raw(self):
+        from compatible_store import LEGACY_DETAIL_SCOPE_ERROR
+        from myresearcher_collector.sources.eastmoney_guba import parser as guba
+        a = row()
+        e = self.started(Wire(ok(list_html([a])), ok(detail_html(a, post_type=42))))
+        e.tick()
+        with patch("core.detail_scope_fact", side_effect=guba.GubaSchemaMismatch(LEGACY_DETAIL_SCOPE_ERROR)):
+            self.tick_due(e)
+        raw = Path(self.tmp.name) / e.requests()[0]["raw_ref"]
+        e.close()
+        raw.write_bytes(raw.read_bytes() + b"tampered")
+        wire = Wire()
+        restored = self.engine(wire)
+        self.assertEqual(restored.status()["stock_runtimes"][0]["active_halt"], "schema_error")
+        self.assertEqual(restored.status()["aggregate"]["skipped"], 0)
+        self.assertEqual(wire.calls, [])
 
     def test_source_missing_detail_distinct_from_schema_failure(self):
         a = row()

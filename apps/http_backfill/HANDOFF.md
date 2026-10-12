@@ -2,6 +2,47 @@
 
 Date: 2026-10-12, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: skip announcement/nonstandard details without a stock halt
+
+User reports the literal "detail is outside standard post_type=0 scope" on
+another machine and confirms it is an announcement. No remote identity/type
+number was supplied; do not claim that local evidence identifies that post or
+assign announcement semantics to a guessed numeric type. The previous shared
+parser raises this when the detail type is nonzero/missing. Its ordinary-body
+scope remains unchanged; the app now accounts for explicit alternate types.
+
+After existing framing/HTTP/challenge/source-URL guards, a nonzero parsed integer
+type and matching detail/list/request post ID finishes this detail task as
+detail_out_of_scope and keeps collection running. Retain the list and raw bytes,
+store out_of_scope/body-incomplete state, and count skipped separately in H5.
+The compatibility/export path retains content NULL plus type/request evidence;
+fleet merge independently validates those raw facts. No production parser/schema,
+training DB write, source probe or runtime deployment occurred in this change.
+
+Startup resolves only active stock schema halts carrying the exact old English
+error, using owned original tasks and hash/framing/URL/challenge-checked retained
+responses. Keep the original request/error intact, record a skip event/state,
+finish that task and leave the stock paused for manual collect. Missing/tampered
+raw or a storage halt prevents repair. Other navigation and auth barriers stay.
+Read-only historical request views show the actual types and, once repaired,
+display a skipped outcome while the immutable original failure stays available.
+
+Eight focused offline tests pass (0.312sec): skip then collect the next post,
+export and independently merge its list-only record; malformed/missing type and
+wrong ID still halt; challenge plus alternate payload still stops the node;
+legacy halt repairs without any HTTP/ledger rewrite; tampered raw remains halted;
+normal detail-ID validation, missing-detail accounting and forged fleet evidence
+remain protected. Existing strict-ID test assertions are corrected to use the
+stock runtime: the old path also reported global paused/current None. Node
+syntax check for static/app.js and git diff --check pass. Numeric42 is synthetic
+test evidence, never a source announcement-type mapping.
+
+Deployment: pull/rebuild the affected Docker node with the existing Compose
+command, then click collect on the repaired stock. Native nodes use the existing
+native.py update operation after git pull. A fleet hub consuming the new skip
+evidence needs the same code update. User's uncommitted
+scripts/ops/backfill_all_stocks.sh changes remain outside this commit.
+
 ## Latest change: finish a stable lower boundary without extra outside-window passes
 
 Local002028 window2025-07-31..2026-03-05 had forward232/request7079 spanning

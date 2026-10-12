@@ -44,7 +44,8 @@ from window_seek import WindowSeekMixin
 from stock_runtime import StockRuntimeMixin
 from rate_audit import tail_audit
 from compatible_store import (CompatibleDataStore, SourceFieldConflict, _utc,
-                              merge_http_observations, same_http_author_identity, source_field_fact)
+                              merge_http_observations, same_http_author_identity, source_field_fact,
+                              detail_scope_fact, detail_scope_message, LEGACY_DETAIL_SCOPE_ERROR)
 from unified_store import LAYOUT, guard_runtime_path, initialize_schema, simple_store_adapter
 
 VERSION = "http-backfill.v5"
@@ -437,6 +438,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         from task_proxy import TaskProxyRoutes
         self.task_proxies = TaskProxyRoutes(self.data_dir, self.proxy, clock=self.clock)
         self._init_stock_runtime()
+        self._migrate_detail_scope_halts()
 
     def _get_global(self, key, default=None):
         row = self.db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -1845,7 +1847,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     page_result = self._accept_list(rid, task, html, config, probe_only=probe_only)
                     evidence["list_observation"] = page_result
                 else:
-                    self._accept_detail(rid, task, html, probe_only=probe_only)
+                    scope = self._accept_detail(rid, task, html, probe_only=probe_only)
+                    if scope:
+                        self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+                        self._outcome(rid, "detail_out_of_scope", detail_scope_message(scope),
+                                      evidence | {"detail_skip": scope})
+                        self._after_success(rid, probe)
+                        return
             except (ValueError, TypeError, KeyError) as exc:
                 saved = self.db.execute("SELECT analysis FROM requests WHERE id=?", (rid,)).fetchone()
                 validated = json.loads(saved[0]) if saved and saved[0] else {}
@@ -2233,14 +2241,21 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         match = re.fullmatch(r"/news,[^,/]+,([0-9]+)\.html", p.path)
         if p.hostname != "guba.eastmoney.com" or not match or match[1] != task["post_id"]:
             raise ValueError("详情响应 URL 的源 ID 不匹配")
-        detail = guba.parse_detail_page(html)
         item = _item_load(post["item"])
         old_request = self.db.execute("SELECT * FROM requests WHERE id=?", (post["list_request"],)).fetchone()
         new_request = self.db.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
+        payload = guba._embedded_json(html, "post_article")
+        scope = detail_scope_fact(item, payload, old_request=old_request, new_request=new_request)
+        if scope:
+            if scope["post_id"] != task["post_id"]:
+                raise ValueError("详情源 ID 与正文任务不匹配")
+            if not probe_only:
+                self._skip_detail_scope(task, rid, payload, scope)
+            return scope
+        detail = guba.parse_detail_page(html)
         merged = merge_http_observations(item, detail, old_request=old_request, new_request=new_request)
         if detail.source_item_id != task["post_id"]:
             raise ValueError("详情源 ID 不匹配")
-        payload = guba._embedded_json(html, "post_article")
         if detail.published_at.strftime("%Y-%m-%d %H:%M:%S") != payload["post_publish_time"]:
             raise ValueError("详情发布时间格式不完整")
         if probe_only:
@@ -2258,6 +2273,59 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                         (rid, _dump(metadata_payload), _dump(data), DETAIL_BODY_CONTENT_SOURCE, task["post_id"]))
         self._event("detail_acquired", "正文已完整获取" if detail.content else "来源返回合法空正文",
                     {"request_id": rid, "post_id": task["post_id"], "characters": len(detail.content)})
+
+    def _skip_detail_scope(self, task, rid, payload, scope):
+        metadata = dict(payload)
+        metadata.pop("post_content", None)
+        self.db.execute("UPDATE http_post_state SET status='out_of_scope',detail_request=?,detail_payload=? WHERE post_id=? AND status!='complete'",
+                        (rid, _dump(metadata), task["post_id"]))
+        self._event("detail_out_of_scope", detail_scope_message(scope), {"request_id": rid, **scope})
+
+    def _migrate_detail_scope_halts(self):
+        """Resolve only the exact old scope failure from already-retained bytes."""
+        if self._get_global("storage_halt"):
+            return
+        repaired = []
+        with self._mutex, self.db:
+            for runtime in self._stock_runtimes(include_detached=True):
+                if runtime["active_halt"] != "schema_error":
+                    continue
+                with self._stock_context(runtime["stock"], runtime["job"]):
+                    task = self._halt_target()
+                    evidence = self._get("block_evidence") or {}
+                    request = self.db.execute("SELECT * FROM requests WHERE id=? AND task=? AND job=? AND stock=?",
+                                              (evidence.get("id"), task["id"] if task else None,
+                                               runtime["job"], runtime["stock"])).fetchone()
+                    if (not task or task["kind"] != "detail" or not request or request["outcome"] != "schema_error"
+                            or request["error"] != LEGACY_DETAIL_SCOPE_ERROR or request["probe_only"]
+                            or request["post_id"] != task["post_id"] or request["url"] != task["url"]):
+                        continue
+                    try:
+                        self.compatible_store._raw_cache.clear()
+                        retained, html = self.compatible_store._raw_request(self, request["id"], allowed=("schema_error",))
+                        post = self.db.execute("SELECT * FROM http_posts WHERE post_id=?", (task["post_id"],)).fetchone()
+                        if not post or post["status"] == "complete":
+                            continue
+                        listed = self.db.execute("SELECT * FROM requests WHERE id=?", (post["list_request"],)).fetchone()
+                        payload = guba._embedded_json(html, "post_article")
+                        scope = detail_scope_fact(_item_load(post["item"]), payload, old_request=listed, new_request=retained)
+                        if not scope:
+                            continue
+                        p = urlparse(retained["url"])
+                        if p.hostname != "guba.eastmoney.com" or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(task["post_id"]) + r"\.html", p.path):
+                            continue
+                        self._skip_detail_scope(task, request["id"], payload, scope)
+                    except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+                        continue
+                    self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+                    self._clear_active_halt()
+                    self._set("state", "paused")
+                    self._set("reason", detail_scope_message(scope) + "；点击采集继续")
+                    self._set("probe", False)
+                    repaired.append(request["id"])
+            self._publish_stock_summary()
+        for rid in repaired:
+            self._sync_storage(rid)
 
     def _finish_job(self):
         self._set("state", "completed")
@@ -2278,10 +2346,10 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                                      "SUM(kind='list' AND purpose='seek') AS seek_requests,"
                                      "SUM(kind='list' AND purpose='recovery') AS calibration_requests,"
                                      "SUM(outcome='real_data' AND kind='list' AND purpose='recovery') AS calibration_pages,"
-                                     "SUM(outcome NOT IN ('real_data','redirect','detail_unavailable','reserved')) AS failures FROM requests WHERE job=?", (job_id,)).fetchone()
+                                     "SUM(outcome NOT IN ('real_data','redirect','detail_unavailable','detail_out_of_scope','reserved')) AS failures FROM requests WHERE job=?", (job_id,)).fetchone()
             post_counts = self.db.execute("SELECT COUNT(*) AS unique_posts,SUM(status='complete' AND typeof(content)='text') AS body_complete,"
                                          "SUM(status='pending') AS pending,SUM(status='removed') AS removed,SUM(status='complete' AND typeof(content)!='text') AS missing_body,"
-                                         "SUM(status='list_only') AS list_only,SUM(status IN ('pending','complete','removed')) AS detail_required,"
+                                         "SUM(status='list_only') AS list_only,SUM(status='out_of_scope') AS skipped,SUM(status IN ('pending','complete','removed')) AS detail_required,"
                                          "SUM(json_extract(item,'$.source_metadata.list_title_length')>=40) AS detail_policy_required,"
                                          "SUM(status='complete' AND content!='') AS nonempty_body,SUM(status='complete' AND content='') AS source_empty_body "
                                          f"FROM http_posts p WHERE post_id IN (SELECT post_id FROM associations WHERE job=? AND eligible=1 AND stock IN ({stock_args})) "
@@ -2298,7 +2366,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 c["gaps"] = json.loads(c["gaps"])
                 c["list_complete"], c["date_boundary_reached"] = bool(c["list_complete"]), bool(c.pop("boundary"))
                 n = self.db.execute("SELECT SUM(p.status IN ('pending','complete','removed')) AS required,COUNT(*) AS observed,"
-                                    "SUM(p.status='list_only') AS list_only,SUM(json_extract(p.item,'$.source_metadata.list_title_length')>=40) AS policy_required,"
+                                    "SUM(p.status='list_only') AS list_only,SUM(p.status='out_of_scope') AS skipped,SUM(json_extract(p.item,'$.source_metadata.list_title_length')>=40) AS policy_required,"
                                     "SUM(p.status='complete' AND typeof(p.content)='text') AS complete,SUM(p.status='pending') AS pending,SUM(p.status='removed') AS removed,SUM(p.status='complete' AND typeof(p.content)!='text') AS missing_body,"
                                     f"MIN({pub_epoch}) AS earliest_epoch,MAX({pub_epoch}) AS latest_epoch "
                                     "FROM associations a JOIN http_posts p ON p.post_id=a.post_id WHERE a.job=? AND a.stock=? AND a.eligible=1 "
@@ -2461,6 +2529,24 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
     def request_view(self, item):
         """Describe old source-error rows without rewriting their ledger facts."""
         item = self._identity_conflict_view(item)
+        if item.get("kind") == "detail" and item.get("error") == LEGACY_DETAIL_SCOPE_ERROR:
+            post = self.db.execute("SELECT item,list_request,status,detail_request FROM http_posts WHERE post_id=?", (item.get("post_id"),)).fetchone()
+            if post:
+                try:
+                    self.compatible_store._raw_cache.clear()
+                    request, html = self.compatible_store._raw_request(self, item["id"], allowed=("schema_error",))
+                    listed = self.db.execute("SELECT * FROM requests WHERE id=?", (post["list_request"],)).fetchone()
+                    scope = detail_scope_fact(_item_load(post["item"]), guba._embedded_json(html, "post_article"),
+                                             old_request=listed, new_request=request)
+                    if scope:
+                        if post["status"] == "out_of_scope" and post["detail_request"] == item["id"]:
+                            return {**item, "display_outcome": "detail_out_of_scope", "display_error": detail_scope_message(scope),
+                                    "analysis": {**(item.get('analysis') or {}), "detail_skip": scope}}
+                        return {**item, "display_error": f"帖子 {scope['post_id']}：列表类型 {scope['list_post_type']}，详情类型 {scope['detail_post_type']}（旧版因此暂停）",
+                                "analysis": {**(item.get('analysis') or {}), "detail_skip": scope}}
+                except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+                    pass
+            return {**item, "display_error": f"帖子 {item.get('post_id') or '未知'} 的详情不是普通帖类型；历史实际类型证据无法核实"}
         if item.get("outcome") not in {"source_error", "schema_error", "redirect"}:
             return item
         task = self.db.execute("SELECT * FROM tasks WHERE id=? AND job=? AND stock=? AND kind=? AND page=?",

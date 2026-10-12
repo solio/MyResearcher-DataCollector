@@ -1,5 +1,31 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## Nonstandard detail pages finish without halting collection
+
+User confirms the reported outside-post_type=0 detail is an announcement and
+requires skipping it. After normal HTTP/framing/challenge/URL validation, an
+explicit nonzero integer detail post_type with a valid post_id matching the
+listed/requested ID is outside ordinary-post body acquisition. Retain the list
+row and raw response, mark its detail out_of_scope, finish only that detail task,
+and continue. Do not parse/emit its alternate body as standard post content or
+mark body_complete. Missing/invalid types and mismatching IDs remain failures.
+The numeric type is a source fact; do not invent a type-to-announcement mapping.
+
+Persist public scope evidence (post ID, list/detail types, both request IDs),
+show a short Chinese skipped-body reason in request logs, and count these posts
+separately from pending, complete and untriggered bodies. Exports retain the list
+with content NULL and traceable skip evidence; compatibility/fleet validation
+must verify the raw scope evidence. No schema or production parser change.
+
+At startup, an active stock schema halt with the exact historical English scope
+error may be resolved offline only from its owned original detail task and
+hash/framing/challenge/URL-validated retained raw response. Confirm the same
+explicit nonzero type and post ID, record a separate skip event/state, finish
+that task and leave the stock paused for manual collection. Preserve the original
+request ledger/error, navigation, all other stock states, and node auth barriers.
+Missing/tampered evidence leaves the halt untouched. Never auto-fetch to repair
+these historical records. Read-only logs describe their recorded type values.
+
 ## Stop after two stable pages below the window
 
 Two consecutive ordinary forward pages may finish list traversal immediately

@@ -5,7 +5,7 @@
   const states = { idle: "待配置", running: "采集中", paused: "已暂停", blocked: "已拦截", error: "需要检查", completed: "任务结束" };
   const proxyModes = { direct: "直连", http: "HTTP 代理", mayi: "动态 IP", qingguo: "青果动态 IP" };
   const dynamicProxyMode = (mode) => ["mayi", "qingguo"].includes(mode);
-  const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", source_error: "股吧返回错误页", detail_unavailable: "详情不可用", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", network_timeout: "请求超时", tls_error: "TLS 连接失败", network_connect: "网络连接失败", network_io: "网络传输失败", error: "异常", pending: "待处理", unknown: "结果未确认" };
+  const outcomes = { real_data: "数据已核实", reserved: "请求中 / 尚未确认", redirect: "重定向，等待下一次请求", source_error: "股吧返回错误页", detail_unavailable: "详情不可用", detail_out_of_scope: "已跳过非普通帖正文", list_ok: "列表已核实", detail_ok: "正文已核实", success: "已核实", ok: "已核实", removed: "源已移除", deleted: "源已删除", access_block: "访问拦截", blocked: "访问拦截", challenge: "验证码响应", rate_limited: "限流响应", parse_error: "解析异常", schema_error: "结构异常", transport_error: "传输异常", network_timeout: "请求超时", tls_error: "TLS 连接失败", network_connect: "网络连接失败", network_io: "网络传输失败", error: "异常", pending: "待处理", unknown: "结果未确认" };
   let authenticated = false;
   let status = null;
   let online = false;
@@ -332,6 +332,7 @@
       const summary = el("div", "post-summary"); summary.append(el("strong", "", `已采集帖子 ${number(counts.unique_posts)}`));
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", counts.body_complete], ["待补详情", counts.pending], ["未触发补详情", counts.list_only]]) subsets.append(el("span", "", `${label} ${number(value)}`));
+      if (Number(counts.skipped) > 0) subsets.append(el("span", "", `已跳过正文 ${number(counts.skipped)}`));
       summary.append(subsets); card.append(summary, el("p", "node-sync", `${counts.source_attempts == null ? "请求台账（旧版）" : "实际来源请求"} ${number(first(counts, ["source_attempts", "attempts"]))} · 标题与详情属于同一条帖子`));
       const audit = objectValue(state.rate_audit);
       card.append(el("p", "node-sync", audit.confirmed_requests == null ? "源请求间隔审计：未可核验，需该实例实际台账。" : `近期网络尝试 ${number(audit.confirmed_requests)} · 已知间隔违规 ${number(audit.violations?.count)} · 仅此审计样本，帖子数不代表请求数`));
@@ -1240,6 +1241,7 @@
       postTotal.append(hintButton(`${hintKey}:posts`, windowScoped ? "包含定位采样和顺序采集发现的窗口内帖子，不代表连续覆盖。一条帖子保留标题，详情补到同一条记录，不另计帖子。" : "旧节点统计尚未核对当前窗口。一条帖子对应同一条标题／正文记录。", "帖子统计")); summary.append(postTotal);
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", bodies], ["待补详情", pending], ["未触发补详情", listOnly]]) subsets.append(el("span", "", `${label} ${number(value)}`));
+      if (Number(details.skipped) > 0) subsets.append(el("span", "", `已跳过正文 ${number(details.skipped)}`));
       subsets.append(hintButton(`${hintKey}:details`, "这些数量都是帖子总数的子集。默认仅标准帖子标题去首尾空白后至少40字符才补详情；未触发补详情不代表完整正文。", "详情数量"));
       summary.append(subsets); row.append(summary);
       if (Number(item.excluded_posts) > 0) row.append(hintLine("field-note compact-fact", `窗口外／未核实时间 ${number(item.excluded_posts)} 条`, `${hintKey}:excluded`, "这些历史记录不在当前窗口，或发布时间无法核实，已从本任务统计排除。记录仍保留，节点导出范围不变。"));
@@ -1435,6 +1437,7 @@
     return Array.isArray(data && data[key]) ? data[key] : Array.isArray(data && data.items) ? data.items : [];
   }
   function resultClass(outcome) {
+    if (outcome === "detail_out_of_scope") return "success";
     if (/block|challenge|rate|429|403|removed|delete|unavailable|redirect/i.test(outcome)) return "warning";
     if (/error|fail|unknown|partial/i.test(outcome)) return "error";
     if (/success|^ok$|_ok$|complete|^real_data$/i.test(outcome)) return "success";

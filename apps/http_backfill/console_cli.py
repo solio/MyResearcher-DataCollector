@@ -21,7 +21,8 @@ OUTCOMES = {"real_data": "正常", "access_block": "验证码/身份核验",
             "transport_error": "传输异常", "proxy_error": "代理异常",
             "schema_error": "结构异常", "source_error": "源站错误",
             "http_error": "HTTP 异常", "redirect": "等待重定向",
-            "detail_unavailable": "正文不可用", "interrupted_unknown": "请求被中断"}
+            "detail_unavailable": "正文不可用", "detail_out_of_scope": "已跳过非普通帖正文",
+            "interrupted_unknown": "请求被中断"}
 
 
 def text(value):

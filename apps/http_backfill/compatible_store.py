@@ -28,6 +28,7 @@ from unified_store import LAYOUT, simple_store_adapter, validate_layout
 
 VERSION = "http-backfill.unified-posts.v1"
 AUTHOR_NAME_POLICY = "http.author-name-observations.v1"
+LEGACY_DETAIL_SCOPE_ERROR = "detail is outside standard post_type=0 scope"
 _NAVIGATION_ERRORS = {
     "无法建立非置顶来源行锚点，不能猜测下一历史页",
     "校准无法定位锚点：来源空页/无可用发布时间；已暂停",
@@ -88,6 +89,33 @@ class SourceFieldConflict(ValueError):
                            f"本次请求 #{fact['new_request_id'] if fact['new_request_id'] is not None else '未知'}）"
                            for fact in self.conflicts)
         super().__init__(message)
+
+
+def detail_scope_fact(item, payload, *, old_request=None, new_request=None):
+    """Account for an excluded detail without parsing its alternate body."""
+    old_request, new_request = dict(old_request or {}), dict(new_request or {})
+    raw_type = payload.get("post_type")
+    try:
+        post_type = guba._optional_int(raw_type, "post_type")
+        if post_type is None:
+            raise ValueError("missing type")
+    except ValueError as exc:
+        value = json.dumps(raw_type, ensure_ascii=False)[:100]
+        raise ValueError(f"帖子 {item.source_item_id} 的详情类型缺失或无效：post_type={value}（列表类型 {item.post_type}）") from exc
+    if post_type == 0:
+        return None
+    actual_id = guba._id(payload.get("post_id"), "post_id")
+    if actual_id != item.source_item_id:
+        raise SourceFieldConflict([source_field_fact(item, {"source_item_id": actual_id},
+                                  "source_item_id", old_request=old_request, new_request=new_request)])
+    return {"post_id": actual_id, "list_post_type": item.post_type, "detail_post_type": post_type,
+            "stock": new_request.get("stock"), "list_request_id": old_request.get("id"),
+            "detail_request_id": new_request.get("id")}
+
+
+def detail_scope_message(fact):
+    return (f"帖子 {fact['post_id']}：列表类型 {fact['list_post_type']}，详情类型 {fact['detail_post_type']}；"
+            "已跳过非普通帖正文，保留列表记录")
 
 
 def same_http_author_identity(first, second):
@@ -370,8 +398,23 @@ class CompatibleDataStore:
             engine.db.execute("INSERT OR IGNORE INTO detail_enrichment_skips(source,source_item_id,stock_code,reason,first_seen_at,last_seen_at,attempts) VALUES(?,?,?,?,?,?,1)",
                               (guba.SOURCE, post["post_id"], observed_request["stock"], SKIP_REASON_NOT_FOUND,
                                _utc(detail_request["finished"]), _utc(detail_request["finished"])))
+        elif post["status"] == "out_of_scope":
+            detail_request, scope_html = self._raw_request(engine, post["detail_request"],
+                                                           allowed=("detail_out_of_scope", "schema_error"))
+            if (detail_request["kind"] != "detail" or detail_request["post_id"] != post["post_id"]
+                    or (detail_request["outcome"] == "schema_error" and detail_request["error"] != LEGACY_DETAIL_SCOPE_ERROR)
+                    or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(post["post_id"]) + r"\.html",
+                                        urlparse(detail_request["url"]).path)):
+                raise CompatibleStorageError("跳过正文的原请求身份/类型不一致")
+            scope = detail_scope_fact(observed_item, guba._embedded_json(scope_html, "post_article"),
+                                     old_request=observed_request, new_request=detail_request)
+            if not scope:
+                raise CompatibleStorageError("跳过正文缺少非普通帖类型证据")
+            engine.db.execute("INSERT OR IGNORE INTO detail_enrichment_skips(source,source_item_id,stock_code,reason,first_seen_at,last_seen_at,attempts) VALUES(?,?,?,?,?,?,1)",
+                              (guba.SOURCE, post["post_id"], observed_request["stock"], "detail_out_of_scope",
+                               _utc(detail_request["finished"]), _utc(detail_request["finished"])))
         provenance = {"content_source": "detail_body" if content is not None else "list_title",
-                      "detail_required": detail_enrichment_trigger(item.title) is not None,
+                      "detail_required": post["status"] != "out_of_scope" and detail_enrichment_trigger(item.title) is not None,
                       "detail_enrichment_trigger": detail_enrichment_trigger(item.title),
                       "canonical_bar_code": item.canonical_bar_code,
                       "requested_bar_code": observed_request["stock"],
@@ -379,6 +422,8 @@ class CompatibleDataStore:
                       "model_database_eligible": False, "source_status": post["status"],
                       "list_sha256": observed_request["sha256"],
                       "detail_sha256": detail_request["sha256"] if detail_request else None}
+        if post["status"] == "out_of_scope":
+            provenance["detail_skip"] = scope
         facts = {"item": asdict(item), "legacy_content": content, "provenance": provenance,
                  "list_request": observed_request["id"], "detail_request": detail_request["id"] if detail_request else None}
         fingerprint = hashlib.sha256(_json(facts).encode()).hexdigest()
