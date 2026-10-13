@@ -947,7 +947,7 @@
   }
   function loadForm(config) {
     if (!config || formDirty) return;
-    $("stocks").value = Array.isArray(config.stocks) ? config.stocks.join("，") : "";
+    $("stocks").value = Array.isArray(config.stocks) ? config.stocks.join(",") : "";
     if (config.from_date) $("from-date").value = config.from_date;
     if (config.to_date) $("to-date").value = config.to_date;
     $("interval").value = config.interval_seconds ?? 60;
