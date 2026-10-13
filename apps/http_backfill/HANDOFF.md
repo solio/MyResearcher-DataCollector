@@ -2,6 +2,40 @@
 
 Date: 2026-10-13, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest analysis: growth estimates support next-page-first scheduling, not proof
+
+User clarifies that rollback is recursive, not a single current-page reread.
+The prior two-page deletion example is therefore not a counterexample to that
+clarified recursive algorithm; withdraw that single-reread objection. The earlier
+mixed-known-ID example remains applicable only if stopping uses all previously
+observed IDs rather than the frozen sequential frontier's own anchors.
+
+User proposes recording arrival rate and dispatching current+1 if fewer than a
+page of additions is expected between lists. Read-only local request/observation
+analysis groups successful lists by job/stock and measures current started minus
+previous finished. At this snapshot, 1992 pairs <=600sec show max net count+10,
+min-35 and22 decreases;2169 pairs <=1800sec show max+40/min-40. Restricting to
+pairs containing actual intervening detail requests gives612 pairs <=600sec
+(max+10/min-35,13 decreases) and785 <=1800sec (max+40/min-40,21 decreases).
+One historical pair exceeds80 net additions:002463 requests4082->4157,
+75987.5sec gap (~21.1hours), count+147. Original list responses predominantly
+have80 rows (two81-row responses in the first snapshot); the latest100 list
+observations have53..80 explicit nonpinned type0 rows, so capacity/anchors must
+be measured from actual returned rows, never hardcoded to70 or80.
+
+These are source-total NET changes, not measured gross additions or proven
+deletion counts: additions/removals can offset, and count changes do not locate
+the affected rows. Under insertion-only stable ordered pagination, fewer than
+one page of additions keeps the old frontier within current/current+1; positive
+growth can supply an overlap in current+1, while zero growth may give an entirely
+unseen next page. A predicted low arrival rate does not rule out even a one-row
+left shift caused by removal before the frontier. Next-page-first remains a
+reasonable normal scheduling path with frozen ID/time boundary checks and
+recursive/relocation fallback, retaining all current source challenge and
+contradiction guards. Growth estimates may guide scheduling/escalation; they
+must not mark the boundary or whole window proved complete. No implementation,
+source probe, service control or database write accompanied this analysis.
+
 ## Latest analysis: next-page-first with an all-new-only rollback can skip rows
 
 User requests analysis before implementation: fetch new=current+1 after bodies,
