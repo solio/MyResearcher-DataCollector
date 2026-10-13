@@ -113,11 +113,14 @@ class RecoveryTests(unittest.TestCase):
         site.rows = source[1:]  # deleting A moves C onto page 1
         e.start()
         self.tick(e)
+        self.assertEqual(e.requests()[0]["purpose"], "forward")
+        self.assertEqual(e.requests()[0]["page"], 2)
+        self.tick(e)
         self.assertEqual(e.requests()[0]["purpose"], "recovery")
         self.assertEqual(e.requests()[0]["page"], 1)
         skipped_id = source[2]["post_id"]
         self.until(e, lambda: any(p["post_id"] == skipped_id and p["body_complete"] for p in e.raw_posts()))
-        self.assertNotIn("f_2.html", site.calls[:site.calls.index(f"https://guba.eastmoney.com/news,601012,{skipped_id}.html")])
+        self.assertEqual(site.calls.count("https://guba.eastmoney.com/list,601012,f_2.html"), 1)
         self.assertFalse(e.status()["coverage_complete"])
 
     def test_recovered_short_title_is_retained_without_new_detail_request(self):
@@ -131,6 +134,7 @@ class RecoveryTests(unittest.TestCase):
         site.rows = source[1:]
         e.start()
         self.tick(e)
+        self.tick(e)  # The retained next page lacked a join; reread current.
         found = next(p for p in e.raw_posts() if p["post_id"] == source[2]["post_id"])
         self.assertEqual(found["status"], "list_only")
         self.assertEqual(found["content"], source[2]["post_title"])
@@ -154,10 +158,10 @@ class RecoveryTests(unittest.TestCase):
         self.until(e, lambda: e.status()["recovery"][0]["phase"] == "complete")
         self.assertEqual(e.status()["current"]["page"], 3)  # old page 2 would repeat A,B
         self.assertEqual(e.status()["current"]["purpose"], "forward")
-        self.assertGreater(e.status()["recovery"][0]["drift_count"], 0)
-        self.assertTrue(e.status()["reconciliation_complete"])
+        self.assertEqual(e.status()["recovery"][0]["proof_level"], "sequential_frontier_join")
+        self.assertFalse(e.status()["reconciliation_complete"])
         self.assertEqual(e.status()["aggregate"]["unique_posts"], 2)
-        self.assertEqual(e.status()["aggregate"]["list_pages"], 1)
+        self.assertEqual(e.status()["aggregate"]["list_pages"], 2)
         self.assertFalse(e.status()["coverage_complete"])
 
     def test_mixed_type20_placements_do_not_send_recent_frontier_to_weeks_ago(self):
@@ -263,8 +267,11 @@ class RecoveryTests(unittest.TestCase):
         self.assertFalse(new.tick()["attempted"])
         self.assertEqual(new.status()["next_request_epoch"], due)
         self.tick(new)
+        self.assertEqual(new.requests()[0]["purpose"], "forward")
+        self.assertEqual(new.requests()[0]["page"], 2)
+        self.tick(new)
         self.assertEqual(new.requests()[0]["purpose"], "recovery")
-        self.assertEqual(new.status()["aggregate"]["pending"], 3)  # A,B plus recovered C
+        self.assertEqual(new.status()["aggregate"]["pending"], 5)  # A/B, candidate D/E, recovered C.
 
     def test_all_anchor_ids_disappear_time_fallback_remains_an_explicit_gap(self):
         source = rows()

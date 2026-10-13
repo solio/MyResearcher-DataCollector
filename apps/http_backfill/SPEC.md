@@ -1,5 +1,40 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-13 next-page-first checks with recursive frontier rollback
+
+For ordinary detail-delay/periodic checks and short pause/restart/config resume,
+first acquire current+1 as a forward candidate. current is the last successful
+sequential list frontier. Freeze its actual nonpinned standard ID/time sequence;
+date-seek samples and unrelated previously seen IDs cannot terminate rollback.
+A matching old suffix/new prefix containing the old tail proves a navigation
+join and permits continuing directly. An entirely separate older page triggers
+current, current-1, etc. until that frozen anchor is joined. These are individually
+scheduled paced requests, never recursive synchronous network calls.
+
+Retain and count the candidate once; retain all rollback observations/new eligible
+details. Preserve the original frontier until the join is established. Matching
+rollback pages must retain the candidate's source count, descending time order,
+adjacent physical page/time boundaries and exact common-ID times/order. At the
+join, adopt the retained deepest candidate and enqueue candidate+1, avoiding a
+repeat download. A disappeared tail, contradictory order, count change during
+rollback, too-new separate page, missing count/flags, nonstandard/empty/terminal
+response or exhausted budget retains the existing bounded anchor recovery/gaps.
+Keep the existing two-stable-below-window stop and source/authentication guards.
+No navigation join proves whole-window coverage.
+
+Record observed page capacity, elapsed list gap, net count change and a recent
+per-job/stock peak positive NET-count rate from up to32 retained list observations.
+The estimate guides scheduling only: do not claim gross arrival/deletion counts.
+Gaps over30minutes or a projected change of at least the actual page capacity
+retain the existing current-page/anchor checks. A low estimate never bypasses
+the actual join/rollback guards. No extra source probe or page-size constant.
+
+Pending new-phase checkpoints preserve owner, candidate, current rollback page
+and cumulative existing64-response/6-pass budgets through pause/restart/retry.
+Existing incomplete legacy checks retain their checkpoints. H5 presents the new
+phase and estimate through the existing compact facts/tooltip, without a panel,
+new deployment entry, schema migration or production training write.
+
 ## Nonstandard detail pages finish without halting collection
 
 User confirms the reported outside-post_type=0 detail is an announcement and

@@ -1322,23 +1322,32 @@
   const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", verify_frontier: "检查末次前进页", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
   const recoveryReasons = { process_restart: "进程重启后检查列表位置", manual_resume: "暂停恢复后检查列表位置", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后检查列表位置", list_delay_recheck: "距上次列表已达校准间隔", periodic_recheck: "定期检查列表位置", forward_no_progress: "前进列表没有新增 ID，重新定位", source_count_decrease: "来源计数下降，核对局部区间", forward_time_shift: "前进页时间发生偏移，核对局部区间", nonstandard_page_recheck: "页面锚点不能直接确认，核对局部区间", terminal_recheck: "到达日期或来源尾页边界，核对局部区间", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
   function recoveryProof(info) {
+    if (info.proof_level === "sequential_frontier_join") return "新页已与本次顺序采集的旧页尾衔接；整体覆盖仍未确认。";
     if (info.time_fallback || info.proof_level === "time_boundary_with_gap") return "旧 ID 不可见，仅按时间回扫，缺口保留。";
     if (info.time_order_verified === false || info.proof_level === "id_interval_time_order_unverified") return "发布时间次序尚未核实，局部覆盖不能确认。";
     if (info.proof_level === "two_matching_page_boundary_observations") return "已观察分页交界两轮一致；仅核实该交界，整体覆盖未确认。";
     if (info.proof_level === "two_matching_anchor_interval_observations") return "已观察的 ID 与时间局部区间两轮一致；整体覆盖仍未确认。";
-    if (info.proof_level === "last_forward_page_stable") return "末次前进页的 ID 与发布时间一致、来源计数未下降；仅确认导航锚点稳定，窗口覆盖仍未确认。";
+    if (info.proof_level === "last_forward_page_stable") return "末次前进页的有序 ID 与发布时间一致；仅确认导航锚点稳定，窗口覆盖仍未确认。";
     return "";
   }
   function recoveryUsage(info) {
     const facts = [];
+    const growth = info.pagination_growth;
+    if (growth) {
+      facts.push(`列表间隔 ${number(growth.gap_seconds)} 秒 · 实测页容量 ${number(growth.page_capacity)}`);
+      if (growth.net_count_change != null) facts.push(`本次源总量净变化 ${number(growth.net_count_change)} 行`);
+      if (growth.projected_net_additions != null) facts.push(`预计净增加 ${Number(growth.projected_net_additions).toFixed(1)} 行（非真实新增总量）`);
+    }
     if (info.validated_requests != null) facts.push(`有效校准响应 ${number(info.validated_requests)}${info.max_requests == null ? "" : " / " + number(info.max_requests)}`);
     if (info.completed_passes != null) facts.push(`已完成扫描 ${number(info.completed_passes)}${info.max_passes == null ? " 轮" : " / " + number(info.max_passes) + " 轮"}`);
     return facts;
   }
   function recoveryStrategy(info) {
-    return { stable_frontier: "末页单次检查", boundary_two_pass: "分页交界两轮核对", two_pass: "区间两轮校准" }[info.strategy] || "";
+    return { next_page_first: "先取下一页，按需递归回查", stable_frontier: "末页单次检查", boundary_two_pass: "分页交界两轮核对", two_pass: "区间两轮校准" }[info.strategy] || "";
   }
   function recoveryPhaseLabel(info, phase) {
+    if (phase === "await_next") return "检查下一页衔接";
+    if (phase === "rollback_frontier") return "递归回查旧页尾";
     const boundaryPhases = { pending: "交界核对待继续", scheduled: "交界核对待继续", seek: "定位分页交界", anchor: "检查分页交界", probe: "检查分页交界", backtrack: "定位分页交界", scan: "核对分页交界", scanning: "核对分页交界", verify: "核对分页交界", reconciling: "核对分页交界", complete: "交界核对完成", completed: "交界核对完成", done: "交界核对完成", paused: "交界核对已暂停", blocked: "交界核对被拦截", error: "交界核对异常" };
     return (info.strategy === "boundary_two_pass" ? boundaryPhases[phase] : null) || recoveryPhases[phase] || phase;
   }

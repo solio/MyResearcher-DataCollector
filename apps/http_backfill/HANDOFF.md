@@ -2,6 +2,53 @@
 
 Date: 2026-10-13, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest change: next page first, then recursive sequential-frontier rollback
+
+User authorizes implementing the agreed scheduling/anchor/recursive strategy.
+SPEC updated first. Ordinary delayed/periodic checks and short resume acquire
+current+1 as a forward candidate against a frozen sequential frontier. Exact
+old-suffix/new-prefix ID/time joins continue directly. Separate older pages
+schedule current/current-1/etc. until the old tail is joined; prior date-seek IDs
+never stop rollback. Candidate and rollback rows/details remain retained, and
+the original frontier stays frozen until the join. The candidate is counted once
+and continuation uses candidate+1 without redownloading it. Counts/order changing
+during rollback, unknown flags/counts, disappeared tail or too-new displacement
+fall back within the same cumulative budget to the existing bounded scan.
+
+Per-job/stock recent positive net-count rate, list gap, measured page capacity
+and actual candidate net change are retained as navigation facts. Gaps over30min
+or estimated change reaching the observed capacity use the prior current-page
+check; estimates do not certify gross arrivals or completeness. A waiting
+candidate recomputes the estimate at dispatch, and both new phases preserve
+original tasks/generation/budget/candidate across restart. Source auth stops,
+transient retry targets and two-stable-below-window stop remain protected.
+H5 uses the existing compact phase and tooltip, with no extra configuration.
+
+Validation:21 focused offline tests pass (16 new replays,4 updated old resume
+expectations and the stable lower-bound stop). Cases include detail-batch delay,
+small insertion, one/two-page removal, misleading known seek ID, both checkpoint
+phases across restart, count changes and completed fallback, unknown count,
+actual small-page rate escalation, waiting/long gap, budget exhaustion, source
+challenge and exact timeout retry. Exact focused command from repository root:
+`python -m pytest -q apps/http_backfill/tests/test_next_page.py apps/http_backfill/tests/test_recovery.py::RecoveryTests::test_resume_deletion_recovers_item_that_old_page_number_would_skip apps/http_backfill/tests/test_recovery.py::RecoveryTests::test_recovered_short_title_is_retained_without_new_detail_request apps/http_backfill/tests/test_recovery.py::RecoveryTests::test_resume_insertion_relocates_frontier_to_new_physical_page apps/http_backfill/tests/test_recovery.py::RecoveryTests::test_restart_rechecks_before_old_pending_details_and_keeps_id_and_due apps/http_backfill/tests/test_core.py::CoreTests::test_two_stable_old_forward_pages_stop_without_terminal_rechecks`.
+Python AST, node --check and git diff --check pass. Wider4-file comparison has
+25 pre-existing failing tests on the prior HEAD (38 passes); after adapting the
+4 changed scheduling assertions and adding16 checks, the same25 fail and54 pass.
+They retain old global-state/unscoped-probe/unconditional-calibration assertions;
+do not claim the whole suite passes or silently discard them. Test DBs/transport
+are temporary/offline; no source verification probe or training write.
+
+Local Docker updated after verifying the node already authentication-stopped,
+all stocks paused/blocked and no inflight/manual probe. Backup:
+data/backups/before-next-page-first-20261013T042733Z/collector.db, quick_check=ok.
+After recreate, HTTP/API and Docker health are good; same instance/config/job
+revision/node barrier and stock states. Counts exactly retain56430 posts,
+7655 requests and179122 observations: no source request during deployment.
+Container core SHA25640f4f6e1c35b2c19ceca2dc9adce3f274af53dddb191f2882c2dc5c48f16b016
+matches source. Old in-progress recovery checkpoints remain; subsequent ordinary
+checks use the new path. No remote rollout, source probe or automatic collect.
+Temporary deployment state was removed; unrelated ops working-tree files remain.
+
 ## Latest analysis: growth estimates support next-page-first scheduling, not proof
 
 User clarifies that rollback is recursive, not a single current-page reread.

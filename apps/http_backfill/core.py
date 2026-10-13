@@ -60,6 +60,7 @@ SAFE_HEADERS = {"content-type", "content-length", "content-encoding", "location"
 NETWORK_RETRY_KINDS = {"network_timeout", "tls_error", "network_connect", "network_io"}
 ORDINARY_RECHECKS = {"list_delay_recheck", "manual_resume", "process_restart", "config_updated", "periodic_recheck"}
 MAX_RECOVERY_REQUESTS, MAX_RECOVERY_PASSES = 64, 6
+NEXT_PAGE_MAX_GAP = 30 * 60
 
 
 class RecoveryLimitError(ValueError):
@@ -751,7 +752,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         seeking = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND kind='list' AND purpose='seek' AND status='pending' ORDER BY id LIMIT 1", args).fetchone()
         if seeking:
             return seeking
-        forced = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND kind='list' AND purpose='recovery' AND status='pending' ORDER BY id LIMIT 1", args).fetchone()
+        forced = self.db.execute("SELECT * FROM tasks WHERE job=?" + where + " AND kind='list' AND (purpose='recovery' OR recovery_id IS NOT NULL) AND status='pending' ORDER BY id LIMIT 1", args).fetchone()
         if forced:
             rec = self._recovery(forced["job"], forced["stock"])
             if rec and rec.get("force_first"):
@@ -1028,7 +1029,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     self._event("recovery_anchor_unavailable", "保留原阻断并安全启动；恢复锚点不可用，不能猜测下一页", {"stock": stock, "reason": str(exc)})
 
     def _resume_recovery_checkpoint(self, rec, reason):
-        if not rec or rec.get("phase") not in {"verify_frontier", "seek", "scan"}:
+        if not rec or rec.get("phase") not in {"await_next", "rollback_frontier", "verify_frontier", "seek", "scan"}:
             return False
         if (type(rec.get("generation")) is not int or rec["generation"] < 1
                 or type(rec.get("current_page")) is not int or rec["current_page"] < 1):
@@ -1039,11 +1040,15 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 or rec.get("completed_passes", 0) >= MAX_RECOVERY_PASSES):
             self._enqueue_recovery(rec, rec["current_page"])
         task = self.db.execute(
-            "SELECT * FROM tasks WHERE job=? AND stock=? AND purpose='recovery' AND recovery_id=? "
+            "SELECT * FROM tasks WHERE job=? AND stock=? AND kind='list' AND recovery_id=? "
             "AND page=? AND status IN ('pending','inflight') ORDER BY id LIMIT 1",
             (rec["job"], rec["stock"], rec["generation"], rec["current_page"])).fetchone()
         if task is None:
-            self._enqueue_recovery(rec, rec["current_page"])
+            if rec["phase"] == "await_next":
+                target = self._enqueue_list(rec["job"], rec["stock"], rec["current_page"])
+                self.db.execute("UPDATE tasks SET recovery_id=? WHERE id=?", (rec["generation"], target))
+            else:
+                self._enqueue_recovery(rec, rec["current_page"])
         rec.update(force_first=True, resume_count=rec.get("resume_count", 0) + 1,
                    last_resumed_at=_iso(self.clock()), resume_reason=reason)
         self._save_recovery(rec)
@@ -1051,6 +1056,22 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     {"stock": rec["stock"], "page": rec["current_page"], "generation": rec["generation"],
                      "phase": rec["phase"], "passes": rec.get("passes", 0), "reason": reason})
         return True
+
+    def _pagination_growth(self, job, stock, frontier):
+        observed = self.db.execute("SELECT finished,started FROM requests WHERE id=?", (frontier.get("request_id"),)).fetchone()
+        finished = (observed[0] if observed[0] is not None else observed[1]) if observed else 0
+        samples = self.db.execute(
+            "SELECT p.source_count,r.finished FROM page_observations p JOIN requests r ON r.id=p.request_id "
+            "WHERE p.job=? AND p.stock=? AND p.source_count IS NOT NULL AND r.finished IS NOT NULL "
+            "AND r.outcome='real_data' ORDER BY r.id DESC LIMIT 32", (job, stock)).fetchall()
+        rates = [(new[0] - old[0]) / (new[1] - old[1]) for new, old in zip(samples, samples[1:])
+                 if new[1] > old[1] and new[0] > old[0]]
+        gap = max(0, self.clock() - finished)
+        peak = max(rates, default=None)
+        return {"gap_seconds": round(gap, 3), "page_capacity": len(self._frontier_rows(frontier["rows"])),
+                "rate_samples": max(0, len(samples) - 1), "peak_net_additions_per_second": peak,
+                "projected_net_additions": peak * gap if peak is not None else None,
+                "rate_semantics": "observed_net_count_change_not_gross_arrivals"}
 
     def _begin_recovery(self, job, stock, frontier, reason, force_first=False, original=None, boundary=None):
         previous = self._recovery(job, stock)
@@ -1094,6 +1115,20 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     "current_page": frontier["page"] if cheap else rec["anchor_page"],
                     "force_first": force_first, "passes": 0, "last_signature": None, "pass_members": [],
                     "pass_pages": [], "visited": {}, "anchor_seen": False, "started_at": _iso(self.clock())})
+        growth = self._pagination_growth(job, stock, frontier)
+        rec["pagination_growth"] = growth
+        next_first = (cheap and not original and growth["gap_seconds"] <= NEXT_PAGE_MAX_GAP
+                      and (growth["projected_net_additions"] is None
+                           or growth["projected_net_additions"] < growth["page_capacity"]))
+        if next_first:
+            rec.update(phase="await_next", strategy="next_page_first", sequential_frontier=frontier,
+                       current_page=frontier["page"] + 1, pagination_growth=growth)
+            self._save_recovery(rec)
+            target = self._enqueue_list(job, stock, rec["current_page"])
+            self.db.execute("UPDATE tasks SET recovery_id=? WHERE id=?", (generation, target))
+            self._event("next_page_check_started", "先取下一页；没有旧页尾衔接时才递归回查",
+                        {"stock": stock, "page": rec["current_page"], "reason": reason, **growth})
+            return
         if boundary:
             self._activate_boundary_recovery(rec, **boundary)
         self._save_recovery(rec)
@@ -1204,6 +1239,111 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self.db.execute("UPDATE coverage SET gaps=? WHERE job=? AND stock=?", (_dump(gaps), rec["job"], rec["stock"]))
         self._event(kind, message, {"stock": rec["stock"], "page": rec["current_page"]})
 
+    def _frontier_join(self, old_rows, rows):
+        """A suffix/prefix join against this sequential frontier, not global IDs."""
+        old, fresh = self._boundary_navigation(old_rows), self._boundary_navigation(rows)
+        if not old or not fresh:
+            return False
+        old_ids, fresh_ids = [str(r["post_id"]) for r in old], [str(r["post_id"]) for r in fresh]
+        shared = set(old_ids) & set(fresh_ids)
+        n = len(shared)
+        if not n or old_ids[-n:] != fresh_ids[:n] or set(old_ids[-n:]) != shared:
+            return False
+        times = {str(r["post_id"]): r["post_publish_time"] for r in old}
+        return all(times[str(r["post_id"])] == r["post_publish_time"] for r in fresh[:n])
+
+    def _fallback_next_page(self, rec, message):
+        candidate = rec.get("next_candidate")
+        if candidate:
+            ordered = self._boundary_navigation(candidate["rows"])
+            if ordered:
+                rec["target_time"] = min(rec["target_time"], ordered[-1]["post_publish_time"])
+            rec["forward_page"] = candidate["page"]
+        rec.update(phase="seek", strategy="two_pass", reason="next_page_uncertain",
+                   trigger_reason="next_page_uncertain", fallback_reason=message,
+                   force_first=True, passes=0, last_signature=None, pass_members=[], pass_pages=[], visited={})
+        self._enqueue_recovery(rec, rec["anchor_page"])
+        self._event("next_page_check_fallback", message, {"stock": rec["stock"], "page": rec["current_page"]})
+        return {"phase": "seek", "fallback": True}
+
+    def _finish_next_page(self, rec, task, rows, stats):
+        candidate = rec["next_candidate"]
+        rec.update(phase="complete", end_page=candidate["page"], completed_at=_iso(self.clock()),
+                   proof_level="sequential_frontier_join", verified_requests={
+                       "candidate": candidate["stats"]["request_id"], "join": stats["request_id"],
+                       "rollback": rec.get("rollback_requests", [])}, force_first=False)
+        self._save_recovery(rec)
+        frontier = {"page": candidate["page"], "rows": candidate["rows"], "request_id": candidate["stats"]["request_id"],
+                    "source_count": candidate["stats"]["source_count"], "anchor_page": task["page"], "anchor_rows": rows,
+                    "terminal": None, "checked_at": self.clock(), "reconciled": False,
+                    "navigation_stable": True, "reconciliation": {"proof_level": rec["proof_level"],
+                                                                   "request_ids": rec["verified_requests"]}}
+        self._save_frontier(rec["job"], rec["stock"], frontier)
+        self.db.execute("UPDATE coverage SET under_pages=? WHERE job=? AND stock=?",
+                        (candidate["under_pages"], rec["job"], rec["stock"]))
+        self._enqueue_list(rec["job"], rec["stock"], candidate["page"] + 1)
+        self._event("next_page_joined", "分页交界已衔接；保留已取得的新页，从其下一页继续",
+                    {"stock": rec["stock"], "page": candidate["page"], "join_page": task["page"],
+                     "rollback_requests": len(rec.get("rollback_requests", []))})
+        return {"phase": "complete", "proof_level": rec["proof_level"]}
+
+    def _accept_next_candidate(self, task, rows, stats, under, terminal):
+        rec = self._recovery(task["job"], task["stock"])
+        if (not rec or rec.get("phase") != "await_next" or rec.get("strategy") != "next_page_first"
+                or task.get("recovery_id") != rec["generation"]):
+            return None
+        if terminal or not rows:
+            # The existing date/source-tail guards own this response.
+            rec.update(phase="complete", force_first=False, fallback_reason="到达边界，使用原边界核对")
+            self._save_recovery(rec)
+            return None
+        rec["validated_requests"] += 1
+        old = rec["sequential_frontier"]
+        count = stats["source_count"]
+        stats["pagination_growth"] = {**rec["pagination_growth"],
+                                      "net_count_change": count - rec["check_source_count"] if type(count) is int else None}
+        rec["pagination_growth"] = stats["pagination_growth"]
+        rec["next_candidate"] = {"page": task["page"], "rows": rows, "stats": dict(stats), "under_pages": under}
+        self.db.execute("UPDATE coverage SET pages=pages+1 WHERE job=? AND stock=?", (task["job"], task["stock"]))
+        fresh = self._boundary_navigation(rows)
+        if task["page"] != old["page"] + 1 or type(count) is not int or not fresh:
+            return self._fallback_next_page(rec, "新页缺少可靠计数或有序非置顶锚点，改为有界定位")
+        if self._frontier_join(old["rows"], rows):
+            return self._finish_next_page(rec, task, rows, stats)
+        anchors = self._boundary_navigation(old["rows"])
+        common = {str(r["post_id"]) for r in anchors} & {str(r["post_id"]) for r in fresh}
+        if common or fresh[0]["post_publish_time"] > anchors[-1]["post_publish_time"]:
+            return self._fallback_next_page(rec, "新页与旧锚点交界不一致或发生向后位移，按原锚点定位")
+        rec.update(phase="rollback_frontier", force_first=True, rollback_requests=[], rollback_lower={
+            "page": task["page"], "earliest": fresh[-1]["post_publish_time"], "latest": fresh[0]["post_publish_time"]})
+        self._enqueue_recovery(rec, old["page"])
+        self._event("next_page_rollback", "新页没有旧页尾锚点，从当前页开始递归回查",
+                    {"stock": task["stock"], "candidate_page": task["page"], "page": old["page"]})
+        return {"phase": "rollback_frontier", "next_page": old["page"]}
+
+    def _advance_frontier_rollback(self, rec, task, rows, stats):
+        candidate = rec["next_candidate"]
+        fresh = self._boundary_navigation(rows)
+        lower = rec["rollback_lower"]
+        if (not fresh or type(stats["source_count"]) is not int
+                or stats["source_count"] != candidate["stats"]["source_count"]
+                or task["page"] + 1 != lower["page"]
+                or fresh[-1]["post_publish_time"] < lower["latest"]):
+            return self._fallback_next_page(rec, "递归回查期间计数、页码或时间交界变化，保留新页并定位锚点")
+        rec["rollback_requests"].append(stats["request_id"])
+        old = rec["sequential_frontier"]
+        if self._frontier_join(old["rows"], rows):
+            if not self._boundary_candidate_verified(rec, candidate):
+                return self._fallback_next_page(rec, "已取得的新页原始证据不可核实，停止直接复用")
+            return self._finish_next_page(rec, task, rows, stats)
+        anchors = self._boundary_navigation(old["rows"])
+        common = {str(r["post_id"]) for r in anchors} & {str(r["post_id"]) for r in fresh}
+        if common or fresh[0]["post_publish_time"] > anchors[-1]["post_publish_time"] or task["page"] <= 1:
+            return self._fallback_next_page(rec, "旧页尾未能衔接或已到首页；保留缺口并按原锚点定位")
+        rec["rollback_lower"] = {"page": task["page"], "earliest": fresh[-1]["post_publish_time"], "latest": fresh[0]["post_publish_time"]}
+        self._enqueue_recovery(rec, task["page"] - 1)
+        return {"phase": "rollback_frontier", "next_page": task["page"] - 1}
+
     def _advance_recovery(self, task, rows, stats):
         rec = self._recovery(task["job"], task["stock"])
         if not rec or task["recovery_id"] != rec["generation"]:
@@ -1214,6 +1354,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         rec.setdefault("max_requests", MAX_RECOVERY_REQUESTS)
         rec.setdefault("max_passes", MAX_RECOVERY_PASSES)
         self._save_recovery(rec)
+        if rec["phase"] == "rollback_frontier":
+            return self._advance_frontier_rollback(rec, task, rows, stats)
         if rec["phase"] == "verify_frontier":
             matched = (task["page"] == rec["check_page"] and self._stable_page_signature(rows) == rec["check_signature"]
                        and type(stats["source_count"]) is int)
@@ -1709,6 +1851,18 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         checked = max(frontier.get("checked_at", 0), finished)
         rec = self._recovery(task["job"], task["stock"])
         interval = self._config()["interval_seconds"]
+        if rec and rec.get("phase") == "await_next" and task["recovery_id"] == rec["generation"]:
+            growth = self._pagination_growth(task["job"], task["stock"], rec["sequential_frontier"])
+            rec["pagination_growth"] = growth
+            if (growth["gap_seconds"] > NEXT_PAGE_MAX_GAP or (growth["projected_net_additions"] is not None
+                    and growth["projected_net_additions"] >= growth["page_capacity"])):
+                rec.update(phase="verify_frontier", strategy="stable_frontier", force_first=True,
+                           fallback_reason="列表间隔或预计净变化较大，先核对当前页")
+                self.db.execute("UPDATE tasks SET status='superseded' WHERE id=?", (task["id"],))
+                self._enqueue_recovery(rec, rec["check_page"])
+                return self._target()
+            self._save_recovery(rec)
+            return task
         if self.clock() - checked < interval + 300 or (rec and rec.get("phase") != "complete"):
             return task
         self._begin_recovery(task["job"], task["stock"], frontier, "list_delay_recheck", force_first=True)
@@ -2156,6 +2310,11 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 entry["entry_request_id"] = rid
                 self._save_seek_state(entry)
             previous_navigation = self._navigation_rows(previous["rows"]) if previous else []
+            joined = self._accept_next_candidate(task, rows, stats, under,
+                                                "date_boundary_confirmed" if boundary else "source_exhausted" if exhausted else None)
+            if joined is not None:
+                stats["recovery"] = joined
+                return stats
             previous_ids = {str(r["post_id"]) for r in previous_navigation}
             current_ids = {str(r["post_id"]) for r in navigation}
             if previous and current_ids and not current_ids - previous_ids:
@@ -2421,7 +2580,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                       "window_seek": [c["window_seek"] for c in coverage if c.get("window_seek")],
                       "calibration_policy": {"every_forward_pages": 25, "list_delay_seconds": 300,
                                              "list_delay_excludes_configured_interval": True,
-                                             "ordinary_check": "stable_last_forward_page", "max_validated_requests": MAX_RECOVERY_REQUESTS,
+                                             "ordinary_check": "next_page_then_recursive_frontier_join", "next_page_max_gap_seconds": NEXT_PAGE_MAX_GAP,
+                                             "max_validated_requests": MAX_RECOVERY_REQUESTS,
                                              "max_completed_passes": MAX_RECOVERY_PASSES, "proof_scope": "navigation_or_recent_anchor_interval_only"},
                       "content_policy": self._get("content_policy"),
                       "http_request_profile": {"version": REQUEST_PROFILE, "user_agent": UA,
@@ -2523,8 +2683,11 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         keys = ("job", "stock", "phase", "reason", "anchor_page", "current_page", "passes", "drift_count", "new_posts", "proof_level",
                 "anchor_min", "anchor_max", "target_time", "time_fallback", "time_order_verified", "started_at", "completed_at", "verified_requests",
                 "strategy", "trigger_reason", "fallback_reason", "validated_requests", "completed_passes", "max_requests", "max_passes",
-                "generation", "resume_count", "last_resumed_at", "resume_reason", "boundary_endpoints", "initial_boundary_request")
-        return {k: rec.get(k) for k in keys}
+                "generation", "resume_count", "last_resumed_at", "resume_reason", "boundary_endpoints", "initial_boundary_request", "pagination_growth", "rollback_requests")
+        result = {k: rec.get(k) for k in keys}
+        if rec.get("strategy") == "next_page_first":
+            result["anchor_page"] = rec["sequential_frontier"]["page"]
+        return result
 
     def request_view(self, item):
         """Describe old source-error rows without rewriting their ledger facts."""
