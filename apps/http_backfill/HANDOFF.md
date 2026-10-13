@@ -1,6 +1,45 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-12, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-13, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest analysis: next-page-first with an all-new-only rollback can skip rows
+
+User requests analysis before implementation: fetch new=current+1 after bodies,
+roll back to current only if all new-page IDs are unseen; explain if this can
+skip data, otherwise implement. current here means the last acquired list page.
+No collector behavior/deployment/state change was made because that sole trigger
+has deterministic counterexamples. A temporary Python list replay demonstrates:
+page size3, old current2=[D,E,F], next3=[G,H,I], next4=[J,K,L]; K was already seen
+by a date-seek probe. Delete the preceding [A,B,C]. Fresh current2=[G,H,I] and
+new3=[J,K,L]. K makes the all-new condition false, so skipping current2 misses
+G/H/I. Two-page deletion instead moves G/H/I to page1; even an all-new page3 and
+one reread of current2 miss them. Multiple backwards reads/anchor relocation are
+necessary when that displacement is observed. These are synthetic pagination
+examples, not claims of a particular live deletion event.
+
+The current known-ID statistic is job/stock observations, including date-seek
+samples (core.py _accept_list), so known IDs are not a continuity proof. Exclude
+pinned/nonstandard placements from chronological anchors as already required.
+Next-page-first scheduling is a possible optimization, but would need a frozen
+prior frontier and explicit ordered ID/time boundary evidence, retained candidate
+responses, and fallback to current/anchor relocation when evidence is absent or
+contradictory. Retain source-count-loss/time-order/no-progress/terminal guards;
+do not substitute new_ids/overlap counts for the boundary test.
+
+Code inspection: ordinary delayed forward dispatch currently triggers a reread
+of current after interval+300 seconds; stable ordered ID/time signatures enqueue
+current+1. Broader recovery uses the persisted anchor_page, ordinarily current-1,
+when cheap-check prerequisites or exact/boundary matching fail. Existing narrow
+boundary recovery starts at current when its actual endpoints are available.
+Read-only local DB corroborates that it is not always current-1: request7510
+rechecks300666/page324 once and completes as last_forward_page_stable;
+requests7530/7531 recheck002463/page987 and300666/page325 and enter boundary
+recovery. They are existing records, not requests issued for this analysis.
+
+Validation used a deterministic in-memory replay and read-only SQLite; no source
+probe, runtime pause/resume, production data write or implementation test suite.
+User authorization is conditional on absence of gaps; the unsafe sole trigger
+has not been implemented. Existing unrelated working-tree changes are preserved.
 
 ## Latest change: skip announcement/nonstandard details without a stock halt
 
