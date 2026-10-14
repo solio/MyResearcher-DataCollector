@@ -30,7 +30,8 @@ def status():
                 {"job": 3, "stock": "600031", "state": "running", "active_halt": None,
                  "block_evidence": {"id": 9, "url": "https://guba.eastmoney.com/list,600031,f.html"}}],
             "proxy": {"settings": {"mode": "http", "endpoint": "http://127.0.0.1:7891"}, "has_auth": False},
-            "coverage": [], "node_source_auth_barrier": {"request_id": 10}}
+            "coverage": [], "node_source_auth_barrier": {
+                "request_id": 10, "job": 3, "stock": "002648", "task_id": 7}}
 
 
 class VerificationTests(unittest.TestCase):
@@ -80,8 +81,24 @@ class VerificationTests(unittest.TestCase):
         view = dict(self.view, targets=[other, self.target])
         self.assertEqual(helper.choose_target(view), self.target)
         view["barrier_request_id"] = None
-        with self.assertRaisesRegex(RuntimeError, "多只股票"):
-            helper.choose_target(view)
+        view["barrier_target"] = None
+        self.assertEqual(helper.choose_target(view), other)
+
+    def test_failed_probe_updates_evidence_but_keeps_barrier_task_owner(self):
+        self.s["stock_runtimes"][0]["block_evidence"]["id"] = 11
+        self.s["stock_runtimes"][1].update(active_halt="challenge", state="blocked", halt_task_id=9)
+        self.s["stock_runtimes"][1]["block_evidence"]["id"] = 13
+        view = self.w["snapshot"](self.s)
+        target = helper.choose_target(view)
+        self.assertEqual((target["stock"], target["task"], target["request_id"]), ("002648", 7, 11))
+        self.assertEqual(helper.choose_target(view, "600031")["request_id"], 13)
+
+    def test_no_barrier_prefers_current_stock_over_retained_detached_halt(self):
+        archived = dict(self.target, job=1, stock="603039", request_id=100, detached=True)
+        view = dict(self.view, targets=[archived, self.target], barrier_request_id=None, barrier_target=None)
+        self.assertEqual(helper.choose_target(view), self.target)
+        view["targets"] = [archived]
+        self.assertEqual(helper.choose_target(view), archived)
 
     def test_prepare_pauses_running_sibling_only_and_preserves_halt(self):
         with tempfile.TemporaryDirectory() as tmp:

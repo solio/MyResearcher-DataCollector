@@ -2,6 +2,37 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest fix: verification helper automatically picks one current halt
+
+User reports `verify_backfill.command43` incorrectly refusing multiple auth
+halts and explicitly authorizes choosing any one without requiring --stock.
+Read-only43 audit confirms current stocks002648/600031;002648 is blocked on
+task1065 with evidence request1069. Removed/detached603039 retains an unresolved
+challenge from task485/request494. The node barrier retains original002648
+task1065/request1068. Request1069 is a failed manual probe of the same task;
+stock evidence moves to1069 while the durable node barrier stays at1068.
+The old helper matched only the barrier request id, then errored on two targets.
+
+SPEC amended before implementation. Remote snapshot now includes barrier owner
+job/stock/task. Choose the exact barrier request, otherwise that same task owner,
+otherwise newest current-stock target, with detached fallback only when no
+current target exists. Optional --stock can select another eligible stock. No
+multiple-target error, random choice, batch verification, clearing of old halts
+or automatic sibling resume. Existing browser/exit/ownership checks, explicit
+human completion, one original-target probe and opt-in scoped --resume remain.
+README and CLI help describe the automatic default. Changed helper code is sent
+over SSH at execution, so this fix needs no remote collector/nginx deployment.
+
+Validation:17 focused offline operator-verification checks pass, including a
+failed probe updating stock evidence while another target has a newer request,
+optional explicit selection and preferring a current target over detached
+history. Existing cancellation/one-probe/revision/route/resume checks still pass;
+git diff --check and launcher bash syntax pass. A second read-only43 audit using
+the patched helper selects002648/task1065/request1069 with barrier1068 and two
+eligible records. No source navigation, probe, pause/resume or proxy mutation was
+performed. User-owned backfill_all_stocks.sh and refresh_eastmoney_session.py
+remain outside this change.
+
 ## Latest proposal: Waygate unified console, verification inbox and mobile push
 
 Latest user clarification: recommend the interaction rather than following the

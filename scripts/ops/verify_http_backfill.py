@@ -133,6 +133,8 @@ def snapshot(status):
     barrier = status.get("node_source_auth_barrier") or {}
     return {"state": status.get("state"), "instance_id": status.get("instance_id"),
             "revision": job.get("revision"), "barrier_request_id": barrier.get("request_id"),
+            "barrier_target": {"job": barrier.get("job"), "stock": barrier.get("stock"),
+                               "task": barrier.get("task_id")},
             "inflight": status.get("request_inflight"), "probe_pending": status.get("probe_pending"),
             "targets": targets, "stocks": [{"job": r["job"], "stock": r["stock"], "state": r["state"]}
                                           for r in status.get("stock_runtimes", [])]}
@@ -277,9 +279,16 @@ def choose_target(view, stock=None):
     stopped = next((v for v in targets if v["request_id"] == view.get("barrier_request_id")), None)
     if stopped:
         return stopped
-    if len(targets) == 1:
-        return targets[0]
-    raise RuntimeError("多只股票有身份核验阻断，请加 --stock 股票代码选择")
+    # Failed probes replace stock evidence while the node barrier retains the
+    # first blocked request. Its task owner still identifies the current halt.
+    owner = view.get("barrier_target") or {}
+    if all(owner.get(k) is not None for k in ("job", "stock", "task")):
+        stopped = next((v for v in targets if all(v[k] == owner[k]
+                                               for k in ("job", "stock", "task"))), None)
+        if stopped:
+            return stopped
+    return max(targets, key=lambda v: (not v.get("detached", False), v["request_id"],
+                                      v["job"], v["stock"]))
 
 
 class Tunnel:
@@ -470,7 +479,7 @@ def run(node, args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("node", nargs="?", help="36、43 或已配置的服务器 IP")
-    parser.add_argument("--stock", help="多只股票阻断时选择一只")
+    parser.add_argument("--stock", help="指定验证股票；默认自动选择当前阻断任务")
     parser.add_argument("--resume", action="store_true", help="探测通过后继续该股票")
     checks = parser.add_mutually_exclusive_group()
     checks.add_argument("--check", action="store_true", help="只检查服务器当前状态")

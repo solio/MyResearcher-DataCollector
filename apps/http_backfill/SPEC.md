@@ -1,5 +1,17 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-14 automatically select one operator-verification target
+
+User requires the desktop verification helper to proceed with one eligible
+halt without requiring --stock when multiple retained stock halts exist.
+Prefer the node barrier's exact original request; if a failed manual probe has
+updated that stock's evidence id, match the barrier's job/stock/task owner.
+Otherwise choose the most recent current-stock halt, falling back to a retained
+detached halt only when no current target exists. Explicit --stock remains an
+optional override. Selection starts one browser session and at most one guarded
+probe; it never clears other stock halts or resumes them automatically. Existing
+instance/revision/task/request/url/route checks and operator confirmation remain.
+
 ## 2026-10-14 one-command temporary operator verification
 
 User authorizes a local command/desktop launcher for the existing36/43
