@@ -2,6 +2,38 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest rollout: 43 node joins temporary shared-egress verification
+
+User explicitly adds43.132.206.172 to the same temporary local-browser mechanism.
+SSH root22 uses the existing local id_ed25519_deploy identity (default identities
+were rejected; deployment identity succeeds). Docker collector is healthy at
+/usr/local/src/MyResearcher-DataCollector/apps/http_backfill, data subdirectory.
+Host Mihomo already runs with private listener172.18.0.1:7891 and MATCH,WW;
+collector and both stock overrides use that existing HTTP proxy. WW already
+selects the concrete Japan JP A83 node, not auto. Preserve that selection, which
+differs from36's HK4. Server proxy IP check reports141.11.131.83.
+
+Audit snapshot:002648/600031 running,curl11sec,2025-07-31..2026-03-05,no active
+source auth barrier or stock halt; a retained historical failed URL alone does
+not require verification. No collector controls, source probe, source page,
+subscription/controller mutation, code deployment or production write.
+
+Verification uses local-only SSH forwarding17894 to the existing43 proxy, a
+separate .runtime/browser-profiles/server43-shared-egress Chrome profile, and
+neutral IP-check requests only. Remote HTTP proxy, local forwarded HTTP proxy
+and rendered Chrome IP-check all return141.11.131.83. Test Chrome runs headless
+only for the neutral IP check; future human verification needs the headed
+dedicated profile. Browser context is closed, SSH control master explicitly
+exited, local17894 no longer listens and temporary control directory is removed.
+No permanent local proxy, Mihomo rule or startup service.
+Private connection metadata is apps/http_backfill/data/shared-egress-43.132.206.172.json
+(0600, ignored; includes SSH identity path, never key/token contents). Future
+operator-assisted verification must reopen this node's temporary tunnel and
+headed browser, verify current exit, then close both after verification. Reuse
+only the selected node's browser profile/entry, never36's profile or gateway.
+README records the two distinct node mappings; authentication-release limits
+from the36 experiment remain unchanged.
+
 ## Latest research: local browser shares the 36 node's existing proxy
 
 User requests same-egress local operator verification and asks whether that
