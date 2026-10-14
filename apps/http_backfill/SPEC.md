@@ -1,5 +1,39 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-14 one-command temporary operator verification
+
+User authorizes a local command/desktop launcher for the existing36/43
+shared-egress workflow: discover the selected node's current source-auth halt
+and effective HTTP proxy, temporarily forward that proxy through SSH, launch
+an independent headed Chrome profile, let the operator complete verification,
+then close the browser and forwarding connection. Never modify local system
+proxy/Mihomo rules, export browser cookies, automate CAPTCHA, or change server
+proxy selection. SSH identities are referenced in private ignored local config.
+
+Only current challenge/http401/403/429 halts are eligible; historical evidence
+without an active halt must not navigate the source. Require a source-owned
+HTTPS list/detail URL, retained request/task ownership and unauthenticated
+HTTP/mixed endpoint. Pause any still-running stocks on that selected node
+before verification. Preserve all halt records, pacing and recovery checkpoints.
+Check actual browser/server exit agreement before source navigation. Window
+closure, terminal EOF, Ctrl+C and normal errors clean up the owned browser and
+tunnel. Parent death closes the SSH stdin guardian; no detached local proxy or
+startup service. Retain the browser-owned private profile for later use.
+
+After explicit operator confirmation, close the local resources and schedule
+exactly one original-target probe using existing authenticated controls.
+Revalidate instance, job revision, halt request/task/url and proxy/selector
+signature immediately before scheduling. Never retry a changed target or
+clear a halt manually. A valid probe leaves the server paused by default;
+explicit --resume may start only the verified current stock after validating
+unchanged scope/route and absence of any source/storage/legacy barrier. Other
+stocks remain paused. Probe polling is read-only and bounded; a still-queued
+probe is reported for console follow-up, without another source attempt.
+
+Read-only --check and neutral --check-exit modes must work without source
+navigation, pauses, probe/resume or proxy writes. Frozen parser/data semantics
+and collector deployment are unchanged; this is a local operations helper.
+
 ## 2026-10-13 next-page-first checks with recursive frontier rollback
 
 For ordinary detail-delay/periodic checks and short pause/restart/config resume,

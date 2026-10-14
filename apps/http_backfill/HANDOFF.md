@@ -2,6 +2,52 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest implementation: one-command operator verification and automatic local cleanup
+
+User asks for one script to attach the special proxy, open a browser for manual
+CAPTCHA and remove the temporary proxy afterward. SPEC amended first. Added
+scripts/ops/verify_http_backfill.py and executable verify_backfill.command.
+Run the launcher with36/43 or double-click and choose a node. Local private
+.runtime/http-backfill-verification/nodes.json (0700 directory,0600 file,ignored)
+already contains the two previously verified SSH identities/profile references;
+key/token contents are never stored in the config or transmitted to this client.
+Launcher selects an existing Python with the project's Playwright dependency.
+
+Helper discovers the remote collector/data/API/effective stock route via SSH;
+only current challenge/http401/403/429 halts navigate the original retained
+source URL. Historical evidence alone is ignored. Still-running sibling stocks
+pause and their in-flight ordinary request finishes before browser verification.
+Verify the actual server/browser IP, launch only the selected node's dedicated
+Chrome profile, wait for operator Enter, check IP/route stability again, then
+close the browser/tunnel before scheduling one original-target server probe.
+Window closure,q,EOF,Ctrl+C,terminal HUP and ordinary failures clean up local
+resources. SSH's remote stdin guardian ends the connection on parent death;
+no persistent forwarding service, system proxy or local Mihomo-rule changes.
+Credentials remain remote/browser-owned; no browser cookie export.
+
+Instance/job revision/halt request/task/url/selector signature and actual exit
+IP are rechecked before probe. Polling is read-only,bounded120sec; no extra
+source retry when pending/failed. Default successful probe leaves paused.
+Explicit --resume starts only the verified current stock with unchanged scope,
+route and no new storage/auth/legacy barrier. Detached targets may be probed
+using their own route, never the new job's same-code override; they cannot resume.
+No collector/backend changes or server deployment are required.
+
+Validation:15 focused offline controls/lifecycle tests pass with
+`python -m pytest -q apps/http_backfill/tests/test_operator_verification.py`.
+Cases cover historical evidence, original-barrier selection, invalid source
+URLs, task/revision/exit changes, pausing an in-flight sibling, cancellation,
+single failed probe, matching task/probe ledger, default pause/opt-in scoped
+resume, detached route ownership and stdin-guardian cleanup. Python compile,
+bash -n and git diff --check pass; launcher --help works with the local runtime.
+Both live --check-exit runs confirm
+36=202.8.105.165 and43=141.11.131.83, with automatic local cleanup. Neutral checks
+use disposable empty Chrome profiles so saved verification tabs cannot restore
+source pages. Subsequent local process check shows no remaining verification
+SSH tunnels and confirms private config0600. No pause/source navigation/probe/resume/controller write occurred
+during those live checks. Human CAPTCHA release remains to be exercised at the
+next actual halt; neutral checks are not evidence of CAPTCHA efficacy.
+
 ## Latest rollout: 43 node joins temporary shared-egress verification
 
 User explicitly adds43.132.206.172 to the same temporary local-browser mechanism.
