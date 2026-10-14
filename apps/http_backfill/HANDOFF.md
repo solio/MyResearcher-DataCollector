@@ -34,7 +34,23 @@ Subsequent read-only audit shows current stock601888 blocked, node barrier absen
 and existing request1122 is a600031 one-shot real_data/HTTP200. This request was
 not submitted by this experiment and is not a same-target control. No collector
 source probe/resume was performed by this work. The overall IP-only release
-hypothesis remains unvalidated. No CAPTCHA automation, browser state export,
+hypothesis remains unvalidated. User subsequently reports access restored.
+Read-only API/ledger confirmation shows601888 running,curl47sec,no node auth
+barrier/no stock halt, and successful normal detail requests1125/1126. Later TLS
+failures1127/1128 are transport errors, not CAPTCHA evidence. No claim that the
+browser visit caused the release: the successful manual probe/collection were
+submitted outside this experiment and no CAPTCHA was shown in our browser.
+
+User explicitly requires local proxy use to be temporary and retain ordinary
+Mihomo domestic-site rules. Closed only the exact local SSH forwarding process
+for17893; socket is no longer listening. Dedicated browser was already exited
+and its CDP port is closed. Private browser profile retained, no cookie export.
+No system proxy, local Mihomo rule or browser preference change was made, and
+no local startup service was created. Server still uses its existing proxy and
+pinned HK4; do not revert the server selector in response to a local-only request.
+Local sleep/disconnection does not stop server collection. Reopen the dedicated
+browser/tunnel only for a future operator-assisted verification session, then
+close them again. No CAPTCHA automation, browser state export,
 production write or other-node change. The
 browser-owned profile and local connection marker are private/ignored; their
 contents must not enter Git, exports or logs. README records the repeatable
