@@ -1,6 +1,46 @@
 # HTTP idle-time backfill — handoff
 
-Date: 2026-10-13, Asia/Shanghai. Version: http-backfill.v5.
+Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
+
+## Latest research: local browser shares the 36 node's existing proxy
+
+User requests same-egress local operator verification and asks whether that
+would release server HTTP collection. Read-only authenticated audit of
+36.138.125.17 confirms Docker collector uses http://172.22.0.1:7891; host Mihomo
+already runs, private bridge listener and MATCH,WW. Job1/revision8 uses curl,
+45sec,002648/600031,2025-07-31..2026-03-06. Source challenge request1121 stopped
+002648 detail1630836071;600031 is paused by the node barrier. No inflight/probe.
+Current halt URL is https://guba.eastmoney.com/news,002648,1630836071.html.
+
+Created local loopback SSH forward17893 to that existing server proxy. Server
+proxy and local tunneled HTTP checks both report202.8.105.165. WW initially
+selected auto, whose current leaf was the existing HK4 node. Selected that same
+leaf directly in WW to hold the experiment's route stable; no subscription,
+proxy credentials, system routing or collector config changes. Prior selector
+and pinned leaf are recorded privately in /opt/mihomo/shared-egress-experiment.json
+on36 (0600); restore WW to auto after the experiment if requested. Do not restore
+or change the selection while an operator is completing verification.
+
+Opened a dedicated local Chrome profile .runtime/browser-profiles/server36-shared-egress
+through the tunnel. Its rendered IP-check page also reports202.8.105.165, then
+one browser navigation opens the original failed detail. Rendered screenshot
+shows its normal title/body, DOM has post_article, and visible challenge text is
+absent. No CAPTCHA appeared and no human verification was performed, so this
+does not test the proposed manual-CAPTCHA release mechanism.
+
+Prepared a guarded original-target curl probe through the existing API, but
+aborted before POST because current stopped state had changed concurrently.
+Subsequent read-only audit shows current stock601888 blocked, node barrier absent,
+and existing request1122 is a600031 one-shot real_data/HTTP200. This request was
+not submitted by this experiment and is not a same-target control. No collector
+source probe/resume was performed by this work. The overall IP-only release
+hypothesis remains unvalidated. No CAPTCHA automation, browser state export,
+production write or other-node change. The
+browser-owned profile and local connection marker are private/ignored; their
+contents must not enter Git, exports or logs. README records the repeatable
+SSH/shared-proxy process and limits. Browser success cannot identify the access
+policy or establish curl eligibility; after any manual verification, use at most
+one original-target probe and retain stopped state on challenge.
 
 ## Latest change: next page first, then recursive sequential-frontier rollback
 
