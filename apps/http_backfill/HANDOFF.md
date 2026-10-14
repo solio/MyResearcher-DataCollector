@@ -2,6 +2,44 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest feasibility: Android/HarmonyOS phone as verification terminal
+
+User asks whether the current mechanism is easy to deploy on Android or
+HarmonyOS7. Interpret in context as phone-operated manual verification/control,
+not unattended phone collection. Current .command/Python/desktop Chrome helper
+cannot be shipped unchanged as a mobile app. Playwright Python's officially
+supported OS list covers desktop Windows/macOS/specified Linux, not these phone
+OSes: https://playwright.dev/python/docs/intro . Android ADB automation is a
+different experimental interface, not a drop-in phone-local replacement.
+
+Android native lightweight verifier is feasible: AndroidX WebKit ProxyController
+supports process/app WebView proxy override and clearing, feature-check required:
+https://developer.android.com/reference/androidx/webkit/ProxyController . The
+SSH tunnel and lifecycle/probe guards would need a mobile implementation. This
+does not imply ordinary Chrome can use the desktop launcher. Native HarmonyOS
+client/ArkWeb proxy feasibility is not established here; do not claim Android
+APK compatibility or a verified ArkWeb network-proxy API. Official Huawei ArkWeb
+module page fetch failed; unrelated JavaScript-proxy docs are not evidence.
+
+Preferred cross-platform proposal: launch a temporary graphical Chrome on the
+selected collector node, using that node's current proxy, and present its live
+screen/input inside the existing authenticated H5 console. Browser-screen
+interaction can use noVNC, whose official docs support mobile Android browsers
+and touch gestures: https://novnc.com/info.html and https://github.com/novnc/noVNC .
+HarmonyOS7 browser compatibility remains an inference requiring an actual
+device/touch-drag check. Phone network/proxy rules stay unchanged; phone sends
+screen-control input, while source requests originate from the server browser.
+Close the temporary browser/display/session after manual completion and keep
+the existing guarded one-shot source probe/opt-in resume behavior.
+
+This would require a server virtual-display/browser/remote-view session service
+and authenticated WebSocket integration/session cleanup. Existing task/proxy/
+source checks can be reused. Avoid presenting a reverse-proxied source HTML
+page as equivalent to a real browser session, or claiming a pure H5 page can
+control the phone's system proxy or start a local SSH client. No mobile/client
+or remote-browser implementation/deployment occurred; no device testing, source
+navigation or server task changes accompanied this research.
+
 ## Latest implementation: one-command operator verification and automatic local cleanup
 
 User asks for one script to attach the special proxy, open a browser for manual
