@@ -249,7 +249,7 @@ git push origin main
 正常合并/变基自己的提交，禁止 force push、丢弃另一环境提交或重置别人工作区。
 
 每轮追加格式：日期 / 执行环境 / 代码变化 / 精确命令及结果 / 未验证事项 / 下一步。
-未编译填“未编译”，签名失败填具体错误，模拟测试不可标为真机 PASS。
+未编译填"未编译"，签名失败填具体错误，模拟测试不可标为真机 PASS。
 
 ### 2026-10-14 / Mac / 首次交付
 
@@ -260,3 +260,61 @@ git push origin main
 只读请求现有本机 `/api/fleet`，实际返回 1 个节点、0 个当前待办；可被新 Store 正确接收。
 该检查没有访问股吧、没有调用节点控制、没有写现有采集库，也不代表 36/43 真机验证通过。
 下一步首先执行 Windows DevEco Sync / Build，而不是先安装手机代理或升级远端采集器。
+
+### 2026-10-14 / Windows / 第一轮：离线检查通过，跨平台修复
+
+执行环境：Windows 10/11 x64（`xzddesktop\xiazhidao`），Python 3.12.10（winget 安装，
+路径 `%LOCALAPPDATA%\Programs\Python\Python312`），仓库 `D:\sources\MyResearcher\MyResearcher-DataCollector`。
+
+代码变化（修复 Windows 下测试失败，未改变任何语义）：
+
+- [scripts/ops/verify_http_backfill.py](../../scripts/ops/verify_http_backfill.py)
+  `REMOTE_WORKER` 内两处 `with sqlite3.connect(...) as db:` 只提交事务不关闭连接，
+  Windows 下文件句柄未释放导致后续 `TemporaryDirectory` 清理报
+  `PermissionError: [WinError 32]`。改为 `contextlib.closing(...)` 显式关闭（只读连接，
+  无行为差异）；worker 导入行补充 `contextlib`。
+- [apps/http_backfill/tests/test_operator_verification.py](../http_backfill/tests/test_operator_verification.py)
+  `test_probe_result_matches_task_and_one_shot` 的建库连接同样未关闭；改为 `with db:` 提交后
+  `db.close()`。
+
+精确命令及结果（仓库根目录，`NO_PROXY=*` 绕过本机系统代理）：
+
+```powershell
+py -3 -m venv apps/waygate/.venv   # 本机无 py 启动器，实际用完整路径 python.exe -m venv
+& apps/waygate/.venv/Scripts/python.exe -m pip install -r apps/waygate/requirements-dev.txt
+& apps/waygate/.venv/Scripts/python.exe apps/waygate/tools/check_project.py
+# -> Project metadata/import paths OK
+& apps/waygate/.venv/Scripts/python.exe -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py
+# 修复前：1 failed, 37 passed（WinError 32）；修复后：38 passed in 1.16s
+```
+
+DevEco 环境事实（本机实查，非推测）：
+
+- 本机原本没有 DevEco Studio、HarmonyOS SDK、hdc，也没有真正的 Python（仅商店存根）。
+- winget 的 `Huawei.DevEco` 实际是 2023 年 DevEco Studio 3.1.0.501（仅支持旧版 HarmonyOS，
+  与本项目 API 20 目标不兼容），已安装后卸载。winget 没有可用的 6.x 版本。
+- 官网 DevEco Studio 6.x 下载入口 `developer.huawei.com/consumer/cn/download/` 需要华为账号
+  登录后才能下载；agent 不能也不应代替用户登录。等用户参与下载后继续 Sync/编译。
+- 已安装官方 `@deveco/deveco-cli`（node22，`D:\kits\node22`）作为后续命令行构建入口；
+  它要求本机存在 DevEco Studio 6.0+（`DEVECO_CLI_STUDIO_PATH`）或 Command Line Tools，
+  单独安装该 npm 包不等于具备 SDK。
+- 本机 Node：`D:\kits\node22`（22.x）。项目 SDK 目标仍为 `6.0.0(20)`，未改动工程配置。
+
+主控侧事实（只读探查，未改任何节点配置/任务/代理）：
+
+- 本机 SSH `testsg8100`（`~/.ssh/testsg8100.pem`）可登 36（36.138.125.17，ecs-02826072）。
+- 36 控制台为 Docker `http_backfill-collector-console-1`（0.0.0.0:8790），
+  数据目录 `/opt/MyResearcher-DataCollector/apps/http_backfill/data`；`/api/fleet` 用
+  数据目录 `console.token` Bearer 实测返回 200，fleet 仅 1 个节点 `local`（无 43 注册），
+  即部署 hub 时 `ssh` 映射只需 `local` 键。43 未在本机登记 SSH 凭据。
+- 36 没有 nginx（未安装），没有 80/443 监听，没有 Let's Encrypt 证书；控制台目前以
+  HTTP 暴露。hub 代码强制 `public_url` 为 HTTPS，手机端也需要受信 HTTPS/WSS，
+  因此“放到现有 HTTPS 域名下”这一步在本机没有现成落点，需要用户提供域名后
+  在 36 上新增 nginx + 证书；此前不关闭/降级任何证书校验。
+
+未验证事项：DevEco Sync、ArkTS 实际编译、签名、真机安装（均未开始，本机无 SDK）；
+hub 尚未部署；H5 控制台、代理清理、通知验收全部待手机侧就绪。
+
+下一步：用户参与华为账号下载 DevEco Studio 6.x → 安装后 `check-windows.ps1 -Build` 实际编译 →
+用户提供主控 HTTPS 域名后在 36 部署附属服务（venv/systemd/`local` SSH 映射/nginx location）→
+真机验收。
