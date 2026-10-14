@@ -2,6 +2,54 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest rollout: both36/43 updated after guarded retry API400
+
+User reports manual verification of43/002648 request1080 completing locally,
+then generic HTTP400 before the helper's probe-queued message. Read-only runtime
+inspection confirms43 was still on89e61fd: its stock control accepts only
+action/job_id and its retry method lacks retry_request_id. The local helper sends
+that field to bind the original halt, so the old handler rejects it before
+queueing a probe.36 was on953e2a1 and already had that API. No new compatibility
+code/capability endpoint/error-handler change was implemented: user explicitly
+redirected the task to updating BOTH servers directly.
+
+Deployed source revisionc0ae038e2e30fcc07a72aa10cf5b953fb539eaac to both repos
+using a Git bundle/fast-forward, rebuilt the existing compose service and
+recreated its container. Both apt layers were cached. Preserve each server's
+compose/.env/data mount;43's existing local BASE_IMAGE=python:3.12-slim override
+was retained. Backed up SQLite online, deployment settings and status, and tagged
+the previous image before replacement. Backups under each node's existing data
+directory: .deploy-backups/20261014-c0ae038e2e30; previous image tag
+http_backfill-collector-console:before-c0ae038e2e30. No training DB import.
+
+36 /opt/MyResearcher-DataCollector: healthy, same instance/job revision10,
+10825posts/1374requests/1417tasks,601888 remains challenge-blocked at1374.
+Job/config/token/proxy-route signatures and counts matched before/after.
+
+43 /usr/local/src/MyResearcher-DataCollector: healthy, same instance/job
+revision5 and effective proxy routes/token/settings.7928posts retained, with
+every(source,source_item_id,stock_code) present in both old/new databases.
+Before its deployment snapshot, separate manual probe1088 had succeeded and
+002648 was paused with no node barrier. Upgrade/resume checkpoint adds task1091
+(list page334), superseding1090; the strict initial task-count equality check
+therefore stopped after the container was already healthy. Subsequent events
+record a separate started control followed by source request1089's identity
+challenge on page334. Final counts7928posts/1089requests/1091tasks;002648 is now
+blocked at1089 and600031 remains completed. This is a fresh source challenge,
+not the old HTTP400 or data loss. Deployment validation did not queue a valid
+probe/start.43 SSH direct access temporarily closed during follow-up reads;
+validation continued through an owned36 SSH forwarding connection. A final
+direct43 SSH check succeeded; no persistent jump/proxy configuration was added.
+
+Both real running APIs accepted the retry_request_id field and rejected value0
+with the expected validation error before source dispatch; request counters
+were unchanged by these negative checks.43's running server.py/stock_runtime.py/
+core.py hashes exactly match local deployed source. The helper's read-only audit
+selects current002648 halt1089. Actual human verification and a successful guarded
+source probe/resume remain operator actions; neither was performed in this rollout.
+User-owned local backfill_all_stocks.sh/refresh_eastmoney_session.py remain outside
+the deployment bundle/commit. No compatibility workaround was added.
+
 ## Latest fix: verification helper automatically picks one current halt
 
 User reports `verify_backfill.command43` incorrectly refusing multiple auth
