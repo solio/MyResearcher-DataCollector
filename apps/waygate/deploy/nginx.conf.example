@@ -1,0 +1,16 @@
+# Put inside the existing HTTPS server {}. No extra domain or node public port.
+location = /waygate { return 301 /waygate/; }
+location /waygate/ {
+    proxy_pass http://127.0.0.1:8791/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 180s;
+    proxy_send_timeout 180s;
+    proxy_buffering off;
+    client_max_body_size 64k;
+    # Console entrance uses a single-use ticket; avoid query strings in logs.
+    access_log off;
+}

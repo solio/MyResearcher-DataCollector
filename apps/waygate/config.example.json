@@ -1,0 +1,20 @@
+{
+  "listen": "127.0.0.1",
+  "port": 8791,
+  "public_url": "https://your-console.example/waygate",
+  "collector_url": "http://127.0.0.1:8790",
+  "collector_token_file": "/etc/waygate/console.token",
+  "data_dir": "/var/lib/waygate",
+  "ssh": {
+    "36.138.125.17": {"user": "root", "port": 22, "identity_file": "/etc/waygate/keys/node36"},
+    "43.132.206.172": {"user": "root", "port": 22, "identity_file": "/etc/waygate/keys/node43"}
+  },
+  "source_domains": ["eastmoney.com", "gtimg.com", "geetest.com", "geevisit.com"],
+  "push": {
+    "enabled": false,
+    "project_id": "",
+    "service_account_file": "/etc/waygate/huawei-push-service-account.json",
+    "category": "MARKETING",
+    "test_message": true
+  }
+}

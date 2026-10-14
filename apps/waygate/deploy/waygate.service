@@ -1,0 +1,24 @@
+[Unit]
+Description=Waygate mobile verification hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=waygate
+Group=waygate
+WorkingDirectory=/opt/MyResearcher-DataCollector
+ExecStart=/opt/MyResearcher-DataCollector/apps/waygate/.venv/bin/python -m apps.waygate.hub.service --config /etc/waygate/config.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=70
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/waygate
+ProtectHome=true
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target

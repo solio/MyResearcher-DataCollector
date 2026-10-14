@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "Waygate"
+    },
+    {
+      "name": "module_desc",
+      "value": "采集控制与人工验证"
+    }
+  ]
+}

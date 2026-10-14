@@ -2,6 +2,16 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Waygate HarmonyOS implementation handoff
+
+User now authorizes implementing the mobile app in `apps/waygate` and assigns
+Windows/DevEco/device deployment and acceptance to their other environment.
+The previous mobile sections below are design history. Current code, scope,
+deployment instructions and explicit unverified device gates are in
+[../waygate/runs.md](../waygate/runs.md). The additive hub reuses the existing
+operator helper and fleet; this change does not deploy or modify collector
+nodes, alter parser/data contracts, or import data into the training database.
+
 ## Latest rollout: both36/43 updated after guarded retry API400
 
 User reports manual verification of43/002648 request1080 completing locally,
