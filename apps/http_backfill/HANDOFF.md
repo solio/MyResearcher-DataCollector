@@ -2,6 +2,108 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest proposal: Waygate unified console, verification inbox and mobile push
+
+Latest user clarification: recommend the interaction rather than following the
+user's suggested design literally. The goal is low-attention operation away from
+the computer/office: start cloud tasks in H5, learn about an actual block, handle
+manual verification when available, and preserve/resume progress. Human waiting
+is a normal paused state, not a reason to keep probing or nagging. Recommend one
+mobile entry with a prominent pending-action card above existing task progress;
+one alert per active incident, optional user-selected reminder, and a direct
+notification link to that incident's verification screen. Hide proxy/SSH/runtime
+detail behind initial setup or diagnostics. Begin handling only on user action;
+on a native client, that action can explicitly opt into one guarded probe and
+resume after observed normal source content following human verification.
+Keep an explicit completion button as a fallback if page success is uncertain;
+never require the current desktop terminal Enter interaction in the mobile UX.
+Failed or abandoned handling keeps the task paused and the incident available,
+without another source retry or repeated same-incident alert. Successful source
+probe removes the active card, retaining evidence only in history. Default
+resume remains the verified task; a separate reviewed batch action may later
+resume incident-induced sibling pauses, excluding pre-existing pauses/halts,
+archives, changed jobs/configuration and unknown/stale snapshots. This proposed
+UX is not an implementation or an authorization to alter current server controls.
+
+Status: DESIGN PROPOSAL / code and deployment unchanged. User asks how a future
+mobile verification client can also contain the current console and receive
+server-initiated requests for manual verification. Waygate is a suggested repo
+name, not a repository created or a requirement to rename DataCollector.
+
+Evidence: fleet.py tick() already schedules each registered node's status poll
+every10seconds, independent of whether a browser is open; server.py starts this
+worker unconditionally. Existing authenticated /api/fleet, /api/nodes/<alias>/...
+and per-stock controls can support a shared console. These are collector-state
+reads, not source requests. There is no durable mobile verification inbox,
+notification outbox, push integration or mobile client in the current code.
+
+Recommend a lightweight native Android/HarmonyOS client that reuses the hosted
+H5 console and adds a native verification window and OS push. Keep the existing
+collector/hub in DataCollector. Add incident persistence and notification work
+to the hub; the phone uses one hub login and its node registry, rather than
+configuring each collector again. For the integrated architecture, let the hub
+own node SSH credentials and forwarding, and expose an authenticated temporary
+encrypted relay session to the phone. An app-local proxy feeds only verification
+traffic into this relay; the hub forwards it over SSH to the selected node's
+effective Mihomo HTTP endpoint. This is a proposed extension of the desktop
+helper, not an already implemented tunnel service. It avoids distributing root
+SSH identities to mobile clients. No additional public proxy listener/domain
+is needed on each collector; the existing hub HTTPS endpoint needs relay support.
+
+Persist the original active incident by collector instance/job/stock/task/halt
+request ownership, retaining an incident id across repeated failed probes. Do
+not generate one notification per poll or per sibling stock stopped by the same
+node-auth barrier. Challenge evidence creates a manual-verification item;
+bare401/403, proxy407,429 and transport errors keep their actual classifications
+and do not imply a sliding CAPTCHA. Offline/failed polls never prove resolution.
+Push is an alert/link to an incident id, not authority to open a stale URL or
+send a source request. Recheck live state before creating a session, pin current
+task/route/proxy identity, compare browser/node exit IP before source navigation,
+and permit one active operator session per incident. Proxy failure aborts the
+session without silently switching exit. Hosted console traffic must explicitly
+bypass WebView proxy overrides, which otherwise affect all WebViews in an app.
+
+After human confirmation, close temporary resources, request exactly one
+original-target probe and optionally resume only that verified task after
+success and unchanged ownership/revision/route. Other stock states, pacing and
+node barrier semantics remain unchanged. App disconnect/session expiry closes
+relay resources, never marks verification successful. Browser state remains
+browser-owned; no automated CAPTCHA or cookie export. A durable inbox plus
+separate push outbox allows delivery retries without source retries. Acknowledge
+provider acceptance separately from actual delivery and human/source completion.
+
+For locked/background phones use vendor OS notification push, with native
+notification permission/token registration; frontend polling/WebSockets alone
+are not a reliable background wakeup strategy. Huawei HarmonyOS Push Kit exposes
+notification-center/lock-screen/banner notifications and requires application
+registration/push activation/signing. Android should use the target phone's
+supported vendor channel; FCM alone requires Google Play and is not a general
+assumption for domestic phones. Official references:
+https://developer.huawei.com/consumer/cn/sdk/push-kit
+https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/push-config-setting
+https://firebase.google.com/docs/cloud-messaging/android/get-started
+Notifications remain best-effort; reopening the app retrieves pending incidents.
+
+Suggested implementation order: hub incident inbox/outbox and existing H5 entry;
+then one actual phone platform's native verification plus push; expand platforms
+after a real manual challenge and one guarded collector probe succeed. The hub
+polling implementation can support the first inbox without requiring all remote
+nodes to upgrade. No live requests, server configuration, data imports or mobile
+push registration occurred during this analysis.
+
+## Feasibility correction: ArkWeb app-level proxy interfaces exist
+
+The earlier unsupported assumption that HarmonyOS cannot support this path is
+withdrawn. OpenHarmony's official ArkWeb ProxyController docs define
+applyProxyOverride/removeProxyOverride since API15, with app-wide Web scope and
+callbacks to await before loading. Huawei's current documentation navigation
+also lists ProxyController, but its detailed page could not be fetched here.
+Primary reference:
+https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/reference/apis-arkweb/arkts-apis-webview-ProxyController.md
+This establishes a native implementation route, not a verified HarmonyOS7 SDK/
+device result. Actual device proxy, tunnel/relay, Web compatibility and touch
+verification remain untested. AndroidX code is not a drop-in HarmonyOS client.
+
 ## Latest feasibility: Android/HarmonyOS phone as verification terminal
 
 User asks whether the current mechanism is easy to deploy on Android or
@@ -17,9 +119,9 @@ supports process/app WebView proxy override and clearing, feature-check required
 https://developer.android.com/reference/androidx/webkit/ProxyController . The
 SSH tunnel and lifecycle/probe guards would need a mobile implementation. This
 does not imply ordinary Chrome can use the desktop launcher. Native HarmonyOS
-client/ArkWeb proxy feasibility is not established here; do not claim Android
-APK compatibility or a verified ArkWeb network-proxy API. Official Huawei ArkWeb
-module page fetch failed; unrelated JavaScript-proxy docs are not evidence.
+client feasibility was not established in this earlier investigation; see the
+correction above for the subsequently located official ArkWeb proxy interfaces.
+Do not claim Android APK compatibility or a tested HarmonyOS7 implementation.
 
 Preferred cross-platform proposal: launch a temporary graphical Chrome on the
 selected collector node, using that node's current proxy, and present its live
