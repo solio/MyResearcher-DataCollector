@@ -54,10 +54,11 @@ Runtime DBs, signing material, tokens and actual node configuration stay ignored
 
 The user authorizes server implementation and requests one startup command on
 the existing Linux Docker main console. Add a script that discovers the running
-collector's published port and token mount, starts only a Waygate container,
-and adds its /v1/, /console/ and /health routes under the supplied existing HTTPS
-console URL. Preserve the original collector location, container, tasks and
-registry. Validate nginx before reload, back up modified files, restore on
-failure, and verify the public authenticated inbox. Do not claim remote startup
-from local checks. Reuse existing server SSH credentials when available; report
-missing SSH configuration separately from successful app/H5 connectivity.
+collector's published port and token mount and starts only a Waygate container.
+The user's subsequent correction removes nginx discovery, validation, mutation
+and reload from this command. It must also not require the public URL to work
+before starting the backend. Generate an optional /v1/, /console/, /health route
+snippet separately for the operator's existing nginx configuration. Confirm the
+local hub inbox only; never label that as public connectivity. Preserve collector
+container/tasks/registry and existing SSH settings. Do not claim remote startup
+from local checks. Report missing SSH configuration separately from app access.

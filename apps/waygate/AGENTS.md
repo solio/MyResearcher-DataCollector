@@ -23,8 +23,12 @@ changing their tasks, switching their proxy exits, or publishing SSH credentials
 On 2026-10-15 the user initially held deployment, then explicitly assigned the
 server side to this agent and requested a startup command for the existing main
 console at https://testapi.zuzurent.com.cn/collector (fzz-002). That latest request
-authorizes the server integration in deploy/start.sh, including checked nginx
-routing, while preserving collector containers/tasks and registry. App changes
+authorizes server integration in deploy/start.sh while preserving collector
+containers/tasks and registry. The latest correction explicitly rejects nginx
+discovery/validation as a startup prerequisite: start the Docker service only,
+generate an optional route snippet, and leave existing nginx configuration and
+reload to the operator. Do not restore automatic nginx edits or public-URL
+preflight gates. App changes
 and device acceptance remain with the other environment. The Windows agent's
 internal systemd hub on 36 is a separate deployment: leave it as-is; it is not
 automatically the domain's main console. Do not represent a delivered script as

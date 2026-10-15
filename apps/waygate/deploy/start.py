@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Linux/Docker startup for the existing collector HTTPS endpoint (Python 3.6+)."""
+"""Start the Waygate container; nginx configuration is a separate operator step."""
 import argparse
-from datetime import datetime
 import json
 import os
 from pathlib import Path
-import re
-import shutil
 import socket
 import subprocess
 import sys
@@ -16,9 +13,9 @@ import urllib.request
 from urllib.parse import urlsplit
 
 try:
-    from .nginx_routes import install_include, locations, public_address, tls_server
+    from .nginx_routes import locations, public_address
 except ImportError:
-    from nginx_routes import install_include, locations, public_address, tls_server
+    from nginx_routes import locations, public_address
 
 ROOT = Path(__file__).resolve().parents[3]
 APP = ROOT / 'apps/waygate'
@@ -70,21 +67,6 @@ def collector_info(container=None):
     return data, token, 'http://127.0.0.1:' + port['HostPort'], info['Config']['Image']
 
 
-def nginx_target(nginx, address):
-    command([nginx, '-t'])
-    dumped = command([nginx, '-T'])
-    paths = re.findall(r'^# configuration file (.+):\s*$', dumped, re.M)
-    matches = []
-    for name in dict.fromkeys(paths):
-        path = Path(name).resolve()
-        text = path.read_text()
-        for block in tls_server(text, address):
-            matches.append((path, text, block))
-    if len(matches) != 1:
-        raise RuntimeError('未找到唯一匹配的 HTTPS server_name；请确认本机 nginx 承载该域名，或用 --nginx 指定其可执行文件')
-    return matches[0]
-
-
 def wait_inbox(base, token, timeout=45):
     deadline, error = time.monotonic() + timeout, ''
     while time.monotonic() < deadline:
@@ -99,49 +81,10 @@ def wait_inbox(base, token, timeout=45):
     raise RuntimeError(error)
 
 
-def publish_routes(nginx, target, include, snippet, address, backup, check):
-    path, original, block = target
-    if path.read_text() != original:
-        raise RuntimeError('nginx 配置在构建期间被修改，已保留新配置；请重新执行启动命令')
-    updated = install_include(original, block, include, address)
-    previous = include.read_bytes() if include.exists() else None
-    backup.mkdir(parents=True, exist_ok=False, mode=0o700)
-    shutil.copy2(str(path), str(backup / 'vhost.conf'))
-    if previous is not None:
-        (backup / 'waygate-locations.conf').write_bytes(previous)
-    (backup / 'paths.json').write_text(json.dumps({'vhost': str(path), 'include': str(include)}))
-    reload_attempted = False
-    try:
-        include.write_text(snippet)
-        include.chmod(0o644)
-        # Writing in place preserves the vhost's ownership/mode/SELinux context.
-        if updated != original:
-            path.write_text(updated)
-        command([nginx, '-t'])
-        reload_attempted = True
-        command([nginx, '-s', 'reload'])
-        return check()
-    except BaseException:
-        path.write_text(original)
-        if previous is None:
-            if include.exists():
-                include.unlink()
-        else:
-            include.write_bytes(previous)
-        command([nginx, '-t'])
-        if reload_attempted:
-            command([nginx, '-s', 'reload'])
-        raise
-
-
 def main():
-    p = argparse.ArgumentParser(description='启动 Waygate 并接入现有 collector HTTPS 地址')
+    p = argparse.ArgumentParser(description='启动 Waygate Docker 容器，不读取或修改 nginx')
     p.add_argument('--public-url', required=True)
     p.add_argument('--collector-container')
-    nginx = shutil.which('nginx') or next((x for x in (
-        '/usr/sbin/nginx', '/usr/local/nginx/sbin/nginx',
-        '/usr/local/openresty/nginx/sbin/nginx') if Path(x).is_file()), '/usr/sbin/nginx')
-    p.add_argument('--nginx', default=nginx)
     p.add_argument('--ssh-dir', type=Path, default=Path.home() / '.ssh')
     args = p.parse_args()
     address = args.public_url.rstrip('/')
@@ -159,11 +102,6 @@ def main():
         raise RuntimeError('另一次 Waygate 启动正在执行，请等待完成') from None
     data, token, collector_url, base_image = collector_info(args.collector_container)
     fleet = read_json(collector_url + '/api/fleet', token)
-    status = read_json(collector_url + '/api/status', token)
-    public_status = read_json(address + '/api/status', token)
-    if not status.get('instance_id') or status.get('instance_id') != public_status.get('instance_id'):
-        raise RuntimeError('该公网地址与本机 collector 实例不一致，未修改任何部署')
-    target = nginx_target(args.nginx, address)
     for folder in (runtime, runtime / 'config', runtime / 'data', runtime / 'nginx'):
         folder.mkdir(parents=True, exist_ok=True)
     # nginx's master needs traversal access to the non-secret include directory.
@@ -197,8 +135,6 @@ def main():
             config['ssh'].setdefault(key, {'host': '127.0.0.1' if node.get('local') else host,
                                            'user': 'root', 'port': 22})
     include = runtime / 'nginx/waygate-locations.conf'
-    # Reject overlapping locations before building or changing any service.
-    install_include(target[1], target[2], include, address)
     env = dict(os.environ, WAYGATE_BASE_IMAGE=base_image, WAYGATE_COLLECTOR_DATA=str(data),
                WAYGATE_SSH_DIR=str(ssh_dir))
     compose = ['docker', 'compose', '-p', 'waygate', '-f', str(APP / 'compose.yml')]
@@ -232,32 +168,26 @@ def main():
         raise
     try:
         command(compose + ['up', '-d', '--no-build'], env=env, visible=True)
-        wait_inbox('http://127.0.0.1:' + str(config['port']), token)
+        inbox = wait_inbox('http://127.0.0.1:' + str(config['port']), token)
     except BaseException:
         restore_service()
         raise
-    backup = runtime / 'backups' / datetime.utcnow().strftime('%Y%m%dT%H%M%S%fZ')
-    print('检查并接入 nginx；保留原 /collector 和其他站点配置。', flush=True)
-    def verify_public():
-        inbox = wait_inbox(address, token, timeout=20)
-        if read_json(address + '/api/status', token).get('instance_id') != status['instance_id']:
-            raise RuntimeError('原 collector 状态检查未通过')
-        return inbox
-    try:
-        inbox = publish_routes(args.nginx, target, include, locations(address, config['port']),
-                               address, backup, verify_public)
-    except BaseException:
-        restore_service()
-        raise
-    print('\nWaygate 已启动，公网接口检查通过。')
+    # Generate an optional snippet only. No nginx discovery, test, write or reload.
+    include.write_text(locations(address, config['port']))
+    include.chmod(0o644)
+    print('\nWaygate 容器已启动，本机接口正常。')
+    print('本机监听：http://127.0.0.1:' + str(config['port']))
     print('App 地址：' + address)
     print('Token：继续使用原 collector 的 console.token（不输出、不复制）。')
     print('节点：%d；待处理：%d' % (len(inbox['nodes']), len(inbox['items'])))
     print('配置：' + str(config_path))
-    print('nginx 备份：' + str(backup))
+    print('nginx 未改动。首次接入时，在原 collector 所在 server {} 内加入：')
+    print('    include ' + str(include) + ';')
+    print('再按你现有方式 reload nginx；完成后 App 才能通过公网地址连接。')
     print('日志：docker logs -f --tail=100 $(docker ps -q --filter label=com.docker.compose.project=waygate --filter label=com.docker.compose.service=waygate)')
     print('人工验证需主控现有 SSH key/known_hosts 可登录目标节点；未配置的节点需补齐 SSH 凭据。')
     print('华为推送按原配置启用；本命令不会创建验证码会话或恢复采集任务。')
+    lock.close()
 
 
 if __name__ == '__main__':

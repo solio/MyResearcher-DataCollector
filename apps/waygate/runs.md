@@ -4,47 +4,48 @@
 Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataCollector`，
 开发目录 `apps/waygate`，分支 `main`。不需要读取原会话。
 
-## 当前服务端入口：现有 collector 域名，一条命令启动
+## 当前服务端入口：只启动 Docker，nginx 单独接入
 
-2026-10-15 最新指令覆盖此前的部署暂缓：用户明确由本 agent 负责服务端，
-要求给现有主控 `fzz-002` 一条启动命令，App 继续由另一环境负责。
-主控地址已确定为 `https://testapi.zuzurent.com.cn/collector`，仓库在
-`/usr/local/src/MyResearcher-DataCollector`。在该主控以 root 执行：
+2026-10-15 用户明确由本 agent 负责服务端，App 由另一环境负责。
+最新纠正：不要让 nginx 识别或公网检查挡住容器启动，不再自动读取/修改/reload nginx。
+在 fzz-002 以 root 执行（后续升级也是同一条命令）：
 
 ```bash
 cd /usr/local/src/MyResearcher-DataCollector && git pull && bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector
 ```
 
-后续升级同一条命令。App 使用上述地址和原 collector 的 `console.token`。
-不在命令行填写 token；脚本从正在运行的 collector 的真实 `/data` 挂载读取。
-本轮交付的是启动入口，尚未在 fzz-002 执行；不能据离线检查宣称已上线。
+命令只负责 Docker：读取本机运行中的 collector 端口和 token，构建/启动 Waygate，
+检查本机 inbox，输出监听端口。公网 URL 只作为 app 链接配置，不做公网访问前置检查。
+不再要求 nginx 二进制、server_name、443 监听或主配置路径。原 collector 容器继续运行。
+看到“Waygate 容器已启动，本机接口正常”只代表容器就绪，不表示公网已经接通。
 
-脚本 [deploy/start.sh](deploy/start.sh) → [deploy/start.py](deploy/start.py) 的行为：
+首次公网接入由操作者在原 `/collector/` 所在的 nginx `server {}` 内加一行：
 
-- 核对本机与公网 `/api/status` 的 instance_id 一致、现有 token 有效，以及唯一匹配的
-  HTTPS nginx server。发现多个 collector 时用 `--collector-container 容器名` 明确选择。
-- 用 [compose.yml](compose.yml) / [deploy/Dockerfile](deploy/Dockerfile) 构建 Waygate，
-  基于已在运行的 collector 镜像，复用 Python；构建网络使用宿主机，apt/pip 默认阿里云镜像，
-  SSH/依赖层可缓存。可用 WAYGATE_DEBIAN_MIRROR / WAYGATE_PIP_INDEX_URL 覆盖镜像源。
-  [Dockerfile.dockerignore](deploy/Dockerfile.dockerignore) 排除采集数据、配置、SSH key 和 token。
-- 仅启动项目名为 `waygate` 的附属容器；使用 Linux host network、监听 loopback，
-  8791 被占用时首次部署选 8792–8810。collector 容器继续运行，不改任务、代理或数据。
-- [nginx_routes.py](deploy/nginx_routes.py) 在原 HTTPS server 内加入三个更具体的路由：
-  `/collector/v1/`、`/collector/console/`、`/collector/health`。保留原 `/collector/`、
-  `/labeler/` 和其他路由。先备份、`nginx -t` 再 reload，检查公网 inbox 和原 collector；
-  失败恢复原配置，更新失败时尝试恢复旧 Waygate 镜像/配置。首次启动失败会停止新容器。
-- 实际配置、数据、nginx 备份保存在 `apps/waygate/.runtime/`（忽略，不提交）。
-  `.runtime/config/config.json` 可保存已有 SSH/推送设置，重复启动会保留这些设置。
-- 验证通道默认复用执行用户的 `~/.ssh`（只读挂载）；`--ssh-dir` 可指定其他目录。
-  根据已有 fleet 初始化 SSH host，默认 root:22，已有映射不覆盖。凭据与 host key
-  必须已能正常登录目标节点；不同用户/端口/私钥在 config.json 的 ssh 项配置，容器内
-  key 路径为 `/root/.ssh/...`。主控 `local` 的 SSH 指向主控自身，不是 36。
-  未准备 SSH 的节点可以看状态/使用原 H5，但不能声称其人工验证通道已可用。
-- 不创建验证码会话，不探测股吧、不恢复任何股票；Push Kit 保留已有配置，首次默认关闭。
+```nginx
+include /usr/local/src/MyResearcher-DataCollector/apps/waygate/.runtime/nginx/waygate-locations.conf;
+```
 
-依赖：Linux root、Docker Compose、Python 3.6+、宿主机 nginx、现有可访问的 HTTPS 主控。
-nginx 不在 PATH 时加 `--nginx /实际路径/nginx`；nginx 位于另一个容器或域名在别的机器
-时本命令会停止，不能把其他机器的配置猜作本机。SSH/证书私密配置不会自动生成或公开。
+再按现有方式 reload nginx。此片段由脚本按实际端口生成，只增加
+`/collector/v1/`、`/collector/console/`、`/collector/health`，保留原 `/collector/` 和其他路由。
+不要重复添加 include。App 仍填 `https://testapi.zuzurent.com.cn/collector` 和原 `console.token`。
+本轮没有登录 fzz-002 执行启动或修改 nginx，实际上线结果须由服务器输出确认。
+
+启动实现：[deploy/start.sh](deploy/start.sh)、[deploy/start.py](deploy/start.py)、
+[compose.yml](compose.yml)、[deploy/Dockerfile](deploy/Dockerfile)。
+[nginx_routes.py](deploy/nginx_routes.py) 只生成可选配置片段，已删除自动发现和改写代码。
+
+- 基于现有 collector 镜像构建，build 使用宿主机网络，apt/pip 默认阿里云镜像；
+  可通过 WAYGATE_DEBIAN_MIRROR / WAYGATE_PIP_INDEX_URL 覆盖。
+- [Dockerfile.dockerignore](deploy/Dockerfile.dockerignore) 不发送采集数据、凭据和运行配置。
+- Waygate 监听 loopback，首次从 8791–8810 选空闲端口，以后复用已保存的端口。
+  配置、数据、生成片段均在 `apps/waygate/.runtime/`，不进入 Git。
+- `--collector-container 容器名` 用于本机有多个采集器；重复启动保留已有 SSH/推送配置。
+- 主控现有 `~/.ssh` 只读挂载到容器 `/root/.ssh`，可用 `--ssh-dir` 指定其他目录。
+  默认按 fleet 填 SSH host、root:22；不同用户、端口、私钥在 `.runtime/config/config.json`
+  的 ssh 项配置。主控 local 指向本机，不是 36。未配置 SSH 的节点能看状态和 H5，
+  其人工验证通道尚不可用。脚本不生成 SSH 凭据，不创建验证码会话或恢复股票。
+- 容器更新失败时保留/尝试恢复旧 Waygate 镜像和配置；不涉及 nginx 回退。
+  推送沿用已有配置，首次默认关闭，需另行配置华为凭据。
 
 36 上 Windows agent 部署的 systemd hub 是另一个实例：此前只读核实为 active/enabled，
 127.0.0.1:8791、health ok、占位 public_url、无 80/443 监听。本轮保持它原状，
@@ -284,7 +285,7 @@ sudo journalctl -u waygate -n 60 --no-pager
   已用 IDE 内置 hvigor 编译成功，产出未签名 HAP。）
 - [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（IDE/SDK/构建命令已填，设备与安装待真机。）
 - [x] 36 内部附属服务和 local SSH 映射已部署并完成服务端检查（第二轮）。
-- [ ] 在 fzz-002 执行本文件开头的启动命令，记录公网 inbox 检查、原 H5 与 WSS 结果。
+- [ ] 在 fzz-002 执行启动命令；由操作者将生成的 include 加入现有 nginx 后，再记录公网 inbox、原 H5 与 WSS 结果。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
 - [ ] 配置华为 Push Kit 权益、签名和服务账号，实测锁屏推送。
 - [ ] 用户完成一次实际验证码；核对单次 probe 与本股继续、其他个股状态不变。
@@ -507,3 +508,19 @@ git diff --check
 Compose 校验使用临时非秘密路径变量；没有启动/重启本机或远端采集容器。
 下一步是 fzz-002 执行命令，成功后手机继续填原 `/collector` 地址；SSH 通道和推送
 分别需要主控现有 SSH 凭据及华为配置，不能以接口可登录替代这两项验收。
+
+### 2026-10-15 / Mac / 移除 nginx 启动门槛
+
+用户执行旧命令停在“未找到唯一匹配的 HTTPS server_name”，随后明确指出无需
+在启动中探查 nginx。按此纠正删除 nginx_target、配置解析/选块/改写/reload/回退、
+公网 instance_id 前置检查及相关 CLI 参数。没有继续增加更多 nginx 自动识别选项。
+
+启动只保留 Docker 所需配置和本机接口检查；nginx_routes.py 只输出供操作者使用的片段。
+更新 README/SPEC/AGENTS 和本文，App 代码不改，36/43 不部署。
+原错误发生在 Docker 构建/启动与 nginx 修改前，不意味着 collector 有问题。
+
+验证：Waygate 与 operator-verification 共 40 项通过。新增完整启动流程模拟证明：
+所有外部进程调用均为 Docker、只读取本机 collector、无需 nginx 或公网 URL 可访问；
+保留真实 nginx 验证生成片段对原 H5/API 与 Waygate 路由的转发，不会把该测试加入启动流程。
+已删除只用于旧自动配置方案的测试。Python 3.6 语法、--help、git diff --check 通过。
+未在 fzz-002 执行 Docker 构建或声称公网已上线。

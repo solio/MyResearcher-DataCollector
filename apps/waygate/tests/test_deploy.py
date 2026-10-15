@@ -1,6 +1,7 @@
-"""Deployment must preserve the old console and recover a failed nginx change."""
+"""Container startup is independent of nginx; optional proxy snippet keeps routes."""
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -12,92 +13,43 @@ import unittest
 from unittest.mock import patch
 import urllib.request
 
-from apps.waygate.deploy.nginx_routes import install_include, locations, public_address, tls_server
-from apps.waygate.deploy.start import publish_routes
+from apps.waygate.deploy import start
+from apps.waygate.deploy.nginx_routes import locations
 
 ADDRESS = 'https://console.example/collector'
-VHOST = '''# server { comment }
-server { listen 80; server_name console.example; return 301 https://$host$request_uri; }
-server {
-    listen 443 ssl;
-    server_name other.example console.example;
-    location = /collector { return 301 /collector/; }
-    location ^~ /collector/ { proxy_pass http://127.0.0.1:8790/; }
-    location /labeler/ { proxy_pass http://127.0.0.1:8787/; }
-    location ~ "^/asset/[0-9]{2}\\.js$" { return 404; }
-}
-'''
 
 
 class DeploymentTests(unittest.TestCase):
-    def test_matches_tls_not_redirect_or_other_host(self):
-        blocks = tls_server(VHOST, ADDRESS)
-        self.assertEqual(len(blocks), 1)
-        self.assertIn(['listen', '443', 'ssl'], blocks[0]['directives'])
-        self.assertEqual(tls_server(VHOST, 'https://absent.example/collector'), [])
-
-    def test_insert_is_idempotent_and_preserves_existing_locations(self):
-        block = tls_server(VHOST, ADDRESS)[0]
-        updated = install_include(VHOST, block, '/etc/nginx/waygate.conf', ADDRESS)
-        self.assertIn('location ^~ /collector/ { proxy_pass http://127.0.0.1:8790/; }', updated)
-        self.assertIn('location /labeler/ { proxy_pass http://127.0.0.1:8787/; }', updated)
-        self.assertEqual(install_include(updated, tls_server(updated, ADDRESS)[0],
-                                        '/etc/nginx/waygate.conf', ADDRESS), updated)
-
-    def test_reject_injection_or_preexisting_route(self):
-        for address in ['https://console.example/a;return', 'http://console.example',
-                        'https://name:secret@console.example', 'https://console.example/a?x=1']:
-            with self.assertRaises(ValueError):
-                public_address(address)
-        existing = VHOST.replace('listen 443 ssl;', 'listen 443 ssl; location /collector/v1/ { return 404; }')
-        with self.assertRaises(ValueError):
-            install_include(existing, tls_server(existing, ADDRESS)[0], '/etc/nginx/waygate.conf', ADDRESS)
-
-    def test_failed_nginx_test_restores_files_without_reload(self):
+    @unittest.skipUnless(os.name == 'posix', 'Linux launcher uses a POSIX deployment lock')
+    def test_start_container_without_nginx_or_public_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            path, include = directory / 'site.conf', directory / 'waygate.conf'
-            path.write_text(VHOST)
-            with patch('apps.waygate.deploy.start.command', side_effect=[RuntimeError('bad nginx'), '']) as cmd:
-                with self.assertRaisesRegex(RuntimeError, 'bad nginx'):
-                    publish_routes('nginx', (path, VHOST, tls_server(VHOST, ADDRESS)[0]), include,
-                                   locations(ADDRESS, 8791), ADDRESS, directory / 'backup', lambda: None)
-                self.assertEqual(cmd.call_args_list[0].args[0], ['nginx', '-t'])
-                self.assertEqual(len(cmd.call_args_list), 2)
-            self.assertEqual(path.read_text(), VHOST)
-            self.assertFalse(include.exists())
-            self.assertEqual((directory / 'backup/vhost.conf').read_text(), VHOST)
-
-    def test_config_edited_during_build_is_not_overwritten(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            path, include = directory / 'site.conf', directory / 'waygate.conf'
-            changed = VHOST + '\n# newer operator edit\n'
-            path.write_text(changed)
-            with patch('apps.waygate.deploy.start.command') as cmd:
-                with self.assertRaisesRegex(RuntimeError, '构建期间被修改'):
-                    publish_routes('nginx', (path, VHOST, tls_server(VHOST, ADDRESS)[0]), include,
-                                   locations(ADDRESS, 8791), ADDRESS, directory / 'backup', lambda: None)
-                cmd.assert_not_called()
-            self.assertEqual(path.read_text(), changed)
-            self.assertFalse(include.exists())
-
-    def test_failed_public_check_restores_existing_include_and_reloads(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = Path(tmp)
-            path, include = directory / 'site.conf', directory / 'waygate.conf'
-            path.write_text(VHOST)
-            include.write_text('# previous routes\n')
-            def failed():
-                raise RuntimeError('public unreachable')
-            with patch('apps.waygate.deploy.start.command', return_value='') as cmd:
-                with self.assertRaisesRegex(RuntimeError, 'public unreachable'):
-                    publish_routes('nginx', (path, VHOST, tls_server(VHOST, ADDRESS)[0]), include,
-                                   locations(ADDRESS, 8791), ADDRESS, directory / 'backup', failed)
-                self.assertEqual([c.args[0] for c in cmd.call_args_list],
-                                 [['nginx', '-t'], ['nginx', '-s', 'reload']] * 2)
-            self.assertEqual(path.read_text(), VHOST)
-            self.assertEqual(include.read_text(), '# previous routes\n')
+            app = Path(tmp) / 'waygate'
+            app.mkdir()
+            (app / 'config.example.json').write_text(json.dumps({
+                'source_domains': ['eastmoney.com'], 'ssh': {}, 'push': {'enabled': False}}))
+            calls = []
+            def docker_only(args, **kwargs):
+                self.assertEqual(args[0], 'docker')
+                calls.append(args)
+                return ''
+            with patch.object(start, 'APP', app), \
+                    patch.object(start.sys, 'platform', 'linux'), \
+                    patch.object(start.os, 'geteuid', return_value=0), \
+                    patch.object(start.sys, 'argv', ['start.py', '--public-url', ADDRESS]), \
+                    patch.object(start, 'collector_info', return_value=(app, 'test-token-only', 'http://127.0.0.1:8790', 'local-collector')), \
+                    patch.object(start, 'read_json', return_value={'nodes': [{'local': True}]}) as read, \
+                    patch.object(start, 'wait_inbox', return_value={'nodes': [], 'items': []}) as ready, \
+                    patch.object(start, 'command', side_effect=docker_only):
+                start.main()
+            read.assert_called_once_with('http://127.0.0.1:8790/api/fleet', 'test-token-only')
+            self.assertTrue(ready.call_args.args[0].startswith('http://127.0.0.1:'))
+            self.assertTrue(any(args[-1:] == ['build'] for args in calls))
+            self.assertTrue(any(args[-3:] == ['up', '-d', '--no-build'] for args in calls))
+            self.assertIn('/collector/v1/', (app / '.runtime/nginx/waygate-locations.conf').read_text())
+            config = json.loads((app / '.runtime/config/config.json').read_text())
+            self.assertEqual(config['public_url'], ADDRESS)
+            self.assertEqual(config['collector_token_file'], '/collector-data/console.token')
+            self.assertNotIn('test-token-only', (app / '.runtime/config/config.json').read_text())
 
     @unittest.skipUnless(shutil.which('nginx'), 'nginx is required for the real routing check')
     def test_real_nginx_preserves_collector_and_proxies_hub_paths(self):
@@ -162,5 +114,5 @@ location /collector/ { proxy_pass http://127.0.0.1:%d/; }
                 server.server_close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
