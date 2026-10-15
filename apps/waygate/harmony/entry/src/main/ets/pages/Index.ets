@@ -568,7 +568,7 @@ struct Index {
     this.message = this.nodeConfirmed ? '正在连接节点并建立通道' : '正在读取节点主机指纹…';
     try {
       const key = await probeHostKey({ host: host, port: port });
-      const fingerprint = key.type + ' SHA256 ' + key.fingerprint;
+      const fingerprint = key.type + ' ' + key.fingerprint;
       if (!this.nodeConfirmed || this.nodeFingerprint !== fingerprint) {
         this.nodeFingerprint = fingerprint;
         this.nodeConfirmed = false;

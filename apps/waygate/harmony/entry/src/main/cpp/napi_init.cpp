@@ -58,15 +58,13 @@ std::string Base64(const unsigned char* data, size_t len) {
     return out;
 }
 
-std::string Sha256Hex(const unsigned char* data, size_t len) {
-    static const char* kHex = "0123456789abcdef";
-    std::string out;
-    for (size_t i = 0; i < len; i++) {
-        if (i) out.push_back(':');
-        out.push_back(kHex[data[i] >> 4]);
-        out.push_back(kHex[data[i] & 15]);
-    }
-    return out;
+// ssh-keygen and openssh print SHA256 host key fingerprints as base64 without
+// padding. Emitting the same text lets the operator compare the phone's TOFU
+// screen against `ssh-keygen -lf` directly.
+std::string Sha256Fingerprint(const unsigned char* data, size_t len) {
+    std::string encoded = Base64(data, len);
+    while (!encoded.empty() && encoded.back() == '=') encoded.pop_back();
+    return "SHA256:" + encoded;
 }
 
 std::string HostKeyTypeName(int type) {
@@ -216,7 +214,7 @@ bool GrabHostKey(LIBSSH2_SESSION* session, HostKey& out) {
     out.base64 = Base64(reinterpret_cast<const unsigned char*>(key), length);
     const char* digest = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
     if (digest != nullptr) {
-        out.fingerprint = Sha256Hex(reinterpret_cast<const unsigned char*>(digest), 32);
+        out.fingerprint = Sha256Fingerprint(reinterpret_cast<const unsigned char*>(digest), 32);
     }
     return true;
 }

@@ -1051,3 +1051,43 @@ node --test apps/waygate/tests/test_app_connection.mjs           → 4 passed
 以产出签名 HAP 并安装；② 导入目标 worker 的 SSH 凭据；③ 做 M4 真机端到端与验收表第 5~9 步。
 安装后点“现在处理”应进入**凭据导入界面**而不是原来的指纹错，这一步本身可作为“旧报错已消失”的
 第一个真机证据。
+
+### 2026-10-15 / Windows / 第十三轮：36 号节点的 M4 准备（只读取证 + 指纹可比）
+
+用户指定先用 36 号节点试（36 = 36.138.125.17，桌面脚本的别名；本机 `ecs-02826072`）。
+本轮**只做只读取证与一处小改**：没有在服务器上做任何变更、没有触发来源请求、没有签名安装。
+
+只读取证（本机 Windows；未把任何私钥内容写入仓库/日志）：
+
+- 登录材料：`%USERPROFILE%\.ssh\testsg8100.pem`（本机既有）。文件头
+  `-----BEGIN RSA PRIVATE KEY-----`（经典 PEM、2048 位、**未加密**），可直接用于
+  `connect()` 的 `privateKey` 分支；无需转 OpenSSH 新格式。该用户密钥指纹（公开信息）
+  `SHA256:9Z7rB4gWNBAQNhBvGoSuiVGL8mDUVG9xKvgYm7bFm7I`。
+- 只读连通性核对（命令 `id; hostname`）：`uid=0(root)`、`hostname=ecs-02826072`，与既有记录一致。
+- 36 的**权威主机指纹**（手机导入页要人工比对的目标值）：
+  - ED25519 `SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk`
+  - RSA `SHA256:tsnfhOBHxe02IHsRBdCv750q/wJkZo9v3Ymf98yrqiE`
+  取得方式说明：本机 `ssh-keyscan -T 10 36.138.125.17` 报 `choose_kex: unsupported`
+  （老版 Win32-OpenSSH 的 keyscan 与该服务器协商失败），因此改用
+  “握手实际使用的 host key == 服务器 `/etc/ssh/ssh_host_*_key.pub` 自报值”的交叉核对。
+  临时 known_hosts 只写 `%TEMP%`，未改动用户自己的 `known_hosts`。
+- 另据 libssh2 1.11.1 源码确认（[openssl.c 5021-5035 行](https://github.com/libssh2/libssh2/blob/libssh2-1.11.1/src/openssl.c#L5021-L5035)，本地副本在
+  `harmony/third_party/libssh2-libssh2-1.11.1`，源码树不入库）：OpenSSL 后端在
+  `PEM_read_bio_PrivateKey` 失败后会回退到 `_libssh2_pub_priv_openssh_keyfilememory`，即
+  **同时支持经典 PEM 与 OpenSSH 新格式私钥**（ED25519 分支需 `LIBSSH2_ED25519=1`，本构建已满足）。
+  第十二轮记录的“新格式可能不支持”因此降级为“未实测但源码支持”，若真出错再转 PEM。
+
+代码小改（App 侧，仍属 M3 收尾）：
+
+- [napi_init.cpp](harmony/entry/src/main/cpp/napi_init.cpp)：`probeHostKey`/`connect`/`forward`
+  返回的 `fingerprint` 由“冒号分隔十六进制”改为 ssh-keygen 同款 `SHA256:<base64 无 padding>`；
+  [Index.ets](harmony/entry/src/main/ets/pages/Index.ets) 导入页按 `type + ' ' + fingerprint` 展示。
+  这样操作者能直接拿上文两个字符串逐字符比对，否则两种格式无法对照。
+- **主机指纹核对逻辑未变**：固定仍按 `knownHostBase64`（key 原始字节）精确比对；指纹只作人工展示。
+- 重编译：BUILD SUCCESSFUL（`BuildNativeWithNinja` 重跑，`libwaygate_ssh.so` 6.29 MB 未 strip）。
+
+未验证与下一步：仍**未签名安装**（第十二轮的签名门槛未变），因此仍未在真机连接 36。
+装好后导入 36 凭据时：主机填 `36.138.125.17`、端口 22、用户 `root`，粘贴
+`testsg8100.pem` 的**内容**（不是路径）；首次导入是 TOFU，需人工比对上面 ED25519 指纹后再确认。
+提醒真实副作用：`prepare` 会暂停 36 上同任务的在跑采集，`probe` 会对原失败请求发一次真实探测，
+验证码必须人工完成，失败不会自动重试。
