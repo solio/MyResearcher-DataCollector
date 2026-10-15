@@ -20,5 +20,10 @@ Live source probe/resume is only from the operator's explicit app confirmation.
 
 Windows handoff does not authorize upgrading the existing 36/43 collectors,
 changing their tasks, switching their proxy exits, or publishing SSH credentials.
-Deploy the additive hub beside the selected existing main console, as described
-in `runs.md`; preserve the current console and collector configuration.
+On 2026-10-15 the user explicitly said not to deploy yet and that they have a
+dedicated domain. Keep Waygate undeployed until the user supplies their domain /
+deployment arrangement and explicitly asks to proceed. The Linux instructions
+in `runs.md` are reference only during this hold; no service installation/start,
+DNS, certificate or nginx publication. Offline development and Windows builds
+may continue. When authorized later, preserve the existing console and collector
+configuration and reuse its fleet registration.

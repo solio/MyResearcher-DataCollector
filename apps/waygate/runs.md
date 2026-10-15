@@ -1,8 +1,24 @@
 # Waygate 跨环境交接
 
-更新时间：2026-10-14。当前角色 Developer；下一环境由用户和其他 agent 在
+更新时间：2026-10-15。当前角色 Developer；下一环境由用户和其他 agent 在
 Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataCollector`，
 开发目录 `apps/waygate`，分支 `main`。不需要读取原会话。
+
+## 当前部署约束：等待用户的专属域名安排
+
+2026-10-15 用户明确要求：没有部署就先不要部署，用户已有专属域名。
+本次开发没有部署 Waygate；代码已提交不代表服务已上线。下文 Linux 部署步骤
+仅为后续参考，当前不要执行服务安装/启动、DNS、证书或 nginx 发布操作，
+也不要更新现有 36/43 采集服务。等用户确定专属域名和部署位置并明确继续后再执行。
+Windows 工程编译、离线检查和代码修复可以继续；需要线上服务的联调留待部署后。
+
+当前架构是两个服务进程、一个手机入口：已有 `http_backfill` 主控负责节点注册、
+采集任务和采集数据；Waygate hub 读取该主控的 fleet，负责手机待办、推送和临时
+人工验证通道，并代理原 H5 控制台。节点无需在 Waygate 再登记一次。
+它们可以部署在同一台服务器，手机只填 Waygate 的 HTTPS 地址；内部
+`collector_url` 指向已有主控。专属域名可以直接作为 Waygate 的 `public_url`
+（例如 `https://waygate.example.com`）；现有 `/waygate/` 示例只是挂载方案，
+不是必须另找一个旧域名。最终 nginx 路由按用户的专属域名安排配置。
 
 ## 当前交付状态
 
@@ -85,6 +101,8 @@ Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataC
    若 IDE 将本地 signingConfigs 写入受版本控制的 build-profile，提交前还原为空数组。
 
 ## Linux 主控：部署一次，所有手机复用
+
+**暂不执行：遵守本文件开头的专属域名部署约束。** 以下是待选定环境后的参考步骤。
 
 选择现在管理节点的那台 H5 主控，保留其原有 `http_backfill` 服务和节点注册。
 附属服务监听 `127.0.0.1:8791`；nginx 在已有 HTTPS 域名新增 `/waygate/`。
@@ -223,7 +241,7 @@ sudo journalctl -u waygate -n 60 --no-pager
 
 - [ ] DevEco Sync、实际 ArkTS 编译；必要时修复 SDK API 类型/工程配置。
 - [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。
-- [ ] 在选定主控部署附属服务、HTTPS location 和服务器侧 SSH 凭据映射。
+- [ ] 等用户确定专属域名/部署位置并明确继续后，再部署附属服务、HTTPS 入口和服务器侧 SSH 凭据映射。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
 - [ ] 配置华为 Push Kit 权益、签名和服务账号，实测锁屏推送。
 - [ ] 用户完成一次实际验证码；核对单次 probe 与本股继续、其他个股状态不变。
@@ -260,3 +278,10 @@ git push origin main
 只读请求现有本机 `/api/fleet`，实际返回 1 个节点、0 个当前待办；可被新 Store 正确接收。
 该检查没有访问股吧、没有调用节点控制、没有写现有采集库，也不代表 36/43 真机验证通过。
 下一步首先执行 Windows DevEco Sync / Build，而不是先安装手机代理或升级远端采集器。
+
+### 2026-10-15 / Mac / 部署暂缓与架构澄清
+
+按用户要求保留未部署状态，更新本文件和 AGENTS.md 的交接约束。
+明确现有 collector 主控与 Waygate hub 是两个服务进程，复用同一份节点注册，
+手机使用统一入口；待用户安排专属域名后再部署。本轮只核对代码和本地交接记录、
+修改文档，执行 `git diff --check`；没有远端操作、服务启动或来源请求。
