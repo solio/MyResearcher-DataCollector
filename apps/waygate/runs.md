@@ -904,3 +904,35 @@ ps -ef → com.myresearcher.waygate 常驻（PID 48739）
 
 下一步：M2d 真机用 tokenseller 凭据验证 `probeHostKey` → `connect` → `exec`（audit）；
 需要该节点的 SSH 主机、用户与密钥/口令（由用户提供，不写入仓库、不写日志）。
+
+### 2026-10-15 / Windows / 第十轮：改用 OpenSSL 后端（ED25519），M2b 重做
+
+按本文件顶部“依赖审查纠正”与 DIRECT_SSH.md「原生 SSH 依赖核对」改正：libssh2 1.11.1 的
+mbedTLS 后端写死 `LIBSSH2_ED25519 0`，只有 OpenSSL 后端
+（`openssl.h`：`OPENSSL_VERSION_NUMBER >= 0x10101000L`）才为 1；且 1.11.1 源码里
+**没有 wolfSSL 后端实现**。故上一轮的 mbedTLS 选型作废并重做。
+
+环境取证（本机实测）：
+
+- Windows 无 perl；NDK 的 `llvm/bin` 全是 PE 文件（`clang.exe`/`llvm-ar.exe`/`llvm-ranlib.exe`），
+  `aarch64-unknown-linux-ohos-clang` 只是指向它们的脚本 → **NDK 仅 Windows 宿主**，WSL 不能直接用。
+- WSL（Ubuntu-26.04）有 **perl 5.40 + GNU make**，且 WSL interop 能执行 Windows 的 clang.exe
+  （实测 `clang.exe --version` → `OHOS (dev) clang version 15.0.4`）。
+- 因此：**WSL 跑 perl/make，编译器交给 Windows NDK clang**。
+
+新增 [third_party/build-openssl.sh](harmony/third_party/build-openssl.sh)（在 WSL 中运行）：
+生成 CC/AR/RANLIB 包装脚本 → `./Configure linux-aarch64 no-shared no-tests` → `make build_libs`。
+实测成功：**`libcrypto.a` 8,059,518 B、`libssl.a` 1,163,170 B**（aarch64-linux-ohos，987 个 .o）。
+`fetch.ps1` 增加 OpenSSL `3.0.15` 条目（sha256 `23C666D0…EC9533`）；`.gitignore` 排除源码树。
+
+[CMakeLists.txt](harmony/entry/src/main/cpp/CMakeLists.txt) 改为 **`CRYPTO_BACKEND=OpenSSL`**：
+顶层 `find_package(OpenSSL REQUIRED)` 并显式给 `OPENSSL_CRYPTO_LIBRARY`/`OPENSSL_SSL_LIBRARY`
+（否则 `OpenSSL::Crypto` 是子目录作用域、顶层看不到，链不上）。
+
+验证：`BUILD SUCCESSFUL`；`build.ninja` 含 **`-DLIBSSH2_OPENSSL`** → 后端确为 OpenSSL，
+故 `LIBSSH2_ED25519=1`；`libwaygate_ssh.so` 由 3.64 MB 增至 **5.95 MB**（strip 后 3.93 MB）。
+mbedTLS 不再是构建依赖（条目留在 fetch 脚本中备查）。
+
+**仍未做（不声称完成）**：`direct-tcpip` 未实现；ArkTS 侧未接线；**未在真机连接任何 worker**。
+
+下一步：M2c2 `direct-tcpip` → M3 ArkTS 接线 → M2d/M4 真机联调。

@@ -22,6 +22,14 @@ $sources = @(
         Url = 'https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2'
         Sha256 = '8B54FB9BCF4D5A7078028E0520ACDDEFB7900B3E66FEC7F7175BB5B7D85CCDCA'
         Dir = 'mbedtls-3.6.2'
+    },
+    [pscustomobject]@{
+        # libssh2 1.11.1 only enables ED25519 with its OpenSSL backend, so the
+        # OpenSSL crypto backend is the one actually used (see build-openssl.sh).
+        Name = 'openssl.tar.gz'
+        Url = 'https://github.com/openssl/openssl/releases/download/openssl-3.0.15/openssl-3.0.15.tar.gz'
+        Sha256 = '23C666D0EDF20F14249B3D8F0368ACAEE9AB585B09E1DE82107C66E1F3EC9533'
+        Dir = 'openssl-3.0.15'
     }
 )
 

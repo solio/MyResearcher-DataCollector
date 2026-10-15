@@ -3,3 +3,4 @@
 *.tar.bz2
 libssh2-libssh2-1.11.1/
 mbedtls-3.6.2/
+openssl-3.0.15/
