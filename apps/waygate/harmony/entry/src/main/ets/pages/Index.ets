@@ -6,6 +6,7 @@ import { Vault } from '../services/Vault';
 import { registerPush } from '../services/Push';
 import { runtime } from '../services/SessionRuntime';
 import { Credentials, EmptyReply, Inbox, Incident, Link, NodeState, Session, StockState } from '../services/Models';
+import { probeHostKey } from 'libwaygate_ssh.so';
 
 const INK = '#173E37';
 const MUTED = '#657970';
@@ -106,6 +107,9 @@ struct Index {
       this.screen = this.api ? 'home' : 'settings';
     }
     this.timer = setInterval(() => { if (this.foreground) { this.refresh(); } }, 5000);
+    // Temporary: run the native SSH smoke check once at startup so the result is
+    // observable in hilog. Remove with the nativeProbe helper.
+    this.nativeProbe();
   }
 
   private async save(): Promise<void> {
@@ -350,6 +354,22 @@ struct Index {
     } catch (err) { this.error(err as Error); }
   }
 
+  // Temporary development smoke check for the native SSH module: it only performs
+  // a TCP connect plus SSH handshake to read the host key (no authentication, no
+  // source request, no collector change). Remove once direct SSH is wired.
+  private async nativeProbe(): Promise<void> {
+    this.busy = true;
+    this.message = '正在自检原生 SSH…';
+    try {
+      const key = await probeHostKey({ host: '36.138.125.17', port: 22 });
+      this.message = '原生 SSH 自检通过：' + key.type + ' ' + key.fingerprint;
+    } catch (err) {
+      this.error(err as Error);
+    } finally {
+      this.busy = false;
+    }
+  }
+
   private stateLabel(state: string): string {
     if (state === 'running') { return '采集中'; }
     if (state === 'completed') { return '已结束'; }
@@ -452,6 +472,8 @@ struct Index {
             Button('开启任务通知').width('100%').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.enablePush(true))
             Text(this.notification).fontColor(MUTED).fontSize(13)
           }
+          Button('原生 SSH 自检（只取指纹）').width('100%').backgroundColor('#DDECE4').fontColor(INK)
+            .enabled(!this.busy).onClick(() => this.nativeProbe())
           Text('节点和代理沿用主控配置。').fontColor(MUTED).fontSize(14)
         }.padding(24).width('100%')
       } else if (this.screen === 'home') {

@@ -52,6 +52,7 @@ target_include_directories(waygate_ssh PRIVATE
 
 target_link_libraries(waygate_ssh PUBLIC
     libace_napi.z.so
+    libhilog_ndk.z.so
     libssh2_static
     OpenSSL::Crypto
 )

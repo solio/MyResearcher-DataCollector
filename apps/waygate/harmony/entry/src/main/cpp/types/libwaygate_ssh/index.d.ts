@@ -28,7 +28,19 @@ export interface SshExecResult {
   exitStatus: number;
 }
 
+export interface SshForwardOptions extends SshConnectOptions {
+  remoteHost: string;
+  remotePort: number;
+}
+
+export interface SshForward {
+  id: number;
+  port: number;
+}
+
 export function probeHostKey(options: { host: string; port?: number }): Promise<SshHostKey>;
 export function connect(options: SshConnectOptions): Promise<SshSession>;
 export function exec(id: number, command: string, stdin: string): Promise<SshExecResult>;
 export function close(id: number): Promise<boolean>;
+export function forward(options: SshForwardOptions): Promise<SshForward>;
+export function stopForward(id: number): Promise<boolean>;

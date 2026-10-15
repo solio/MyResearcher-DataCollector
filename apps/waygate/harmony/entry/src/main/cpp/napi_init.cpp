@@ -4,6 +4,12 @@
 // JSON stdin + EOF, and close. direct-tcpip forwarding is added in the next slice.
 #include <napi/native_api.h>
 
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x3200
+#define LOG_TAG "waygate_ssh"
+#include <hilog/log.h>
+
 #include <libssh2.h>
 
 #include <arpa/inet.h>
@@ -14,10 +20,12 @@
 
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -163,6 +171,7 @@ void RunWork(napi_env env, void* data) {
 void SettleWork(napi_env env, napi_status status, void* data) {
     Work* work = static_cast<Work*>(data);
     if (!work->error.empty()) {
+        OH_LOG_ERROR(LOG_APP, "waygate_ssh failed: %{public}s", work->error.c_str());
         napi_value message = nullptr;
         napi_create_string_utf8(env, work->error.c_str(), NAPI_AUTO_LENGTH, &message);
         napi_value errorObject = nullptr;
@@ -233,6 +242,7 @@ static napi_value ProbeHostKey(napi_env env, napi_callback_info info) {
     }
     HostKey* key = new HostKey();
     work->run = [host, port, key, work]() {
+        OH_LOG_INFO(LOG_APP, "probeHostKey start host=%{public}s port=%{public}d", host.c_str(), port);
         std::lock_guard<std::mutex> guard(gLock);
         std::call_once(gLibInit, []() { libssh2_init(0); });
         int fd = TcpConnect(host, port, work->error);
@@ -257,6 +267,8 @@ static napi_value ProbeHostKey(napi_env env, napi_callback_info info) {
         close(fd);
     };
     work->build = [key](napi_env e) {
+        OH_LOG_INFO(LOG_APP, "probeHostKey ok type=%{public}s fingerprint=%{public}s",
+                    key->type.c_str(), key->fingerprint.c_str());
         napi_value out = nullptr;
         napi_create_object(e, &out);
         napi_set_named_property(e, out, "type", MakeString(e, key->type));
@@ -503,6 +515,258 @@ static napi_value Close(napi_env env, napi_callback_info info) {
     return StartAsync(env, work);
 }
 
+// ---- direct-tcpip forwarding -------------------------------------------------
+// Mirrors the desktop flow's separate `ssh -L` process: a second SSH session is
+// dedicated to forwarding so browser traffic never serialises behind exec calls.
+// The session runs non-blocking and every libssh2 call is taken under this
+// forward's own lock, so several browser sockets can share it.
+
+struct Forward {
+    int listenFd = -1;
+    int port = 0;
+    int sshFd = -1;
+    LIBSSH2_SESSION* session = nullptr;
+    std::string host;
+    int hostPort = 0;
+    std::mutex lock;
+    std::atomic<bool> stopped{false};
+    std::thread acceptor;
+};
+
+std::map<int, Forward*> gForwards;
+int gNextForwardId = 1;
+
+void PumpConnection(Forward* forward, int clientFd) {
+    LIBSSH2_CHANNEL* channel = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(forward->lock);
+        channel = libssh2_channel_direct_tcpip_ex(forward->session, forward->host.c_str(),
+                                                  forward->hostPort, "127.0.0.1", 0);
+    }
+    if (channel == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "direct-tcpip channel open failed");
+        close(clientFd);
+        return;
+    }
+    char buffer[16384];
+    while (!forward->stopped.load()) {
+        fd_set readSet;
+        FD_ZERO(&readSet);
+        FD_SET(clientFd, &readSet);
+        struct timeval wait;
+        wait.tv_sec = 0;
+        wait.tv_usec = 20000;
+        int ready = select(clientFd + 1, &readSet, nullptr, nullptr, &wait);
+        if (ready > 0) {
+            ssize_t got = recv(clientFd, buffer, sizeof(buffer), 0);
+            if (got <= 0) break;
+            ssize_t offset = 0;
+            while (offset < got) {
+                std::lock_guard<std::mutex> guard(forward->lock);
+                ssize_t written = libssh2_channel_write(channel, buffer + offset, got - offset);
+                if (written <= 0) { offset = -1; break; }
+                offset += written;
+            }
+            if (offset < 0) break;
+        }
+        ssize_t available = 0;
+        {
+            std::lock_guard<std::mutex> guard(forward->lock);
+            available = libssh2_channel_read(channel, buffer, sizeof(buffer));
+            if (available == LIBSSH2_ERROR_EAGAIN) available = 0;
+            if (libssh2_channel_eof(channel) == 1) available = -1;
+        }
+        if (available < 0) break;
+        if (available > 0) {
+            ssize_t offset = 0;
+            while (offset < available) {
+                ssize_t sent = send(clientFd, buffer + offset, available - offset, 0);
+                if (sent <= 0) { offset = -1; break; }
+                offset += sent;
+            }
+            if (offset < 0) break;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> guard(forward->lock);
+        libssh2_channel_close(channel);
+        libssh2_channel_free(channel);
+    }
+    close(clientFd);
+}
+
+// waygate_ssh.forward({host, port, user, password?/privateKey?/passphrase?,
+//                      knownHostBase64?, remoteHost, remotePort}) -> {id, port}
+static napi_value ForwardStart(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) {
+        napi_throw_type_error(env, nullptr, "需要转发参数对象");
+        return nullptr;
+    }
+    std::string host, user, password, privateKey, passphrase, knownBase64, remoteHost;
+    if (!ReadString(env, argv[0], "host", host) || host.empty() ||
+        !ReadString(env, argv[0], "remoteHost", remoteHost) || remoteHost.empty()) {
+        napi_throw_type_error(env, nullptr, "缺少 host 或 remoteHost");
+        return nullptr;
+    }
+    ReadString(env, argv[0], "user", user);
+    ReadString(env, argv[0], "password", password);
+    ReadString(env, argv[0], "privateKey", privateKey);
+    ReadString(env, argv[0], "passphrase", passphrase);
+    ReadString(env, argv[0], "knownHostBase64", knownBase64);
+    int port = ReadInt(env, argv[0], "port", 22);
+    int remotePort = ReadInt(env, argv[0], "remotePort", 0);
+
+    auto* work = new Work();
+    auto* created = new Forward();
+    auto* newId = new int(-1);
+    created->host = remoteHost;
+    created->hostPort = remotePort;
+    work->run = [=]() {
+        std::lock_guard<std::mutex> guard(gLock);
+        std::call_once(gLibInit, []() { libssh2_init(0); });
+        created->sshFd = TcpConnect(host, port, work->error);
+        if (created->sshFd < 0) return;
+        created->session = libssh2_session_init();
+        if (created->session == nullptr) {
+            close(created->sshFd);
+            created->sshFd = -1;
+            work->error = "无法初始化 SSH 转发会话";
+            return;
+        }
+        libssh2_session_set_blocking(created->session, 0);
+        while (libssh2_session_handshake(created->session, created->sshFd) == LIBSSH2_ERROR_EAGAIN) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        HostKey key;
+        if (!GrabHostKey(created->session, key) ||
+            (!knownBase64.empty() && key.base64 != knownBase64)) {
+            work->error = "该主机指纹与已保存的不一致，已停止转发";
+            return;
+        }
+        int auth = -1;
+        auto attempt = [&]() {
+            if (auth == 0 || auth == LIBSSH2_ERROR_EAGAIN) return;
+            if (!privateKey.empty()) {
+                auth = libssh2_userauth_publickey_frommemory(
+                    created->session, user.c_str(), user.length(), nullptr, 0,
+                    privateKey.c_str(), privateKey.length(),
+                    passphrase.empty() ? nullptr : passphrase.c_str());
+            } else if (!password.empty()) {
+                auth = libssh2_userauth_password(created->session, user.c_str(), password.c_str());
+            }
+        };
+        while (true) {
+            attempt();
+            if (auth == 0) break;
+            if (auth != LIBSSH2_ERROR_EAGAIN) {
+                work->error = "SSH 认证失败，请检查用户名或凭据";
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        created->listenFd = socket(AF_INET, SOCK_STREAM, 0);
+        if (created->listenFd < 0) {
+            work->error = "无法创建本地转发端口";
+            return;
+        }
+        struct sockaddr_in local;
+        memset(&local, 0, sizeof(local));
+        local.sin_family = AF_INET;
+        local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        local.sin_port = 0;
+        if (bind(created->listenFd, reinterpret_cast<struct sockaddr*>(&local), sizeof(local)) != 0 ||
+            listen(created->listenFd, 16) != 0) {
+            close(created->listenFd);
+            created->listenFd = -1;
+            work->error = "无法监听本地转发端口";
+            return;
+        }
+        socklen_t length = sizeof(local);
+        getsockname(created->listenFd, reinterpret_cast<struct sockaddr*>(&local), &length);
+        created->port = ntohs(local.sin_port);
+        *newId = gNextForwardId++;
+        gForwards[*newId] = created;
+        Forward* entry = created;
+        entry->acceptor = std::thread([entry]() {
+            while (!entry->stopped.load()) {
+                fd_set readSet;
+                FD_ZERO(&readSet);
+                FD_SET(entry->listenFd, &readSet);
+                struct timeval wait;
+                wait.tv_sec = 0;
+                wait.tv_usec = 20000;
+                if (select(entry->listenFd + 1, &readSet, nullptr, nullptr, &wait) <= 0) continue;
+                int clientFd = accept(entry->listenFd, nullptr, nullptr);
+                if (clientFd < 0) continue;
+                std::thread(PumpConnection, entry, clientFd).detach();
+            }
+        });
+    };
+    work->build = [created, newId](napi_env e) {
+        OH_LOG_INFO(LOG_APP, "forward ready port=%{public}d", created->port);
+        napi_value out = nullptr;
+        napi_create_object(e, &out);
+        napi_value idValue = nullptr;
+        napi_create_int32(e, *newId, &idValue);
+        napi_set_named_property(e, out, "id", idValue);
+        napi_value portValue = nullptr;
+        napi_create_int32(e, created->port, &portValue);
+        napi_set_named_property(e, out, "port", portValue);
+        delete newId;
+        return out;
+    };
+    return StartAsync(env, work);
+}
+
+// waygate_ssh.stopForward(id) -> true
+static napi_value StopForward(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    int32_t id = -1;
+    if (argc >= 1) napi_get_value_int32(env, argv[0], &id);
+    auto* work = new Work();
+    work->run = [id]() {
+        Forward* entry = nullptr;
+        {
+            std::lock_guard<std::mutex> guard(gLock);
+            auto found = gForwards.find(id);
+            if (found == gForwards.end()) return;
+            entry = found->second;
+            gForwards.erase(found);
+        }
+        entry->stopped.store(true);
+        if (entry->listenFd >= 0) {
+            shutdown(entry->listenFd, SHUT_RDWR);
+            close(entry->listenFd);
+            entry->listenFd = -1;
+        }
+        if (entry->acceptor.joinable()) entry->acceptor.join();
+        {
+            std::lock_guard<std::mutex> guard(entry->lock);
+            if (entry->session != nullptr) {
+                libssh2_session_disconnect(entry->session, "forward stop");
+                libssh2_session_free(entry->session);
+                entry->session = nullptr;
+            }
+            if (entry->sshFd >= 0) {
+                close(entry->sshFd);
+                entry->sshFd = -1;
+            }
+        }
+        delete entry;
+    };
+    work->build = [](napi_env e) {
+        napi_value out = nullptr;
+        napi_get_boolean(e, true, &out);
+        return out;
+    };
+    return StartAsync(env, work);
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor descriptors[] = {
@@ -510,6 +774,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"exec", nullptr, Exec, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"forward", nullptr, ForwardStart, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"stopForward", nullptr, StopForward, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports,
                            sizeof(descriptors) / sizeof(descriptors[0]), descriptors);

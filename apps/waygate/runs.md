@@ -936,3 +936,33 @@ mbedTLS 不再是构建依赖（条目留在 fetch 脚本中备查）。
 **仍未做（不声称完成）**：`direct-tcpip` 未实现；ArkTS 侧未接线；**未在真机连接任何 worker**。
 
 下一步：M2c2 `direct-tcpip` → M3 ArkTS 接线 → M2d/M4 真机联调。
+
+### 2026-10-15 / Windows / 第十一轮：真机冒烟通过 + 原生 direct-tcpip（M2c2）
+
+**真机冒烟（本轮最有价值的验证）**：新增临时自检入口（设置页按钮 + 启动自动跑一次），
+只调 `probeHostKey({host:'36.138.125.17', port:22})` —— 仅 TCP 连接 + SSH 握手取主机指纹，
+**不认证、不发来源请求、不改采集状态**。用户确认**自检通过**；设备日志无 CPPCRASH、
+无 `dlopen` 失败。→ 证明：**该 so 能在鸿蒙真机加载、KEX 能跑完、host key 能提取**。
+在此之前从未在真机执行过任何原生代码。
+
+排障记录（都留下了证据）：
+
+- 首次 ArkTS 报 `arkts-no-any-unknown`（`probeHostKey` 被当作 any）：本地 `file:` 依赖
+  没进 `oh_modules`；执行 `ohpm install` 后类型声明生效，编译通过。
+- 自检最初“没反应”：原生侧只在成功时打日志；已补入口日志与失败日志（hilog tag `waygate_ssh`）。
+
+**M2c2 原生 direct-tcpip**：[napi_init.cpp](harmony/entry/src/main/cpp/napi_init.cpp) 新增
+`forward(options) -> {id, port}` 与 `stopForward(id)`。按桌面独立 `ssh -L` 的语义
+**使用第二条独立 SSH 会话**（避免浏览器转发流量与 exec 调用争用全局互斥锁），会话非阻塞、
+每次 libssh2 调用只在自身那把锁内，本地监听 `127.0.0.1` 随机端口，每条本地连接开一个
+`libssh2_channel_direct_tcpip_ex` 双向泵。**编译通过**（BUILD SUCCESSFUL）。
+
+**必须说清**：点“现在处理”**仍是旧路径、仍报同一条指纹错**——因为
+`verify()` 还在调 `POST /v1/incidents/{id}/sessions`，**M3 尚未开始**。
+真机自检不是这次报错的修复，它只是证明了原生栈可用。
+
+**未做**：ArkTS 接线（`verify()` → 描述接口 + SSH 编排；`LocalProxy.ets` → `forward`；
+`SessionRuntime.ets`；凭据按 `node_id` 存储与导入界面）；**真机上没有任何 worker 的 SSH 凭据**，
+因此尚未跑过真实 exec 与真实转发。
+
+下一步：M3 ArkTS 接线；之后需要把某台 worker 的 SSH 凭据导入手机，才能做 M4 真机端到端。
