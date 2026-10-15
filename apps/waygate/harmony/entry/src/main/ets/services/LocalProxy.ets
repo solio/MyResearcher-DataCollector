@@ -13,9 +13,13 @@ class Pipe {
   private toHub: Promise<void> = Promise.resolve();
   private toBrowser: Promise<void> = Promise.resolve();
   private timer: number = -1;
+  private client: socket.TCPSocketConnection;
+  private onClose: (id: number) => void;
 
-  constructor(private client: socket.TCPSocketConnection, url: string, token: string,
-    private onClose: (id: number) => void) {
+  constructor(client: socket.TCPSocketConnection, url: string, token: string,
+    onClose: (id: number) => void) {
+    this.client = client;
+    this.onClose = onClose;
     client.on('message', (message: socket.SocketMessageInfo) => {
       if (this.closed) { return; }
       this.queuedBytes += message.message.byteLength;

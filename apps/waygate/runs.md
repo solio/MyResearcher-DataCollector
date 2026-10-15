@@ -206,6 +206,8 @@ sudo journalctl -u waygate -n 60 --no-pager
   最终执行数量与结果记录见本文件末尾。
 - 原桌面 helper 原有 17 个离线用例一同执行，避免复用后破坏桌面流程。
 - 无 DevEco SDK：`check_project.py` 只核对配置和引用，不能视为 HAP 编译成功。
+- Windows 已装 DevEco Studio 26.0.0 并实际 `assembleHap` 成功（第三轮），产出未签名 HAP；
+  签名/安装/启动仍未发生，不能视为真机通过。
 - 真机 ArkWeb 代理、Web 销毁回调、触控验证码资源、Push Kit 签名/送达均待下一环境实测。
 - Web 代理是应用级，所以 console Web 和 verification Web 必须互斥。
   API 20 版本当前没有每节点独立 ArkWeb Cookie profile；浏览器 Cookie 只留在 app 中，
@@ -221,8 +223,9 @@ sudo journalctl -u waygate -n 60 --no-pager
 
 ## 下一环境需要做的事
 
-- [ ] DevEco Sync、实际 ArkTS 编译；必要时修复 SDK API 类型/工程配置。
-- [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。
+- [x] DevEco Sync、实际 ArkTS 编译；必要时修复 SDK API 类型/工程配置。（见 2026-10-15 第三轮：
+  已用 IDE 内置 hvigor 编译成功，产出未签名 HAP。）
+- [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（IDE/SDK/构建命令已填，设备与安装待真机。）
 - [ ] 在选定主控部署附属服务、HTTPS location 和服务器侧 SSH 凭据映射。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
 - [ ] 配置华为 Push Kit 权益、签名和服务账号，实测锁屏推送。
@@ -361,3 +364,53 @@ GitHub push 本轮仍失败（本机直连与系统代理均不通），提交�
 
 下一步：用户提供 DevEco Studio 6.x（华为账号登录下载）与主控 HTTPS 域名；随后真机编译/签名/安装与
 /waygate/ nginx 接入，进入 runs.md 验收表第 2 步之后各项。
+
+### 2026-10-15 / Windows / 第三轮：DevEco 编译成功，产出未签名 HAP
+
+执行环境：
+
+- DevEco Studio 26.0.0.851（build `261.23567.138.36.2600851`），安装目录 `D:\kits\DevEco Studio`。
+- 内置 `tools/node/node.exe` 与 `tools/hvigor/bin/hvigorw.js`（hvigor `6.26.8`）路径与
+  [tools/check-windows.ps1](tools/check-windows.ps1) 预期一致，**无需修改该脚本**。
+- SDK：IDE 内置 `D:\kits\DevEco Studio\sdk\default`，ets/native `apiVersion 26`、
+  `platformVersion 26.0.0`（版本 `26.0.0.105`）。工程仍为 `compatibleSdkVersion`/`targetSdkVersion`
+  `6.0.0(20)`，**未改 build-profile**：hvigor 用该 SDK 直接编译通过，故保留 minimum API 20 不变。
+
+代码修复（均为实际编译报错，逐条复现后修复）：
+
+1. 首次 `assembleHap` 失败 `arkts-no-ctor-prop-decls`（ArkTS 禁止在构造函数参数里声明字段）：
+   - [Api.ets](harmony/entry/src/main/ets/services/Api.ets)：`constructor(public credentials…)`
+     → 显式字段 `credentials: Credentials;` 并在构造体内赋值（保持 [Push.ets](harmony/entry/src/main/ets/services/Push.ets)
+     对 `api.credentials` 的可访问性）。
+   - [LocalProxy.ets](harmony/entry/src/main/ets/services/LocalProxy.ets)：`Pipe` 的
+     `constructor(private client…, private onClose…)` → 显式声明 `private client`、`private onClose`，构造体内赋值。
+2. 二次编译残留 `Property 'credentials' is private and only accessible within class 'Api'`（Push.ets 读它）：
+   去掉 `private`，保留默认可见性。
+3. 三次编译 BUILD SUCCESSFUL。
+
+精确命令及结果（工作目录 `apps/waygate/harmony`）：
+
+```powershell
+$env:DEVECO_SDK_HOME = 'D:\kits\DevEco Studio\sdk'
+& 'D:\kits\DevEco Studio\tools\node\node.exe' `
+  'D:\kits\DevEco Studio\tools\hvigor\bin\hvigorw.js' `
+  --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon
+# -> BUILD SUCCESSFUL in 7 s 494 ms（33 tasks in total: 18 executed, 15 up-to-date）
+```
+
+产物：`entry/build/default/outputs/default/entry-default-unsigned.hap`（146484 B）。
+日志含 `hvigor WARN: No signingConfig found for product default` —— 未签名符合预期，
+工程 `signingConfigs` 仍是空数组、未被本机改动。19 条告警全部为同一类 ArkTS 静态提示
+“Function may throw exceptions. Special handling is required.”，非阻断，未做压制。
+构建输出目录 `entry/build/` 已被忽略（`git status --ignored` 显示 `!!`），不入库。
+
+签名/真机（本轮未完成，必须用户参与）：
+
+- `hdc list targets` 返回空：当前无真机连接，无法安装或启动。
+- `devecocli signature generate`（自动生成签名并写入工程配置）存在，但 `devecocli auth status`
+  为 `Not logged in`；IDE 自动签名同样依赖华为账号在线。agent 不代替用户登录。
+- 因此本轮**未进行签名、安装、启动**，不声明任何真机 PASS。
+
+下一步：用户用华为账号登录（IDE Project Structure → Signing Configs 自动签名，或
+`devecocli auth login`），USB 连接真机（开发者模式 + USB 调试并确认授权）；随后完成签名、
+安装与 Run entry，在验收表第 2 步记录设备型号/系统版本、IDE/SDK 版本与安装结果。
