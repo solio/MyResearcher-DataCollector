@@ -23,7 +23,7 @@ ALIASES = {"36": "36.138.125.17", "43": "43.132.206.172"}
 
 # Runs via SSH stdin. Credentials remain inside the node, never in its output.
 REMOTE_WORKER = r'''
-import hashlib, json, pathlib, re, sqlite3, subprocess, time, urllib.parse, urllib.request
+import contextlib, hashlib, json, pathlib, re, sqlite3, subprocess, time, urllib.parse, urllib.request
 
 AUTH_HALTS = {"challenge", "http_401", "http_403", "http_429"}
 
@@ -187,13 +187,13 @@ def execute(payload):
         with opener.open("https://api.ipify.org", timeout=15) as response:
             if response.read(100).decode().strip() != expected["exit_ip"]:
                 raise RuntimeError("验证后服务器出口IP已经变化，未提交来源探测")
-        with sqlite3.connect((data / "collector.db").as_uri() + "?mode=ro", uri=True) as db:
+        with contextlib.closing(sqlite3.connect((data / "collector.db").as_uri() + "?mode=ro", uri=True)) as db:
             before = db.execute("SELECT COALESCE(MAX(id),0) FROM requests").fetchone()[0]
         api(base, data, "stocks/" + expected["stock"] + "/control",
             {"action": "retry", "job_id": expected["job"], "retry_request_id": expected["request_id"]})
         return {"before_request_id": before}
     if action == "result":
-        with sqlite3.connect((data / "collector.db").as_uri() + "?mode=ro", uri=True) as db:
+        with contextlib.closing(sqlite3.connect((data / "collector.db").as_uri() + "?mode=ro", uri=True)) as db:
             db.row_factory = sqlite3.Row
             row = db.execute("SELECT id,outcome,http_status,error,finished FROM requests WHERE id>? AND job=? AND stock=? AND task=? AND probe=1 ORDER BY id LIMIT 1",
                              (payload["before_request_id"], expected["job"], expected["stock"], expected["task"])).fetchone()

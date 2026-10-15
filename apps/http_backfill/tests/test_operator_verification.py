@@ -117,12 +117,14 @@ class VerificationTests(unittest.TestCase):
     def test_probe_result_matches_task_and_one_shot(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)
-            with sqlite3.connect(data / "collector.db") as db:
+            db = sqlite3.connect(data / "collector.db")
+            with db:
                 db.execute("CREATE TABLE requests(id,job,stock,task,probe,outcome,http_status,error,finished)")
                 db.executemany("INSERT INTO requests VALUES(?,?,?,?,?,?,?,?,?)", [
                     (11,3,"002648",99,1,"real_data",200,None,1),
                     (12,3,"002648",7,0,"real_data",200,None,1),
                     (13,3,"002648",7,1,"access_block",200,"身份核实",1)])
+            db.close()
             self.w["locate"] = lambda: (data, "http://local")
             self.w["api"] = lambda *args: self.s
             result = self.w["execute"]({"action": "result", "target": self.target, "before_request_id": 10})

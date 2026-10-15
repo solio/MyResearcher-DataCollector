@@ -2,7 +2,11 @@ import { http } from '@kit.NetworkKit';
 import { ApiError, Credentials } from './Models';
 
 export class Api {
-  constructor(public credentials: Credentials) {}
+  credentials: Credentials;
+
+  constructor(credentials: Credentials) {
+    this.credentials = credentials;
+  }
 
   async request<T>(path: string, method: http.RequestMethod = http.RequestMethod.GET,
     body: string = ''): Promise<T> {

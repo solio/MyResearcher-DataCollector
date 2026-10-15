@@ -7,9 +7,13 @@ Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataC
 ## 当前部署约束：等待用户的专属域名安排
 
 2026-10-15 用户明确要求：没有部署就先不要部署，用户已有专属域名。
-本次开发没有部署 Waygate；代码已提交不代表服务已上线。下文 Linux 部署步骤
-仅为后续参考，当前不要执行服务安装/启动、DNS、证书或 nginx 发布操作，
-也不要更新现有 36/43 采集服务。等用户确定专属域名和部署位置并明确继续后再执行。
+同步另一环境的新提交后确认：Windows agent 已在 36 部署 Waygate 内部服务。
+本轮通过 SSH 只读复核：waygate.service 为 active/enabled，监听 127.0.0.1:8791，
+/health 返回 {"ok":true}；public_url 仍为 https://waygate.example.invalid/waygate，
+未发现 80/443 监听。此前仅按 Mac 旧记录判断“未部署”不准确，以本节为准。
+保留已有内部服务，不停机、不重新部署；下文 Linux 步骤仅供参考，暂不执行
+DNS、证书或 nginx 发布，也不更新 36/43 采集服务。等用户确定专属域名和
+部署位置并明确继续后再执行。
 Windows 工程编译、离线检查和代码修复可以继续；需要线上服务的联调留待部署后。
 
 当前架构是两个服务进程、一个手机入口：已有 `http_backfill` 主控负责节点注册、
@@ -22,7 +26,7 @@ Windows 工程编译、离线检查和代码修复可以继续；需要线上服
 
 ## 当前交付状态
 
-**已实现，等待 Windows 编译和真机验收；未宣称可直接安装的 HAP 已通过验证。**
+**Windows 已编译出未签名 HAP；36 已运行内部 hub，域名/HTTPS 暂缓，签名与真机验收待完成。**
 
 这次用户授权：在这个仓库开发鸿蒙 app；另一环境部署验证，也可继续修改代码；
 用本文件传递工作；本文件及引用的项目代码/文档自动 commit、push。
@@ -42,7 +46,8 @@ Windows 工程编译、离线检查和代码修复可以继续；需要线上服
 8. HarmonyOS Push Kit token/通知权限、v3 通知发送、PS256 服务账号 JWT 自动续签；
    推送失败有退避和次数上限，provider 接受与手机收到分开判断。
 
-没有部署到 36/43，也没有修改其任务/代理、触发来源请求或导入训练库。
+Mac 首次交付时未部署；随后 Windows agent 已部署 36 的内部 hub（见第二轮记录）。
+本轮只读复核了 36；没有重启、修改任务/代理、触发来源请求或导入训练库。
 主控服务是附属进程，现有 `http_backfill` Docker/原生服务不需要因本 app 重建。
 36/43 已有的 `retry_request_id` 保护可复用；其他旧节点必须先确认已有该接口。
 
@@ -224,6 +229,8 @@ sudo journalctl -u waygate -n 60 --no-pager
   最终执行数量与结果记录见本文件末尾。
 - 原桌面 helper 原有 17 个离线用例一同执行，避免复用后破坏桌面流程。
 - 无 DevEco SDK：`check_project.py` 只核对配置和引用，不能视为 HAP 编译成功。
+- Windows 已装 DevEco Studio 26.0.0 并实际 `assembleHap` 成功（第三轮），产出未签名 HAP；
+  签名/安装/启动仍未发生，不能视为真机通过。
 - 真机 ArkWeb 代理、Web 销毁回调、触控验证码资源、Push Kit 签名/送达均待下一环境实测。
 - Web 代理是应用级，所以 console Web 和 verification Web 必须互斥。
   API 20 版本当前没有每节点独立 ArkWeb Cookie profile；浏览器 Cookie 只留在 app 中，
@@ -239,9 +246,11 @@ sudo journalctl -u waygate -n 60 --no-pager
 
 ## 下一环境需要做的事
 
-- [ ] DevEco Sync、实际 ArkTS 编译；必要时修复 SDK API 类型/工程配置。
-- [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。
-- [ ] 等用户确定专属域名/部署位置并明确继续后，再部署附属服务、HTTPS 入口和服务器侧 SSH 凭据映射。
+- [x] DevEco Sync、实际 ArkTS 编译；必要时修复 SDK API 类型/工程配置。（见 2026-10-15 第三轮：
+  已用 IDE 内置 hvigor 编译成功，产出未签名 HAP。）
+- [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（IDE/SDK/构建命令已填，设备与安装待真机。）
+- [x] 36 内部附属服务和 local SSH 映射已部署并完成服务端检查（第二轮）。
+- [ ] 等用户确定专属域名/部署位置并明确继续后，再接入 HTTPS/WSS；暂不发布。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
 - [ ] 配置华为 Push Kit 权益、签名和服务账号，实测锁屏推送。
 - [ ] 用户完成一次实际验证码；核对单次 probe 与本股继续、其他个股状态不变。
@@ -267,7 +276,7 @@ git push origin main
 正常合并/变基自己的提交，禁止 force push、丢弃另一环境提交或重置别人工作区。
 
 每轮追加格式：日期 / 执行环境 / 代码变化 / 精确命令及结果 / 未验证事项 / 下一步。
-未编译填“未编译”，签名失败填具体错误，模拟测试不可标为真机 PASS。
+未编译填"未编译"，签名失败填具体错误，模拟测试不可标为真机 PASS。
 
 ### 2026-10-14 / Mac / 首次交付
 
@@ -279,9 +288,166 @@ git push origin main
 该检查没有访问股吧、没有调用节点控制、没有写现有采集库，也不代表 36/43 真机验证通过。
 下一步首先执行 Windows DevEco Sync / Build，而不是先安装手机代理或升级远端采集器。
 
-### 2026-10-15 / Mac / 部署暂缓与架构澄清
+### 2026-10-14 / Windows / 第一轮：离线检查通过，跨平台修复
 
-按用户要求保留未部署状态，更新本文件和 AGENTS.md 的交接约束。
-明确现有 collector 主控与 Waygate hub 是两个服务进程，复用同一份节点注册，
-手机使用统一入口；待用户安排专属域名后再部署。本轮只核对代码和本地交接记录、
-修改文档，执行 `git diff --check`；没有远端操作、服务启动或来源请求。
+执行环境：Windows 10/11 x64（`xzddesktop\xiazhidao`），Python 3.12.10（winget 安装，
+路径 `%LOCALAPPDATA%\Programs\Python\Python312`），仓库 `D:\sources\MyResearcher\MyResearcher-DataCollector`。
+
+代码变化（修复 Windows 下测试失败，未改变任何语义）：
+
+- [scripts/ops/verify_http_backfill.py](../../scripts/ops/verify_http_backfill.py)
+  `REMOTE_WORKER` 内两处 `with sqlite3.connect(...) as db:` 只提交事务不关闭连接，
+  Windows 下文件句柄未释放导致后续 `TemporaryDirectory` 清理报
+  `PermissionError: [WinError 32]`。改为 `contextlib.closing(...)` 显式关闭（只读连接，
+  无行为差异）；worker 导入行补充 `contextlib`。
+- [apps/http_backfill/tests/test_operator_verification.py](../http_backfill/tests/test_operator_verification.py)
+  `test_probe_result_matches_task_and_one_shot` 的建库连接同样未关闭；改为 `with db:` 提交后
+  `db.close()`。
+
+精确命令及结果（仓库根目录，`NO_PROXY=*` 绕过本机系统代理）：
+
+```powershell
+py -3 -m venv apps/waygate/.venv   # 本机无 py 启动器，实际用完整路径 python.exe -m venv
+& apps/waygate/.venv/Scripts/python.exe -m pip install -r apps/waygate/requirements-dev.txt
+& apps/waygate/.venv/Scripts/python.exe apps/waygate/tools/check_project.py
+# -> Project metadata/import paths OK
+& apps/waygate/.venv/Scripts/python.exe -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py
+# 修复前：1 failed, 37 passed（WinError 32）；修复后：38 passed in 1.16s
+```
+
+DevEco 环境事实（本机实查，非推测）：
+
+- 本机原本没有 DevEco Studio、HarmonyOS SDK、hdc，也没有真正的 Python（仅商店存根）。
+- winget 的 `Huawei.DevEco` 实际是 2023 年 DevEco Studio 3.1.0.501（仅支持旧版 HarmonyOS，
+  与本项目 API 20 目标不兼容），已安装后卸载。winget 没有可用的 6.x 版本。
+- 官网 DevEco Studio 6.x 下载入口 `developer.huawei.com/consumer/cn/download/` 需要华为账号
+  登录后才能下载；agent 不能也不应代替用户登录。等用户参与下载后继续 Sync/编译。
+- 已安装官方 `@deveco/deveco-cli`（node22，`D:\kits\node22`）作为后续命令行构建入口；
+  它要求本机存在 DevEco Studio 6.0+（`DEVECO_CLI_STUDIO_PATH`）或 Command Line Tools，
+  单独安装该 npm 包不等于具备 SDK。
+- 本机 Node：`D:\kits\node22`（22.x）。项目 SDK 目标仍为 `6.0.0(20)`，未改动工程配置。
+
+主控侧事实（只读探查，未改任何节点配置/任务/代理）：
+
+- 本机 SSH `testsg8100`（`~/.ssh/testsg8100.pem`）可登 36（36.138.125.17，ecs-02826072）。
+- 36 控制台为 Docker `http_backfill-collector-console-1`（0.0.0.0:8790），
+  数据目录 `/opt/MyResearcher-DataCollector/apps/http_backfill/data`；`/api/fleet` 用
+  数据目录 `console.token` Bearer 实测返回 200，fleet 仅 1 个节点 `local`（无 43 注册），
+  即部署 hub 时 `ssh` 映射只需 `local` 键。43 未在本机登记 SSH 凭据。
+- 36 没有 nginx（未安装），没有 80/443 监听，没有 Let's Encrypt 证书；控制台目前以
+  HTTP 暴露。hub 代码强制 `public_url` 为 HTTPS，手机端也需要受信 HTTPS/WSS，
+  因此“放到现有 HTTPS 域名下”这一步在本机没有现成落点，需要用户提供域名后
+  在 36 上新增 nginx + 证书；此前不关闭/降级任何证书校验。
+
+未验证事项：DevEco Sync、ArkTS 实际编译、签名、真机安装（均未开始，本机无 SDK）；
+hub 尚未部署；H5 控制台、代理清理、通知验收全部待手机侧就绪。
+
+下一步：用户参与华为账号下载 DevEco Studio 6.x → 安装后 `check-windows.ps1 -Build` 实际编译 →
+用户提供主控 HTTPS 域名后在 36 部署附属服务（venv/systemd/`local` SSH 映射/nginx location）→
+真机验收。
+
+### 2026-10-15 / Windows+36 SSH / 第二轮：附属主控已部署并通过服务端验收
+
+代码变化：无（本轮仅部署与验证；仓库代码即第一轮提交 `30f4f5a`）。
+
+主控部署（36.138.125.17，ecs-02826072，只做加法，未动既有 collector 容器/任务/代理）：
+
+- 仓库快进：`git bundle create` c0ae038..30f4f5a → scp → 36 `/opt/MyResearcher-DataCollector`
+  `git pull --ff-only /tmp/waygate-r2.bundle main`，快进成功，工作区干净。
+  （GitHub push 当时因本机网络失败，bundle 是既有 Mac 流程的同款替代；后续仍需 push 归档。）
+- 依赖：`apt-get update && apt-get install -y python3.12-venv`（阿里云镜像索引过期导致先 404）；
+  `python3 -m venv apps/waygate/.venv` + 华为云 pip 镜像装 `requirements-dev.txt`。
+  36 上 `check_project.py` 通过、`pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py`
+  **38 passed in 0.70s**、系统 python3 可 `import yaml`。
+- 账户/目录/凭据（均 0600，waygate:waygate）：新建系统用户 `waygate`（home /var/lib/waygate，
+  nologin）；`/etc/waygate/config.json`；`/etc/waygate/console.token`（复制自
+  `apps/http_backfill/data/console.token`，令牌轮换需同步更新副本）；
+  `/etc/waygate/keys/local`（既有 `testsg8100.pem` 的副本，用于 hub root@127.0.0.1，
+  未在 root authorized_keys 增加新条目）；`/var/lib/waygate/.ssh/known_hosts` 由
+  `/etc/ssh/ssh_host_ed25519_key.pub` 生成，并与 `ssh-keyscan -t ed25519 127.0.0.1` 实扫比对一致后才安装。
+- 配置要点：`listen 127.0.0.1:8791`；`collector_url http://127.0.0.1:8790`（本机 Docker 控制台）；
+  fleet 仅 `local` 节点，故 `ssh` 映射只有 `local` 键；`push.enabled=false`；
+  **`public_url` 为占位 `https://waygate.example.invalid/waygate`，待用户提供真实域名后更新并配 nginx**，
+  当前手机不可达是预期状态，不是缺陷。
+- systemd：`install -m 644 deploy/waygate.service` → `systemctl enable --now waygate`，active。
+
+服务端验收（全部真实 curl 于 36 本机执行；未创建验证会话，未触发任何节点控制/来源请求）：
+
+- `/health` → `{"ok": true}`；`/v1/inbox` 无令牌 → 401；带令牌 → items 1（当前 002648 真实阻断）、
+  nodes `local/online/blocked`、`poll_error` 空。
+- 一次性控制台入口：`POST /v1/console-ticket`（需 JSON body `{}`）→ `GET /console/?ticket=…`
+  → 302 至 `/console/` 并签发 `waygate_console` cookie；ticket 二次使用 → 401。
+- 经 hub 代理的现有 H5：`GET /console/` 返回原控制台首页；`/console/app.js` 200（173537B）、
+  `/console/styles.css` 200（35207B）；`/console/api/fleet`、`/console/api/status` 200（Bearer 由 hub 代持）。
+- `/v1/sessions/<不存在>/relay` → 409（路由存在且拒绝非法会话，不是 404）。
+- `systemctl restart waygate` 后 health/inbox 正常，待办经 SQLite 持久保留；journal 无错误。
+
+未验证事项：未创建真实验证会话（会暂停兄弟股票，属真机验收第 5/6 步，须由手机端触发、用户人工完成）；
+relay 数据面、ArkWeb、Push Kit（enabled=false，无华为凭据）、nginx HTTPS（无域名）均未开始；
+GitHub push 本轮仍失败（本机直连与系统代理均不通），提交先在本地与 36 bundle 归档。
+
+下一步：用户提供 DevEco Studio 6.x（华为账号登录下载）与主控 HTTPS 域名；随后真机编译/签名/安装与
+/waygate/ nginx 接入，进入 runs.md 验收表第 2 步之后各项。
+
+### 2026-10-15 / Windows / 第三轮：DevEco 编译成功，产出未签名 HAP
+
+执行环境：
+
+- DevEco Studio 26.0.0.851（build `261.23567.138.36.2600851`），安装目录 `D:\kits\DevEco Studio`。
+- 内置 `tools/node/node.exe` 与 `tools/hvigor/bin/hvigorw.js`（hvigor `6.26.8`）路径与
+  [tools/check-windows.ps1](tools/check-windows.ps1) 预期一致，**无需修改该脚本**。
+- SDK：IDE 内置 `D:\kits\DevEco Studio\sdk\default`，ets/native `apiVersion 26`、
+  `platformVersion 26.0.0`（版本 `26.0.0.105`）。工程仍为 `compatibleSdkVersion`/`targetSdkVersion`
+  `6.0.0(20)`，**未改 build-profile**：hvigor 用该 SDK 直接编译通过，故保留 minimum API 20 不变。
+
+代码修复（均为实际编译报错，逐条复现后修复）：
+
+1. 首次 `assembleHap` 失败 `arkts-no-ctor-prop-decls`（ArkTS 禁止在构造函数参数里声明字段）：
+   - [Api.ets](harmony/entry/src/main/ets/services/Api.ets)：`constructor(public credentials…)`
+     → 显式字段 `credentials: Credentials;` 并在构造体内赋值（保持 [Push.ets](harmony/entry/src/main/ets/services/Push.ets)
+     对 `api.credentials` 的可访问性）。
+   - [LocalProxy.ets](harmony/entry/src/main/ets/services/LocalProxy.ets)：`Pipe` 的
+     `constructor(private client…, private onClose…)` → 显式声明 `private client`、`private onClose`，构造体内赋值。
+2. 二次编译残留 `Property 'credentials' is private and only accessible within class 'Api'`（Push.ets 读它）：
+   去掉 `private`，保留默认可见性。
+3. 三次编译 BUILD SUCCESSFUL。
+
+精确命令及结果（工作目录 `apps/waygate/harmony`）：
+
+```powershell
+$env:DEVECO_SDK_HOME = 'D:\kits\DevEco Studio\sdk'
+& 'D:\kits\DevEco Studio\tools\node\node.exe' `
+  'D:\kits\DevEco Studio\tools\hvigor\bin\hvigorw.js' `
+  --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon
+# -> BUILD SUCCESSFUL in 7 s 494 ms（33 tasks in total: 18 executed, 15 up-to-date）
+```
+
+产物：`entry/build/default/outputs/default/entry-default-unsigned.hap`（146484 B）。
+日志含 `hvigor WARN: No signingConfig found for product default` —— 未签名符合预期，
+工程 `signingConfigs` 仍是空数组、未被本机改动。19 条告警全部为同一类 ArkTS 静态提示
+“Function may throw exceptions. Special handling is required.”，非阻断，未做压制。
+构建输出目录 `entry/build/` 已被忽略（`git status --ignored` 显示 `!!`），不入库。
+
+签名/真机（本轮未完成，必须用户参与）：
+
+- `hdc list targets` 返回空：当前无真机连接，无法安装或启动。
+- `devecocli signature generate`（自动生成签名并写入工程配置）存在，但 `devecocli auth status`
+  为 `Not logged in`；IDE 自动签名同样依赖华为账号在线。agent 不代替用户登录。
+- 因此本轮**未进行签名、安装、启动**，不声明任何真机 PASS。
+
+下一步：用户用华为账号登录（IDE Project Structure → Signing Configs 自动签名，或
+`devecocli auth login`），USB 连接真机（开发者模式 + USB 调试并确认授权）；随后完成签名、
+安装与 Run entry，在验收表第 2 步记录设备型号/系统版本、IDE/SDK 版本与安装结果。
+
+### 2026-10-15 / Mac / 同步部署事实并暂缓域名发布
+
+用户要求未部署就暂不部署，并说明已有专属域名。最初依据本地旧文档判断
+Waygate 未部署；git fetch 后发现 Windows 第二轮已部署到 36，随即纠正。
+只读 SSH 检查 systemctl is-active/is-enabled、ss、/health 和四个非秘密配置项：
+服务 active/enabled，127.0.0.1:8791，health ok，collector_url 为
+http://127.0.0.1:8790，public_url 仍为 example.invalid 占位；未发现 80/443 监听。
+没有停止或重启服务，没有改远端配置或发来源请求。
+
+合并保留另一环境的 Windows SQLite 修复、ArkTS 编译修复和完整交接记录，
+更新本文开头、待办与 AGENTS.md：已有内部服务保持现状，域名/HTTPS 发布等用户安排。
+本轮只改文档并执行 git diff --check；未重新运行代码测试或真机验收。
