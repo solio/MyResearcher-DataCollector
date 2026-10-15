@@ -1,5 +1,13 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-15 mobile reuse of the existing operator worker
+
+Expose a pure command builder for the existing REMOTE_WORKER so a direct SSH
+client can send one JSON operation on stdin. Keep the same Python worker code,
+target checks, endpoint selection and probe/resume logic; do not fork a mobile
+implementation. This creates no remote daemon or additional deployment. The
+desktop invocation and private alias/IP mapping keep their existing behavior.
+
 ## 2026-10-14 automatically select one operator-verification target
 
 User requires the desktop verification helper to proceed with one eligible

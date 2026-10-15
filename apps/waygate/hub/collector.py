@@ -1,4 +1,4 @@
-"""Reuse the operator helper without putting SSH credentials on the handset."""
+"""Shared operator code, direct-client descriptor and existing hub SSH adapter."""
 from __future__ import annotations
 
 import asyncio
@@ -12,6 +12,25 @@ REPO = Path(__file__).resolve().parents[3]
 _spec = importlib.util.spec_from_file_location("waygate_operator", REPO / "scripts/ops/verify_http_backfill.py")
 helper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(helper)
+
+
+def direct_descriptor(config, fleet_node, target):
+    """Connection hints and existing worker code; never load SSH credentials."""
+    host = urlsplit(fleet_node.get("base_url") or "").hostname
+    if fleet_node.get("local"):
+        host = urlsplit(config["public_url"]).hostname
+    if host:
+        try:
+            address = ipaddress.ip_address(host)
+            if address.is_loopback or address.is_unspecified:
+                host = None
+        except ValueError:
+            if host.rstrip(".").lower() == "localhost":
+                host = None
+    return {"protocol": "waygate.direct-ssh.v1", "node_id": fleet_node["id"],
+            "ssh_host_hint": host, "target": dict(target),
+            "worker_command": helper.ssh_worker_command(),
+            "source_domains": list(config["source_domains"]), "session_ttl_seconds": 600}
 
 
 def connection(config, fleet_node):

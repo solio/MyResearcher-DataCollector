@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import nullcontext
 import ipaddress
 import json
@@ -218,6 +219,18 @@ if __name__ == "__main__":
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
 '''
+
+
+def ssh_worker_command():
+    """Run the same worker via SSH exec; send one JSON payload on stdin, then EOF.
+
+    A native client needs neither a Python runtime nor a shell on the handset.
+    Only our worker source is encoded into the command; payloads remain data.
+    """
+    source = "import json, sys\nPAYLOAD = json.load(sys.stdin)\n" + REMOTE_WORKER
+    encoded = base64.b64encode(source.encode("utf-8")).decode("ascii")
+    return ('python3 -c \'import base64; exec(compile(base64.b64decode("' + encoded
+            + '"), "<backfill-verification>", "exec"))\'')
 
 
 def node_config(value):

@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import ClientConnectorError, ClientPayloadError, ClientSession, ClientTimeout, WSMsgType, web
 
-from .collector import Collector, allowed_connect, check_target, connection
+from .collector import Collector, allowed_connect, check_target, connection, direct_descriptor
 from .store import Store, fresh, notification_payload
 from .push import TokenProvider
 
@@ -75,7 +75,7 @@ class Waygate:
         self.nodes = payload["nodes"]
         self.last_poll, self.poll_error = time.time(), ""
 
-    async def create_session(self, ident):
+    async def verification_target(self, ident):
         await self.fleet()
         item = self.store.incident(ident)
         if item["state"] != "pending" or item["kind"] != "challenge":
@@ -83,6 +83,16 @@ class Waygate:
         node = next((n for n in self.nodes if n["id"] == item["node"]), None)
         if not node or not fresh(node, time.time()):
             raise ValueError("节点离线或状态过期，请稍后刷新")
+        return item, node
+
+    async def direct_verification(self, ident):
+        item, node = await self.verification_target(ident)
+        # No SSH, lease, task mutation or source request. The phone executes the
+        # existing helper over its own SSH connection and confirms the target.
+        return direct_descriptor(self.config, node, item["target"])
+
+    async def create_session(self, ident):
+        item, node = await self.verification_target(ident)
         if any(s["node_id"] == item["node"] for s in self.sessions.values()):
             raise ValueError("此节点已有验证会话，请先结束或等待会话过期")
         ssh = connection(self.config, node)
@@ -377,6 +387,8 @@ async def route(request):
         return web.json_response({"url": hub.config["public_url"].rstrip("/") + "/console/?ticket=" + ticket})
     if "incident" in request.match_info:
         ident = request.match_info["incident"]
+        if path.endswith("/verification"):
+            return web.json_response(await hub.direct_verification(ident))
         if path.endswith("/snooze"):
             hub.store.snooze(ident)
             return web.json_response({"ok": True})
@@ -447,6 +459,7 @@ def create_app(config, store=None, collector=None, background=True):
     app.router.add_post("/v1/console-ticket", route)
     app.router.add_route("*", "/console/{tail:.*}", console)
     app.router.add_post("/v1/incidents/{incident}/sessions", route)
+    app.router.add_get("/v1/incidents/{incident}/verification", route)
     app.router.add_post("/v1/incidents/{incident}/snooze", route)
     app.router.add_get("/v1/sessions/{sid}", route)
     for action in ("ready", "finish", "cancel"):

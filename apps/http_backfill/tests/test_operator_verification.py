@@ -1,8 +1,10 @@
 """Offline controls/lifecycle checks; no CAPTCHA or real source requests."""
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import sqlite3
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -42,6 +44,31 @@ class VerificationTests(unittest.TestCase):
         self.w["route"] = lambda *args: dict(self.route)
         self.view = self.w["snapshot"](self.s)
         self.target = self.view["targets"][0]
+
+    def test_full_ip_and_short_alias_resolve_same_private_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            directory.joinpath("nodes.json").write_text(json.dumps({
+                "36.138.125.17": {"user": "root", "port": 22}}))
+            with patch.object(helper, "PRIVATE", directory):
+                self.assertEqual(helper.node_config("36"), helper.node_config("36.138.125.17"))
+
+    def test_native_ssh_command_passes_json_stdin_without_interpolation(self):
+        # Execute only a harmless stand-in, never the real worker/SSH/source.
+        payload = {"action": "audit", "text": "中文 ' \" `echo wrong` $(echo wrong)\nnext", "flag": True, "empty": None}
+        source = 'print(json.dumps({"ok": True, "value": PAYLOAD}, ensure_ascii=False))'
+        with patch.object(helper, "REMOTE_WORKER", source):
+            argv = shlex.split(helper.ssh_worker_command())
+        result = subprocess.run([sys.executable, *argv[1:]], input=json.dumps(payload),
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), {"ok": True, "value": payload})
+
+    def test_native_ssh_command_uses_exact_desktop_worker(self):
+        import base64
+        import re
+        encoded = re.search(r'base64.b64decode\("([A-Za-z0-9+/=]+)"\)', helper.ssh_worker_command())[1]
+        source = base64.b64decode(encoded).decode("utf-8")
+        self.assertEqual(source, "import json, sys\nPAYLOAD = json.load(sys.stdin)\n" + helper.REMOTE_WORKER)
 
     def test_historical_evidence_without_halt_does_not_open_source(self):
         self.assertEqual(len(self.view["targets"]), 1)

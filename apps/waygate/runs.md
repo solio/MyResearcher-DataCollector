@@ -4,7 +4,39 @@
 Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataCollector`，
 开发目录 `apps/waygate`，分支 `main`。不需要读取原会话。
 
-## 当前优先处理：手机错误残留与诊断入口，重新打包 App
+## 当前优先处理：手机直接复用 verify_backfill.command
+
+用户纠正：要的是 `./scripts/ops/verify_backfill.command 36 --resume` 这条已能用
+的流程搬到手机，目标填写具体 worker IP；不接受把原本 Mac 直接 SSH worker
+变成必须由主控登录 worker。`36` 与完整 IP 原本已等价，本机私密配置只读核对一致。
+
+目标链路：**手机 → SSH → worker 现有 Mihomo → 来源**。
+主控保留待办/推送/H5。下文旧“SSH key 不上手机、主控 SSH 转发”的说明是已实现
+旧路径的部署记录，不再是新 App 处理验证的前置要求。不要再让用户配置主控 SSH。
+
+本轮服务端已提供 `GET /v1/incidents/{id}/verification`，返回节点地址提示、原
+阻断身份和由原 `REMOTE_WORKER` 生成的 exec 命令。仅用现有主控 token 获取；
+不需要主控 SSH 配置，不联系 worker SSH、不启动探测、不更改任务。
+worker 无需新增服务；App 在自己的 SSH exec channel 通过 JSON stdin 调用这份
+原代码，复用 audit/prepare/exit/probe/result/resume 和原 Mihomo 转发。
+
+**下一步交给 Windows/App 环境：[DIRECT_SSH.md](DIRECT_SSH.md)。** 其中列出
+接口格式、exec 输入输出、原脚本操作顺序、ArkWeb/LocalProxy/SessionRuntime 接线
+及真机验收。手机 SSH 依赖、凭据保存、exec/转发仍待接入；当前 App 没有因为这个
+服务端提交就获得手机直连能力。不要把此次接口交付报成手机流程已完成。
+
+服务端变更在 [hub/collector.py](hub/collector.py)、[hub/service.py](hub/service.py)，
+共享命令在 [verify_http_backfill.py](../../scripts/ops/verify_http_backfill.py)。
+对应离线验证 [test_hub.py](tests/test_hub.py)、
+[test_operator_verification.py](../http_backfill/tests/test_operator_verification.py)。
+本轮不修改原桌面命令行为，不部署或探测 36/43，不修改手机源文件。
+
+验证：`python -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py`
+**50 passed**。覆盖空主控 SSH 配置下获取描述、无 SSH/会话/探测副作用、离线/
+过期待办拒绝、loopback 地址不传给手机、原代码复用，以及 JSON stdin 中中文、
+引号/换行/shell 字符不被当作命令执行。未做真机 SSH、验证码或远程部署验收。
+
+## 上一轮：手机错误残留与诊断入口
 
 用户确认 `Unterminated string starting...` 出现在手机 App。本轮直接读取既有公网
 `/collector/v1/inbox` 和 `/collector/api/fleet`，均 HTTP 200、完整 JSON、5 个节点；

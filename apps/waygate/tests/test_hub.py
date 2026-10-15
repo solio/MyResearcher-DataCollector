@@ -199,6 +199,58 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         code, value = await self.post("/v1/sessions/" + sid + "/ready", {"browser_ip": "203.0.113.9"})
         self.assertEqual(code, 200, value)
 
+    async def test_direct_verification_needs_no_hub_ssh_or_session(self):
+        self.hub.config.pop("ssh")
+        node = self.hub.nodes[0]
+        node["base_url"] = "http://203.0.113.36:8790"
+        path = "/v1/incidents/" + self.incident + "/verification"
+        unauthenticated = await self.client.get(path)
+        self.assertEqual(unauthenticated.status, 401)
+        response = await self.client.get(path, headers=self.headers)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        value = await response.json()
+        self.assertEqual(value["protocol"], "waygate.direct-ssh.v1")
+        self.assertEqual(value["ssh_host_hint"], "203.0.113.36")
+        self.assertEqual(value["target"], self.hub.store.incident(self.incident)["target"])
+        self.assertTrue(value["worker_command"].startswith("python3 -c "))
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.hub.sessions, {})
+        self.assertEqual(self.hub.store.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0], 0)
+        self.assertEqual(self.hub.store.incident(self.incident)["state"], "pending")
+
+    async def test_direct_verification_host_is_only_a_hint_not_hub_ssh_config(self):
+        node = self.hub.nodes[0]
+        path = "/v1/incidents/" + self.incident + "/verification"
+        self.hub.config["ssh"] = {"local": {"host": "127.0.0.1", "identity_file": "private-key"}}
+        node.update(local=True, base_url="http://127.0.0.1:8790")
+        response = await self.client.get(path, headers=self.headers)
+        value = await response.json()
+        self.assertEqual(value["ssh_host_hint"], "hub.example")
+        self.assertNotIn("private-key", json.dumps(value))
+        node["local"] = False
+        for endpoint in ("http://127.0.0.1:8790", "http://[::1]:8790", "http://localhost:8790"):
+            node["base_url"] = endpoint
+            response = await self.client.get(path, headers=self.headers)
+            self.assertIsNone((await response.json())["ssh_host_hint"])
+        self.assertEqual(self.fake.calls, [])
+
+    async def test_direct_verification_rejects_stale_and_cleared_incidents(self):
+        path = "/v1/incidents/" + self.incident + "/verification"
+        node = self.hub.nodes[0]
+        node["connection"] = "offline"
+        response = await self.client.get(path, headers=self.headers)
+        self.assertEqual(response.status, 409)
+        node["connection"] = "online"
+        node["last_seen_at"] = "2020-01-01T00:00:00+00:00"
+        response = await self.client.get(path, headers=self.headers)
+        self.assertEqual(response.status, 409)
+        node["last_seen_at"] = datetime.now(timezone.utc).isoformat()
+        node["status"]["stock_runtimes"][0]["active_halt"] = None
+        response = await self.client.get(path, headers=self.headers)
+        self.assertEqual(response.status, 409)
+        self.assertEqual(self.fake.calls, [])
+
     async def test_fleet_reads_entire_response_before_parsing(self):
         expected = fleet()
         expected[0]["status"]["padding"] = "分批到达的状态" * 30000

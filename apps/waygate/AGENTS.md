@@ -1,6 +1,12 @@
 # Waygate cross-environment development
 
 Read repository `AGENTS.md`, this directory's `SPEC.md`, then `runs.md` first.
+Latest 2026-10-15 correction: reproduce the desktop verification command with
+the handset connecting directly by SSH to the worker IP. Do not ask operators
+to provision hub-to-worker SSH for this new path. Read the current direct-SSH
+handoff at the top of runs.md; the original hub relay is historical/current
+installed code, not the requested final architecture. App integration still
+belongs to the other environment. Never claim it is complete from server checks.
 The user authorized development here and explicitly assigned Windows deployment
 and device acceptance to another environment. Continue implementation/fixes as
 necessary; do not assume the original conversation or Mac private files exist.

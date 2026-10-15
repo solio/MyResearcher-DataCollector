@@ -3,7 +3,37 @@
 Status: implementation authorized by the user; Windows/DevEco/device acceptance
 is delegated to the user and their other agent. Entry point: `runs.md`.
 
-## Outcome
+## 2026-10-15 correction: reuse the desktop command from the handset
+
+The user rejects making the main console SSH into workers as a prerequisite for
+mobile verification. The reference behavior is `verify_backfill.command 36
+--resume`, with a concrete worker IP replacing the alias. The phone takes the
+Mac's place: SSH exec and forwarding connect directly to the worker's existing
+Mihomo endpoint. The hub retains inbox, notification and console responsibilities.
+No new proxy service, Mihomo installation, public proxy port, or worker-side
+verification daemon is required. SSH login credentials live on the executing
+client; a worker IP alone cannot replace SSH authentication.
+
+Server-side work exposes an authenticated, read-only verification descriptor
+for an existing pending challenge: registered host hint, target identity and an
+SSH exec command derived from the exact desktop REMOTE_WORKER. JSON operations
+arrive on that command's stdin; user-controlled payloads never enter shell code.
+The descriptor does not contact SSH, create a verification session, pause tasks,
+probe, resume or mark an incident resolved. A local/loopback registry address
+must not be handed to the phone as the worker host; require a handset-saved host
+when no externally usable hint exists. SSH port/user/key remain handset settings,
+not assumptions derived from the collector HTTP port or hub credentials.
+
+The Windows/App environment owns the direct SSH client, local key/host-key
+storage, ArkWeb forwarding and integration of the existing operation sequence.
+It must retain the original target/route/exit checks, explicit human confirmation,
+single probe, scoped resume and cancellation cleanup. The current hub-mediated
+session endpoints remain deployed-code history until that App integration is
+ready; do not claim a server descriptor alone delivers phone SSH. The initial
+hub-owned SSH architecture below is superseded as the target design, not silently
+removed from already-installed clients.
+
+## Initial implementation outcome (SSH ownership superseded above)
 
 A native HarmonyOS ArkTS app with a durable verification inbox, the existing H5
 console, and an operator-controlled ArkWeb verification screen. One hub address
@@ -11,7 +41,7 @@ and login on the phone. Existing fleet registration remains authoritative.
 An additive Python hub service owns SSH credentials and temporary relay sessions;
 the phone never receives a server SSH key or changes its system proxy.
 
-## Boundaries
+## Initial implementation boundaries (direct-client changes specified above)
 
 - Reuse `scripts/ops/verify_http_backfill.py` for target, route, original-request
   probe and scoped resume guards. No source parser, data schema, collector rate,
