@@ -12,6 +12,9 @@ local.properties
 oh_modules/
 node_modules/
 .cxx/
+.clangd
+.clang-tidy
+wecode-cpp.db*
 *.hap
 *.app
 signing/

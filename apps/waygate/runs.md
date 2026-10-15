@@ -1091,3 +1091,64 @@ node --test apps/waygate/tests/test_app_connection.mjs           → 4 passed
 `testsg8100.pem` 的**内容**（不是路径）；首次导入是 TOFU，需人工比对上面 ED25519 指纹后再确认。
 提醒真实副作用：`prepare` 会暂停 36 上同任务的在跑采集，`probe` 会对原失败请求发一次真实探测，
 验证码必须人工完成，失败不会自动重试。
+
+### 2026-10-15 / Windows + Mate 70 Pro+ / 第十四轮：签名安装成功，但发现**公网主控缺少描述接口**（404）
+
+用户按方案 1 在 DevEco 里生成了自动签名配置（同一个 p12：
+`C:\Users\xiazhidao\.ohos\config\default_harmony_UgupinABCYCGUBpSEjpksVX3K6iEttPtaMJrIS7VWjM=.p12`，
+口令随配置一起由 IDE 写入 `build-profile.json5`）。本机据此完成签名安装，**不再需要用户提供口令**。
+
+签名与安装（工作目录 `apps/waygate/harmony`）：
+
+```text
+① IDE 写入 signingConfigs；本机补上 product 的 "signingConfig": "default"（IDE 只写数组、不写引用）
+② hvigorw ... assembleHap --no-daemon   → BUILD SUCCESSFUL
+   entry/build/default/outputs/default/entry-default-signed.hap  5,635,719 B（17:45:58）
+③ hdc -t 192.168.3.156:40525 install -r <signed.hap> → install bundle successfully
+④ aa force-stop + aa start -a EntryAbility -b com.myresearcher.waygate → start ability successfully
+⑤ 截图确认新包在跑：首页“需要处理”列出待办（本机·601012、tokenseller·002648、hk·002648 等）
+```
+
+提交卫生：`git checkout -- apps/waygate/harmony/build-profile.json5` 已还原（校验 `storePassword|keyPassword`
+命中 0 处）；签名材料、口令、截图均未入库。
+
+**发现服务端阻塞（本轮最重要结论）**：点“现在处理”后手机提示 `主控请求失败：HTTP 404`。用 App 自带
+诊断页取证：
+
+```text
+接口：GET /v1/incidents/5aa89c9f6d3e425c998f1509e70ac189/verification
+阶段：HTTP 响应   HTTP：404   响应长度：14 个字符
+```
+
+判定依据（逐步排除）：
+
+- 无令牌直接探测 `https://testapi.zuzurent.com.cn/collector` 的 `/v1/inbox`、`/v1/devices`、
+  `/v1/incidents/<id>/verification`、乃至 `/v1/definitely-not-a-route` **全部返回 401**
+  且正文都是 `{"error":"主控令牌不正确或已失效"}`。说明该 hub 的**认证中间件先于路由匹配**，
+  所以“无令牌探测返回 401”**不能**证明某路由存在——此前用这种方法下的结论无效。
+- 而带令牌的真实请求拿到 **404 + 14 字符**正文：14 字符正是 aiohttp 默认的 `404: Not Found`，
+  既不是 hub 的 JSON 错误、也不是 nginx 的 HTML 404。→ 认证通过后 aiohttp 路由器**没有匹配到该路由**。
+- 该路由在仓库里是存在的：`origin/main` 与本地 HEAD 都含
+  `app.router.add_get("/v1/incidents/{incident}/verification", route)`（[service.py](hub/service.py)）
+  与 [collector.py](hub/collector.py) 的 `direct_descriptor()`，来自提交 `9bc228c`
+  “Expose desktop verification worker for direct phone SSH handoff”。
+- 公网入口解析到 `testapi.zuzurent.com.cn → 8.148.251.114`（fzz-002），**部署在该主机上的 hub 版本早于
+  `9bc228c`**，因此没有描述接口。App 侧无误：`verify()` 失败时不建通道、不连节点、不探测，只回到待办并提示。
+
+修复（须由有 fzz-002 访问权的一方执行，本环境没有该主机凭据；命令与本文顶部同一行）：
+
+```bash
+cd /usr/local/src/MyResearcher-DataCollector && git pull && \
+  bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector
+```
+
+注意：**重新部署后无法用“无令牌探测”验证**（任何 `/v1/` 路径都是 401）。唯一可靠的验收是手机端
+点“现在处理”后进入**凭据导入界面**，而不是 404。
+
+未验证与下一步：① 等 fzz-002 重新部署后，在手机上点“现在处理”，导入 36 的凭据（主机 `36.138.125.17`、
+端口 22、用户 `root`、粘贴 `testsg8100.pem` 内容），比对 ED25519 指纹
+`SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk` 后连接；② 之后才可能跑 M4 的
+audit→prepare→exit→转发→人工验证→probe→resume。本轮**未连接任何节点、未触发来源请求**。
+
+另外记录：DevEco 在本机工程目录留下了 `.clangd`、`.clang-tidy`、`wecode-cpp.db*` 等 IDE 产物，
+本轮把它们加入 [.gitignore](.gitignore)，避免误提交二进制索引库。
