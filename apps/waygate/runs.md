@@ -867,3 +867,26 @@ ps -ef → com.myresearcher.waygate 常驻（PID 48739）
 - M4：真机对着 tokenseller 打通 `audit → prepare → exit → 转发 → 人工验证 → probe → resume`。
 
 本轮未改服务端；旧路径的 known_hosts 补丁不再是本任务的答案。
+
+### 2026-10-15 / Windows / 第九轮：原生 SSH 模块打通（M2a–M2c，编译验证）
+
+- **M2a**：新增 [third_party/fetch.ps1](harmony/third_party/fetch.ps1)，固定并校验源码
+  （libssh2 `1.11.1` sha256 `82B3…B0D0D`；mbedTLS `3.6.2` **官方 release** sha256 `8B54…CDCA`）。
+  注意：GitHub 的 tag 自动归档**缺少 mbedTLS 的 `framework/` 子模块**，首次配置因此失败，
+  改用官方 release `tar.bz2` 才通过。源码树不提交（[third_party/.gitignore](harmony/third_party/.gitignore)）。
+- **M2b**：[CMakeLists.txt](harmony/entry/src/main/cpp/CMakeLists.txt) 交叉编译
+  mbedTLS（静态、无 programs/tests、`MBEDTLS_FATAL_WARNINGS=OFF`）与 libssh2
+  （`CRYPTO_BACKEND=mbedTLS`、静态、无 zlib/examples/tests），并用
+  `MBEDTLS_INCLUDE_DIR` / `MBEDCRYPTO_LIBRARY` 满足 libssh2 自带的 `FindMbedTLS`。
+  实测产出 `libmbedcrypto.a` 3.16 MB、`libmbedtls.a` 1.79 MB、`libmbedx509.a` 398 KB、`libssh2.a` 1.87 MB。
+- **M2c**：[napi_init.cpp](harmony/entry/src/main/cpp/napi_init.cpp) 实现并导出
+  `probeHostKey` / `connect` / `exec` / `close`：异步 Promise（不阻塞 UI）、全局互斥串行化 libssh2、
+  host key 以 base64 比对（不一致直接拒绝）、`exec` 每次新开 channel、写 stdin 后 `send_eof`、
+  读取 stdout/stderr 与退出码（输出上限 4 MB）。
+  实测 `libwaygate_ssh.so` 由 16 KB 增至 **3.64 MB**（strip 后 1.32 MB），证明 libssh2/mbedTLS 已进包。
+
+**未做（不声称已完成）**：`direct-tcpip` 转发尚未实现；**未在真机用真实凭据连接任何 worker**
+（本机没有该凭据）；ArkTS 侧 `Index.ets`/`LocalProxy.ets`/`SessionRuntime.ets` 尚未改接描述接口。
+
+下一步：M2d 真机用 tokenseller 凭据验证 `probeHostKey` → `connect` → `exec`（audit）；
+需要该节点的 SSH 主机、用户与密钥/口令（由用户提供，不写入仓库、不写日志）。

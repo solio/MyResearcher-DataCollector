@@ -1,0 +1,5 @@
+# Third-party sources are pinned and fetched by fetch.ps1; they are never committed.
+*.tar.gz
+*.tar.bz2
+libssh2-libssh2-1.11.1/
+mbedtls-3.6.2/
