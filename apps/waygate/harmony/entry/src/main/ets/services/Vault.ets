@@ -34,7 +34,7 @@ export class Vault {
     return {
       hub: await this.prefs.get('hub', '') as string, token: token, deviceId: device,
       push: await this.prefs.get('push', false) as boolean,
-      pendingSession: await this.prefs.get('pendingSession', '') as string
+      pendingClaim: await this.prefs.get('pendingClaim', '') as string
     };
   }
 
@@ -58,9 +58,11 @@ export class Vault {
     await this.prefs.flush();
   }
 
-  async session(id: string): Promise<void> {
+  // Durable probe claim. Written before the one-shot probe leaves the phone, so a
+  // restart only re-reads the original result instead of sending a second request.
+  async claim(value: string): Promise<void> {
     if (this.prefs) {
-      await this.prefs.put('pendingSession', id);
+      await this.prefs.put('pendingClaim', value);
       await this.prefs.flush();
     }
   }

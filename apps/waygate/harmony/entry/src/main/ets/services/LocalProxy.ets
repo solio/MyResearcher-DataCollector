@@ -1,61 +1,153 @@
-import { socket, webSocket } from '@kit.NetworkKit';
+import { socket } from '@kit.NetworkKit';
+import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 
-// One bounded binary WSS stream per browser TCP connection. TLS remains between
-// ArkWeb and the source. Neither this client nor the hub decrypts browser traffic.
+// ArkWeb talks to this app-local HTTP proxy. Each browser CONNECT is validated
+// against the same rules the hub relay used, then forwarded as raw bytes over the
+// native SSH direct-tcpip listener to the worker's own proxied exit. Neither the
+// hub nor the phone decrypts browser traffic.
+const HEAD_LIMIT = 16384;
+const HEAD_TIMEOUT = 12000;
+const OUTSTANDING_LIMIT = 1024 * 1024;
+const MAX_CONNECTIONS = 24;
+
+export class ReadyFlag { value: boolean = false; }
+
+function ascii(text: string): ArrayBuffer {
+  const out = new Uint8Array(text.length);
+  for (let index = 0; index < text.length; index++) { out[index] = text.charCodeAt(index) & 0xff; }
+  return out.buffer as ArrayBuffer;
+}
+
+function joined(first: ArrayBuffer, second: ArrayBuffer): ArrayBuffer {
+  if (first.byteLength === 0) { return second; }
+  if (second.byteLength === 0) { return first; }
+  const out = new Uint8Array(first.byteLength + second.byteLength);
+  out.set(new Uint8Array(first), 0);
+  out.set(new Uint8Array(second), first.byteLength);
+  return out.buffer as ArrayBuffer;
+}
+
+function headEnd(data: ArrayBuffer): number {
+  const bytes = new Uint8Array(data);
+  for (let index = 0; index + 3 < bytes.length; index++) {
+    if (bytes[index] === 13 && bytes[index + 1] === 10 && bytes[index + 2] === 13 && bytes[index + 3] === 10) {
+      return index + 4;
+    }
+  }
+  return -1;
+}
+
+// Exactly one HTTPS CONNECT; never forward an arbitrary HTTP proxy request.
+function connectTarget(head: ArrayBuffer): string {
+  const text = new util.TextDecoder().decodeToString(new Uint8Array(head));
+  const parts = text.split('\r\n')[0].split(' ');
+  if (parts.length !== 3 || parts[0] !== 'CONNECT') { return ''; }
+  if (parts[2] !== 'HTTP/1.1' && parts[2] !== 'HTTP/1.0') { return ''; }
+  const colon = parts[1].lastIndexOf(':');
+  if (colon <= 0 || parts[1].substring(colon + 1) !== '443') { return ''; }
+  const host = parts[1].substring(0, colon).toLowerCase();
+  if (host.length === 0 || host.length > 253 || host.indexOf('..') >= 0) { return ''; }
+  if (!/^[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?$/.test(host)) { return ''; }
+  if (/^[0-9]+(?:\.[0-9]+)*$/.test(host)) { return ''; }
+  return host;
+}
+
+function permitted(host: string, domains: string[], ready: boolean): boolean {
+  if (host === 'api.ipify.org') { return true; }
+  if (!ready) { return false; }
+  for (const domain of domains) {
+    if (host === domain || host.endsWith('.' + domain)) { return true; }
+  }
+  return false;
+}
+
 class Pipe {
-  private ws: webSocket.WebSocket = webSocket.createWebSocket();
+  private client: socket.TCPSocketConnection;
+  private port: number;
+  private domains: string[];
+  private ready: ReadyFlag;
+  private onClose: (id: number) => void;
+  private upstream: socket.TCPSocket | undefined = undefined;
+  private head: ArrayBuffer = new ArrayBuffer(0);
   private opened: boolean = false;
   private closed: boolean = false;
-  private pending: ArrayBuffer[] = [];
-  private queuedBytes: number = 0;
-  private downloadBytes: number = 0;
-  private toHub: Promise<void> = Promise.resolve();
-  private toBrowser: Promise<void> = Promise.resolve();
   private timer: number = -1;
-  private client: socket.TCPSocketConnection;
-  private onClose: (id: number) => void;
+  private toUpstream: Promise<void> = Promise.resolve();
+  private toClient: Promise<void> = Promise.resolve();
+  private upOutstanding: number = 0;
+  private downOutstanding: number = 0;
 
-  constructor(client: socket.TCPSocketConnection, url: string, token: string,
+  constructor(client: socket.TCPSocketConnection, port: number, domains: string[], ready: ReadyFlag,
     onClose: (id: number) => void) {
     this.client = client;
+    this.port = port;
+    this.domains = domains;
+    this.ready = ready;
     this.onClose = onClose;
-    client.on('message', (message: socket.SocketMessageInfo) => {
-      if (this.closed) { return; }
-      this.queuedBytes += message.message.byteLength;
-      if (this.queuedBytes > 1024 * 1024) { this.close(); return; }
-      if (!this.opened) { this.pending.push(message.message); }
-      else { this.send(message.message); }
-    });
+    client.on('message', (message: socket.SocketMessageInfo) => this.fromClient(message.message));
     client.on('close', () => this.close());
     client.on('error', (_: BusinessError) => this.close());
-    this.ws.on('open', (_: BusinessError, __: Object) => {
-      if (this.closed) { return; }
-      clearTimeout(this.timer);
-      this.opened = true;
-      this.pending.forEach((data: ArrayBuffer) => this.send(data));
-      this.pending = [];
-    });
-    this.ws.on('message', (_: BusinessError, data: string | ArrayBuffer) => {
-      if (typeof data === 'string') { this.close(); return; }
-      const binary = data as ArrayBuffer;
-      this.downloadBytes += binary.byteLength;
-      if (this.downloadBytes > 1024 * 1024) { this.close(); return; }
-      this.toBrowser = this.toBrowser.then(async () => {
-        if (!this.closed) { await this.client.send({ data: binary }); }
-        this.downloadBytes -= binary.byteLength;
-      }).catch(() => this.close());
-    });
-    this.ws.on('close', () => this.close());
-    this.ws.on('error', (_: BusinessError) => this.close());
-    this.timer = setTimeout(() => this.close(), 12000);
-    this.ws.connect(url, { header: { 'Authorization': 'Bearer ' + token } }).catch(() => this.close());
+    this.timer = setTimeout(() => this.close(), HEAD_TIMEOUT);
   }
 
-  private send(data: ArrayBuffer): void {
-    this.toHub = this.toHub.then(async () => {
-      if (!this.closed) { await this.ws.send(data); }
-      this.queuedBytes -= data.byteLength;
+  private fromClient(data: ArrayBuffer): void {
+    if (this.closed) { return; }
+    if (!this.opened) {
+      this.head = joined(this.head, data);
+      if (this.head.byteLength > HEAD_LIMIT) { this.close(); return; }
+      const end = headEnd(this.head);
+      if (end < 0) { return; }
+      const host = connectTarget(this.head);
+      if (host.length === 0 || !permitted(host, this.domains, this.ready.value)) {
+        this.client.send({ data: ascii('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n') }).catch(() => {});
+        this.close();
+        return;
+      }
+      const rest = this.head.slice(end);
+      this.opened = true;
+      clearTimeout(this.timer);
+      this.toUpstream = this.openUpstream(host, rest);
+      return;
+    }
+    this.push(data);
+  }
+
+  private async openUpstream(host: string, rest: ArrayBuffer): Promise<void> {
+    const upstream = socket.constructTCPSocketInstance();
+    this.upstream = upstream;
+    upstream.on('message', (message: socket.SocketMessageInfo) => this.fromUpstream(message.message));
+    upstream.on('close', () => this.close());
+    upstream.on('error', (_: BusinessError) => this.close());
+    try {
+      await upstream.connect({ address: { address: '127.0.0.1', port: this.port, family: 1 }, timeout: HEAD_TIMEOUT });
+      if (this.closed) { return; }
+      await upstream.send({ data: ascii('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n') });
+      if (rest.byteLength > 0) { await upstream.send({ data: rest }); }
+    } catch (_) {
+      this.close();
+    }
+  }
+
+  private push(data: ArrayBuffer): void {
+    if (this.closed) { return; }
+    this.upOutstanding += data.byteLength;
+    if (this.upOutstanding > OUTSTANDING_LIMIT) { this.close(); return; }
+    const base = this.toUpstream;
+    this.toUpstream = base.then(async () => {
+      if (!this.closed && this.upstream) { await this.upstream.send({ data: data }); }
+      this.upOutstanding -= data.byteLength;
+    }).catch(() => this.close());
+  }
+
+  private fromUpstream(data: ArrayBuffer): void {
+    if (this.closed) { return; }
+    this.downOutstanding += data.byteLength;
+    if (this.downOutstanding > OUTSTANDING_LIMIT) { this.close(); return; }
+    const base = this.toClient;
+    this.toClient = base.then(async () => {
+      if (!this.closed) { await this.client.send({ data: data }); }
+      this.downOutstanding -= data.byteLength;
     }).catch(() => this.close());
   }
 
@@ -63,8 +155,9 @@ class Pipe {
     if (this.closed) { return; }
     this.closed = true;
     clearTimeout(this.timer);
-    this.pending = [];
-    this.ws.close().catch(() => {});
+    const upstream = this.upstream;
+    this.upstream = undefined;
+    if (upstream) { upstream.close().catch(() => {}); }
     this.client.close().catch(() => {});
     this.onClose(this.client.clientId);
   }
@@ -73,18 +166,20 @@ class Pipe {
 export class LocalProxy {
   private server: socket.TCPSocketServer | undefined = undefined;
   private pipes: Map<number, Pipe> = new Map();
+  private ready: ReadyFlag = new ReadyFlag();
 
-  async start(hub: string, session: string, token: string): Promise<string> {
+  async start(forwardPort: number, domains: string[]): Promise<string> {
     await this.stop();
+    this.ready = new ReadyFlag();
     const server = socket.constructTCPSocketServerInstance();
     this.server = server;
     try {
       await server.listen({ address: '127.0.0.1', family: 1, port: 0 });
       const local = await server.getLocalAddress();
-      const wss = hub.replace(/^https:/, 'wss:') + '/v1/sessions/' + session + '/relay';
       server.on('connect', (client: socket.TCPSocketConnection) => {
-        if (this.pipes.size >= 24 || !this.server) { client.close().catch(() => {}); return; }
-        const pipe = new Pipe(client, wss, token, (id: number) => { this.pipes.delete(id); });
+        if (this.pipes.size >= MAX_CONNECTIONS || !this.server) { client.close().catch(() => {}); return; }
+        const pipe = new Pipe(client, forwardPort, domains, this.ready,
+          (id: number) => { this.pipes.delete(id); });
         this.pipes.set(client.clientId, pipe);
       });
       return 'http://127.0.0.1:' + local.port;
@@ -93,6 +188,9 @@ export class LocalProxy {
       throw new Error('无法建立应用内验证通道');
     }
   }
+
+  // Called only after the browser's neutral exit check matched the node exit.
+  markReady(): void { this.ready.value = true; }
 
   async stop(): Promise<void> {
     this.pipes.forEach((pipe: Pipe) => pipe.close());

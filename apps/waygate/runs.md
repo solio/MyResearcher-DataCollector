@@ -30,8 +30,10 @@ worker 无需新增服务；App 在自己的 SSH exec channel 通过 JSON stdin 
 
 **下一步交给 Windows/App 环境：[DIRECT_SSH.md](DIRECT_SSH.md)。** 其中列出
 接口格式、exec 输入输出、原脚本操作顺序、ArkWeb/LocalProxy/SessionRuntime 接线
-及真机验收。手机 SSH 依赖、凭据保存、exec/转发仍待接入；当前 App 没有因为这个
-服务端提交就获得手机直连能力。不要把此次接口交付报成手机流程已完成。
+及真机验收。第十二轮已完成其中的 M3：App 的 `verify()` 已改走描述接口 + 手机 SSH
+编排，凭据按 `node_id` 存本机 Asset Store，转发改走原生 direct-tcpip，编译通过。
+但**真机仍未跑通**：手机里还没有任何 worker 凭据（签名 HAP 也尚未产出），
+因此不要把 M3 接线报成手机流程已完成或已验证。
 
 服务端变更在 [hub/collector.py](hub/collector.py)、[hub/service.py](hub/service.py)，
 共享命令在 [verify_http_backfill.py](../../scripts/ops/verify_http_backfill.py)。
@@ -966,3 +968,86 @@ mbedTLS 不再是构建依赖（条目留在 fetch 脚本中备查）。
 因此尚未跑过真实 exec 与真实转发。
 
 下一步：M3 ArkTS 接线；之后需要把某台 worker 的 SSH 凭据导入手机，才能做 M4 真机端到端。
+
+### 2026-10-15 / Windows / 第十二轮：M3 ArkTS 接线——App 改走手机直连 SSH（编译通过，未真机验收）
+
+用户现场反馈：原生自检通过，但点“现在处理”仍报同一条指纹错。核实确认原因是
+`verify()` 仍在调旧 `POST /v1/incidents/{id}/sessions`（= fzz-002 的 hub 去 SSH worker），
+与“自检能不能用”无关。本轮把 [DIRECT_SSH.md](DIRECT_SSH.md) 的 M3 接线做完。
+**本轮只改 App 源码与 App 测试；未改服务端、未改部署、未触发任何来源请求。**
+
+代码变化（均在 `apps/waygate` 内）：
+
+- 新增 [NodeSsh.ets](harmony/entry/src/main/ets/services/NodeSsh.ets)：按 `node_id` 把该节点的 SSH
+  登录材料（主机/端口/用户/密码或私钥/口令/主机指纹）存入手机 Asset Store（别名
+  `waygate-node-<node_id>-v1`），只在本机，不入库、不写日志、不上传主控。`runAction()` 通过原生
+  `exec` 发一份 JSON stdin 然后 EOF，并按 `{"ok":…,"value":…}` 契约解析；非零退出码、stderr、
+  无法识别的返回都转成可读错误，不把原文回显成“成功”。
+- [Index.ets](harmony/entry/src/main/ets/pages/Index.ets)：`verify()` 改为
+  `GET /v1/incidents/{id}/verification` 取描述接口，再按
+  `connect → audit（核对 instance/revision/job/stock/task/request_id）→ prepare → exit
+  （核对 route signature 并记录 exit_ip）→ forward → 应用内 CONNECT 代理 → api.ipify.org 出口
+  核对（必须等于 exit_ip）→ 打开 audit 返回的原失败 URL`。首次处理某节点时进入凭据导入界面：
+  先读指纹并展示，必须点“确认指纹并连接”才保存并继续；已有凭据直接连接，指纹变化由原生
+  `connect` 拒绝。删除上一轮临时自检入口（设置页按钮 + 启动自动跑 `probeHostKey`）。
+  “验证完成并继续”先复核浏览器出口，再**持久写入 claim**（`pendingClaim`：incident/node/target/
+  worker_command/`before_request_id`），随后单次 `probe → result（≤125s）→ resume（仅
+  real_data/detail_unavailable）`。重启或切后台只读原结果（按钮“继续核对探测结果”），
+  未收到 `before_request_id` 时明确显示“结果未知，请到控制台核对”，**不重发探测**。
+- [LocalProxy.ets](harmony/entry/src/main/ets/services/LocalProxy.ets)：由“本地 TCP → 主控 WSS”改为
+  “本地 TCP → 校验 CONNECT → 原生 SSH direct-tcpip”。沿用 relay 的 CONNECT 规则：只接受一条
+  `CONNECT host:443`、小写域名、拒绝 IP 字面量与超大请求头；`api.ipify.org` 恒允许，来源域名要
+  在 `markReady()`（出口核对通过）后才放行；转发前重写 CONNECT、丢弃客户端自带代理头；
+  保留 1 MiB 未完成字节上限、24 连接上限与结束即关闭。
+- [SessionRuntime.ets](harmony/entry/src/main/ets/services/SessionRuntime.ets)：后台/关闭只停止手机
+  自有的代理与 SSH 会话，**不再调用旧 hub cancel**；已提交的 probe claim 保持不变。
+- [Models.ets](harmony/entry/src/main/ets/services/Models.ets)：新增描述接口/审计视图/route/exec 信封/
+  probe 结果/claim/节点凭据等类型；`Credentials.pendingSession` → `pendingClaim`，
+  [Vault.ets](harmony/entry/src/main/ets/services/Vault.ets) 相应改为 `claim()`。
+
+精确命令及结果（工作目录 `apps/waygate/harmony`，Windows）：
+
+```text
+$env:DEVECO_SDK_HOME='D:\kits\DevEco Studio\sdk'
+hvigorw.js --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon
+→ BUILD SUCCESSFUL（首次即通过；告警仍为既有 “Function may throw exceptions” 一类，未压制）
+→ 产物 entry/build/default/outputs/default/entry-default-unsigned.hap（**未签名**）
+```
+
+离线检查（仓库根目录，`NO_PROXY=*`）：
+
+```text
+python apps/waygate/tools/check_project.py                       → Project metadata/import paths OK
+python -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py
+                                                                 → 48 passed, 2 skipped
+node --test apps/waygate/tests/test_app_connection.mjs           → 4 passed
+```
+
+两处**必须说明**：
+
+1. 跳过项是 `test_deploy.py` 的 2 项（本机无 nginx / 部署锁为 POSIX），Windows 环境预期跳过；
+   这是环境差异，不是本轮改动造成。
+2. [test_app_connection.mjs](tests/test_app_connection.mjs) 修了两处**跨平台**缺陷（不放宽断言）：
+   `@Builder` 切分原按 LF 硬编码，Windows `core.autocrlf=true` 的 CRLF 工作区会切错位置而误报
+   语法错；以及新增的 `NodeSsh` 服务类需要 stub。改后 4 项照旧覆盖“解析失败提示 / 不泄露 token /
+   HTTP 与网络错误分类 / 恢复后清除提示且保留操作结果”。若只想避免改动该测试，也可把
+   `Index.ets` 的 `import` 写成单行——已按此写成单行，但 LF 假设仍需修，否则 Windows 上不可用。
+
+未验证（**不声称已完成**）：
+
+- **未签名、未安装、未在真机运行**。`devecocli auth status` 为 `Not logged in`；agent 不代替用户
+  登录华为账号。第四/六轮写进 `build-profile.json5` 的本地签名取值已随 `git checkout` 还原，
+  仓库与磁盘之外没有留存，本环境无法从 CLI 复现签名。
+- 手机里**没有任何 worker 的 SSH 凭据**，因此从未跑过真实 `connect/exec/forward`；M4 端到端
+  （audit → prepare → exit → 转发 → 人工验证 → probe → resume）未开始。
+- 描述接口不提供跨手机会话互斥：两台手机同时处理同一待办时仍可能各自探测；旧 hub 的全局 lease
+  未迁移，本轮也不声称已迁移。
+- OpenSSH 新格式（`-----BEGIN OPENSSH PRIVATE KEY-----`）私钥能否被 libssh2 + OpenSSL 解析未实测；
+  若导入报私钥解析失败，需先在节点侧 `ssh-keygen -p -m PEM` 转成 PEM 再导入。
+- 首次导入为 TOFU：指纹只展示给操作者并要求人工确认，未提供带外比对来源。
+- 未验证 `hdc` 可达设备的现场表现（本轮未安装，故未截图、未看 hilog）。
+
+下一步：① 用户用 IDE 自动签名跑一次 `Run`（或提供 p12 口令/别名，由本环境复现命令行签名）
+以产出签名 HAP 并安装；② 导入目标 worker 的 SSH 凭据；③ 做 M4 真机端到端与验收表第 5~9 步。
+安装后点“现在处理”应进入**凭据导入界面**而不是原来的指纹错，这一步本身可作为“旧报错已消失”的
+第一个真机证据。

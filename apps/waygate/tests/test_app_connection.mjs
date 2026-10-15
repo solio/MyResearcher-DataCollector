@@ -20,11 +20,13 @@ function setup(request) {
   const context = vm.createContext({
     http: { RequestMethod: { GET: 'GET', POST: 'POST' }, HttpDataType: { STRING: 'string' },
       createHttp: () => ({ request, destroy: () => { destroyed++; } }) },
-    Vault: class {}, webview: { WebviewController: class {} }, runtime: { session: '', dispatching: false }
+    Vault: class {}, NodeSsh: class {}, webview: { WebviewController: class {} },
+    runtime: { incident: '', session: '', dispatching: false }
   });
   vm.runInContext(javascript(apiSource) + '\nglobalThis.ApiClass = Api;', context);
   // Only the normal class fields/methods; do not pretend Node understands ArkUI builders.
-  const indexMethods = indexSource.slice(0, indexSource.indexOf('  @Builder\n')) + '}';
+  // Cut at the first @Builder regardless of CRLF (Windows checkouts use CRLF).
+  const indexMethods = indexSource.slice(0, indexSource.search(/\n  @Builder\r?\n/)) + '}';
   const plain = indexMethods.replace(/^@Entry\r?\n|^@Component\r?\n/gm, '')
     .replace('struct Index {', 'class Index {').replace(/@State\s+/g, '')
     .replace(/@StorageLink\('[^']+'\)\s*@Watch\('[^']+'\)\s*/g, '');
