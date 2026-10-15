@@ -1152,3 +1152,48 @@ audit→prepare→exit→转发→人工验证→probe→resume。本轮**未连
 
 另外记录：DevEco 在本机工程目录留下了 `.clangd`、`.clang-tidy`、`wecode-cpp.db*` 等 IDE 产物，
 本轮把它们加入 [.gitignore](.gitignore)，避免误提交二进制索引库。
+
+### 2026-10-15 / Windows + Mate 70 Pro+ / 第十五轮：纠正方向——36 是 worker，只做手机→36 的 SSH 通道
+
+**用户纠正（成立）**：36 是 worker，不是 hub；把“把36节点部署一下”理解成“在 36 上更新 hub/加 HTTPS”
+是跑偏。DIRECT_SSH.md 本来写明 **worker 侧不新增部署**。上一轮准备执行的 36 侧部署脚本已被用户拒绝、
+**没有执行**：36 上没有任何变更。
+
+**36 只读取证（补充，解释为什么 36 不适合放 hub）**：
+
+- `/opt/MyResearcher-DataCollector` 是 git checkout（remote 就是 solio/MyResearcher-DataCollector），
+  但 HEAD 停在 `2c10383`，连 `deploy/start.sh` 都还没有 → 36 上的 hub 代码很旧。
+- 36 上的 waygate systemd 单元 active/enabled、监听 `127.0.0.1:8791`，
+  `public_url` 仍是占位 `https://waygate.example.invalid/waygate`，`collector_url=http://127.0.0.1:8790`，
+  ssh 映射只有 `local`；**push.enabled=false，devices 0**（所以重启它不会给任何手机发通知）。
+- 36 自己的采集器 fleet 只有 1 个节点（`local`，名字“本机”），**没有**手机待办里的
+  `tokenseller / hk / 02 / ktopia-crmeb`。
+- 36 上**没有 nginx、没有 80/443、没有 /etc/letsencrypt**；手机端只接受 https 地址，因此
+  36 不能作为手机的主控入口——这与“能不能 SSH”无关。
+- 36 sshd 实测：`permitrootlogin yes`、`pubkeyauthentication yes`、**`passwordauthentication yes`**，
+  即手机既可用现有 RSA 私钥，也可用 root 密码，不必非要粘贴 1.7KB PEM。
+
+**本轮代码变化（App 侧，只做 SSH 通道本身）**：[Index.ets](harmony/entry/src/main/ets/pages/Index.ets)
+设置页新增 **“SSH 通道测试（手机 → 节点）”** 入口，完全不经过主控、不使用待办信息：
+`probeHostKey 取指纹（人工核对）→ connect → exec 一条只读命令 id; hostname; echo SSH_CONNECTION=$SSH_CONNECTION
+→ close`。**不调用 audit/prepare/probe，不暂停采集、不发起来源请求**；凭据只在本机内存中使用，
+不写日志、不入库。原有的“现在处理 → 凭据导入 → 整套编排”路径保持不变。
+
+验证（真机）：
+
+```text
+hvigorw ... assembleHap --no-daemon        → BUILD SUCCESSFUL
+entry-default-signed.hap 5,649,183 B（18:04）
+hdc install -r → install bundle successfully；aa force-stop + aa start → 成功
+布局 dump 确认新入口在设置页：'SSH 通道测试（手机 → 节点）' Button bounds [84,1536][1232,1697]
+（签名配置用完即已 git checkout 还原，git status 只剩 Index.ets 与本轮文档）
+```
+
+**未验证**：还没有真正 connect 过——通道测试需要有人在手机上填节点地址与凭据（密码或私钥），
+agent 不代为输入口令。另外测试期间手机前台被会议应用占用，已**停止**对手机的点击驱动，避免干扰。
+
+下一步：① 在手机上打开 设置 → SSH 通道测试，主机 `36.138.125.17`、端口 22、用户 `root`，
+填 root 密码或粘贴 `testsg8100.pem` 内容，核对 ED25519 指纹
+`SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk` 后建立通道，看 `id/hostname/SSH_CONNECTION`
+输出；② 完整待办流程仍依赖 fzz-002 的 `GET /v1/incidents/{id}/verification`（见第十四轮），
+与本条通道互不影响。

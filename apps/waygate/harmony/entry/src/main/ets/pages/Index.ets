@@ -7,7 +7,7 @@ import { registerPush } from '../services/Push';
 import { runtime } from '../services/SessionRuntime';
 import { AuditView, Credentials, DirectClaim, DirectTarget, EmptyReply, ExitValue, Inbox, Incident, Link, NodeProfile, NodeState, PrepareValue, ProbeValue, ResultValue, ResumeValue, StockState, VerificationDescriptor } from '../services/Models';
 import { NodeSsh, runAction } from '../services/NodeSsh';
-import { connect, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
+import { close, connect, exec, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
 
 const INK = '#173E37';
 const MUTED = '#657970';
@@ -41,6 +41,7 @@ struct Index {
   @State nodePassphrase: string = '';
   @State nodeKey: string = '';
   @State nodeFingerprint: string = '';
+  @State channelOutput: string = '';
   @StorageLink('foreground') @Watch('visibilityChanged') foreground: boolean = true;
   @StorageLink('incidentLink') @Watch('linkChanged') incidentLink: string = '';
 
@@ -53,6 +54,7 @@ struct Index {
   private incidentId: string = '';
   private claim: DirectClaim | undefined = undefined;
   private nodeConfirmed: boolean = false;
+  private channelMode: boolean = false;
   private measuredOnce: boolean = false;
   private exitWaiter: ((ip: string) => void) | undefined = undefined;
   private timer: number = -1;
@@ -548,9 +550,59 @@ struct Index {
     } finally { this.busy = false; }
   }
 
+  private nodeActionLabel(): string {
+    if (this.busy) { return '正在读取…'; }
+    if (this.channelMode) { return this.nodeFingerprint ? '确认指纹并建立通道' : '读取指纹'; }
+    return this.nodeFingerprint ? '确认指纹并连接' : '读取指纹';
+  }
+
+  // Opens the node form without any hub involvement, so the phone-to-node SSH
+  // channel can be established and proven on device by itself.
+  private openChannel(): void {
+    if (this.busy || runtime.incident) { return; }
+    this.channelMode = true;
+    this.channelOutput = '';
+    this.nodeHint = '直接建立到该节点的 SSH 通道，不经过主控，也不使用待办信息。';
+    this.nodeHost = '';
+    this.nodePort = '22';
+    this.nodeUser = 'root';
+    this.nodeAuth = 'password';
+    this.nodeSecret = '';
+    this.nodeKey = '';
+    this.nodePassphrase = '';
+    this.nodeFingerprint = '';
+    this.nodeConfirmed = false;
+    this.message = '';
+    this.screen = 'node';
+  }
+
+  // Connects and runs one read-only command. Nothing here can pause collection or
+  // issue a source request, so it is safe before the full flow is unblocked.
+  private async channelConnect(profile: NodeProfile): Promise<void> {
+    this.message = '正在建立 SSH 通道并执行只读命令';
+    try {
+      const options: SshConnectOptions = { host: profile.host, port: profile.port, user: profile.user,
+        knownHostBase64: profile.knownHostBase64 };
+      if (profile.authType === 'password') { options.password = profile.secret; } else { options.privateKey = profile.secret; }
+      if (profile.passphrase) { options.passphrase = profile.passphrase; }
+      const session = await connect(options);
+      try {
+        const result = await exec(session.id, 'id; hostname; echo SSH_CONNECTION=$SSH_CONNECTION', '');
+        const stderr = result.stderr.trim();
+        this.channelOutput = '通道已建立，主机指纹已核对\n退出码：' + result.exitStatus.toString() +
+          '\n--- stdout ---\n' + result.stdout.trim() + (stderr ? '\n--- stderr ---\n' + stderr : '');
+        this.message = 'SSH 通道可用';
+      } finally {
+        await close(session.id).catch(() => {});
+      }
+    } catch (err) { this.error(err as Error); }
+    finally { this.busy = false; }
+  }
+
   private async saveNode(): Promise<void> {
     const descriptor = this.descriptor;
-    if (this.busy || !descriptor) { return; }
+    if (this.busy) { return; }
+    if (!this.channelMode && !descriptor) { return; }
     const host = this.nodeHost.trim();
     const portText = this.nodePort.trim();
     const user = this.nodeUser.trim();
@@ -572,14 +624,18 @@ struct Index {
       if (!this.nodeConfirmed || this.nodeFingerprint !== fingerprint) {
         this.nodeFingerprint = fingerprint;
         this.nodeConfirmed = false;
-        this.message = '请核对该指纹与该节点实际一致，再点“确认指纹并连接”';
+        this.message = '请核对该指纹与该节点实际一致，再点“' + this.nodeActionLabel() + '”';
         return;
       }
-      const profile: NodeProfile = { nodeId: descriptor.node_id, host: host, port: port, user: user,
-        authType: this.nodeAuth, secret: secret, passphrase: this.nodePassphrase,
+      const profile: NodeProfile = { nodeId: this.channelMode ? 'channel-test' : (descriptor ? descriptor.node_id : ''),
+        host: host, port: port, user: user, authType: this.nodeAuth, secret: secret, passphrase: this.nodePassphrase,
         knownHostBase64: key.base64, knownHostType: key.type, fingerprint: fingerprint };
-      await this.ssh.save(profile);
-      await this.begin(descriptor, profile);
+      if (this.channelMode) {
+        await this.channelConnect(profile);
+      } else if (descriptor) {
+        await this.ssh.save(profile);
+        await this.begin(descriptor, profile);
+      }
     } catch (err) { this.error(err as Error); }
     finally { this.busy = false; }
   }
@@ -704,12 +760,16 @@ struct Index {
             Button('开启任务通知').width('100%').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.enablePush(true))
             Text(this.notification).fontColor(MUTED).fontSize(13)
           }
+          Button('SSH 通道测试（手机 → 节点）').width('100%').height(46).backgroundColor('#DDECE4').fontColor(INK)
+            .enabled(!this.busy && !runtime.incident).onClick(() => this.openChannel())
+          Text('不依赖主控：只建立到节点的 SSH 通道并执行一条只读命令，不暂停采集、不发起来源请求。')
+            .fontColor(MUTED).fontSize(12).width('100%')
           Text('节点 SSH 凭据由手机在首次处理时导入并保存在本机，不需要主控登录节点。').fontColor(MUTED).fontSize(14)
         }.padding(24).width('100%')
       } else if (this.screen === 'node') {
         Scroll() {
           Column({ space: 14 }) {
-            Text('节点 SSH 凭据').fontSize(23).fontWeight(FontWeight.Bold).fontColor(INK).width('100%')
+            Text(this.channelMode ? 'SSH 通道测试' : '节点 SSH 凭据').fontSize(23).fontWeight(FontWeight.Bold).fontColor(INK).width('100%')
             Text(this.nodeHint).fontColor(MUTED).fontSize(13).width('100%')
             TextInput({ text: this.nodeHost, placeholder: '节点 SSH 地址（域名或 IP）' })
               .onChange((v: string) => { this.nodeHost = v; this.nodeFingerprint = ''; this.nodeConfirmed = false; })
@@ -736,10 +796,16 @@ struct Index {
               Text('主机指纹（请与该节点实际指纹核对）\n' + this.nodeFingerprint)
                 .fontSize(13).fontColor(INK).width('100%').copyOption(CopyOptions.LocalDevice)
             }
-            Button(this.busy ? '正在读取…' : (this.nodeFingerprint ? '确认指纹并连接' : '读取指纹'))
+            Button(this.nodeActionLabel())
               .width('100%').backgroundColor(INK).opacity(this.busy ? 0.6 : 1).enabled(!this.busy)
               .onClick(() => { this.nodeConfirmed = this.nodeFingerprint.length > 0; this.saveNode(); })
-            Text('凭据只保存在手机的凭据存储中，不上传主控、不写入日志。指纹不一致会拒绝连接。')
+            if (this.channelMode && this.channelOutput) {
+              Text(this.channelOutput).fontSize(13).fontColor(INK).width('100%').padding(12)
+                .backgroundColor('#EAEFEC').borderRadius(12).copyOption(CopyOptions.LocalDevice)
+            }
+            Text(this.channelMode
+              ? '通道测试只执行 id/hostname/SSH_CONNECTION 这条只读命令；不暂停采集、不发起来源请求。凭据只在本机内存中使用，不写日志。'
+              : '凭据只保存在手机的凭据存储中，不上传主控、不写入日志。指纹不一致会拒绝连接。')
               .fontColor(MUTED).fontSize(12).width('100%')
           }.padding(22).width('100%')
         }.layoutWeight(1).scrollBar(BarState.Off)
