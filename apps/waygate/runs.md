@@ -6,6 +6,14 @@ Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataC
 
 ## 当前优先处理：手机直接复用 verify_backfill.command
 
+**依赖审查纠正：不要直接按 libssh2 + mbedTLS 能沿用全部密钥开工。** 2026-10-15
+本机只读检查确认 36 的登录密钥为 RSA、43 为 ED25519；libssh2 1.11.1 和核对时
+master 的 mbedTLS 后端均禁用 ED25519。因此 43 原密钥存在明确不兼容。
+保留现有密钥应优先验证 libssh2 + OpenSSL crypto 后端，仍须完成鸿蒙目标 ABI
+编译、App 加载、两种密钥认证、exec 和 direct-tcpip/ArkWeb 实测。
+来源及最小验证顺序见 [DIRECT_SSH.md](DIRECT_SSH.md) 的“原生 SSH 依赖核对”。
+本轮仅补充证据和交接，不改 App/服务端实现，不改服务器登录方式或部署。
+
 用户纠正：要的是 `./scripts/ops/verify_backfill.command 36 --resume` 这条已能用
 的流程搬到手机，目标填写具体 worker IP；不接受把原本 Mac 直接 SSH worker
 变成必须由主控登录 worker。`36` 与完整 IP 原本已等价，本机私密配置只读核对一致。
@@ -737,6 +745,12 @@ Docker / fzz-002 记录）；本环境只负责 App 侧。开工时误把 36 当
 处置：遵守本文开头 HOLD，**未停止、未重启、未改 36 上的服务与配置**；36 那套部署去留由用户决定。
 
 ### 2026-10-15 / Windows / 架构澄清与处置边界（回应“为什么 hub 要连节点”）
+
+**历史记录，已由本文顶部用户纠正及更新后的 SPEC 覆盖。** 下述“冻结设计”
+不能再用来否决手机复用桌面 SSH 流程。手机 SSH direct-tcpip 可从 worker
+视角连接其内网 Mihomo，无需把代理端口开放到公网；SSH 凭据需由执行端持有，
+但不等于必须由主控下发。出口一致性也可由手机执行原脚本检查。当前待验证的
+实际问题是鸿蒙原生 SSH 与密钥算法兼容，见顶部依赖审查，不是代理端口公网开放。
 
 **结论：hub → 节点这一跳是冻结设计，不是缺陷。** [SPEC.md](SPEC.md) 原文：
 “An additive Python hub service owns SSH credentials and temporary relay sessions; the phone

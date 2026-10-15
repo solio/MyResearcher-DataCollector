@@ -5,6 +5,39 @@
 原流程是 **Mac → SSH → worker 的现用 Mihomo → 来源**。
 手机接替 Mac，主控只提供待办、节点信息和 H5；不要求主控登录 worker。
 
+## 原生 SSH 依赖核对（2026-10-15，未完成鸿蒙编译/真机验证）
+
+库名是 **libssh2**。它提供 exec 和 direct-tcpip；mbedTLS/OpenSSL 是可选的
+加密后端，不是第二条代理链。上轮只交付了服务端描述和 Python 操作复用，
+没有验证鸿蒙原生库、SSH 认证或 ArkWeb 转发；50 项 Python 检查不能证明这些。
+
+已只读检查本机桌面脚本所指向的密钥类型，没有输出密钥、指纹或连接服务器：
+
+| 目标 | 现有登录密钥类型 | libssh2 的 mbedTLS 后端 |
+| --- | --- | --- |
+| 36 | RSA | 声明支持 RSA/RSA-SHA2，实际密钥解析、握手和认证仍须验证 |
+| 43 | ED25519 | 当前上游明确禁用，不能原样复用这把密钥 |
+
+证据：libssh2 [1.11.1 mbedtls.h](https://github.com/libssh2/libssh2/blob/libssh2-1.11.1/src/mbedtls.h#L96-L105)
+和核对时的 [master mbedtls.h](https://github.com/libssh2/libssh2/blob/master/src/mbedtls.h)
+均定义 `LIBSSH2_ED25519 0`。主分支可变，实际构建必须记录版本/提交和后端。
+不能仅凭“libssh2 支持 ED25519”推断所有 crypto backend 都支持。
+
+保留现有 36/43 密钥的实现应优先验证 **libssh2 + OpenSSL crypto 后端**；
+[OpenSSL 后端源码](https://github.com/libssh2/libssh2/blob/libssh2-1.11.1/src/openssl.h#L146-L153)
+有 ED25519 支持条件。此建议只解决已确认的算法兼容问题，不表示鸿蒙编译或
+真机连接已通过；不得自动更换 worker 密钥、开启密码认证或降低 sshd 算法要求。
+
+Windows/App 环境先做小型原生验证：使用目标 HarmonyOS SDK/ABI 编译并从 App
+加载库；用现有两种密钥完成 SSH 握手/认证；exec 无副作用命令并核对 stdin/EOF/
+stdout；direct-tcpip 转发到原 Mihomo，由 ArkWeb 仅访问中立出口检查；确认并发
+连接、取消/退后台能释放资源。之后再接人工验证码和探测/恢复。每一步记录真实
+结果，不能把 TS 模拟、桌面编译或库 API 存在当成鸿蒙验收。
+
+原生适配依据：[libssh2 功能/后端](https://libssh2.org/)、
+[direct-tcpip API](https://libssh2.org/libssh2_channel_direct_tcpip_ex.html)、
+[华为三方 C/C++ 库编译指导](https://developer.huawei.com/consumer/cn/doc/games-guides/games-2dx-adapt-third-library-0000002290527381)。
+
 ## 当前交付边界
 
 已提供服务端只读描述接口和共享 worker 命令生成函数；手机直连 SSH 尚未接入。
