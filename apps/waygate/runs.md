@@ -318,3 +318,46 @@ hub 尚未部署；H5 控制台、代理清理、通知验收全部待手机侧�
 下一步：用户参与华为账号下载 DevEco Studio 6.x → 安装后 `check-windows.ps1 -Build` 实际编译 →
 用户提供主控 HTTPS 域名后在 36 部署附属服务（venv/systemd/`local` SSH 映射/nginx location）→
 真机验收。
+
+### 2026-10-15 / Windows+36 SSH / 第二轮：附属主控已部署并通过服务端验收
+
+代码变化：无（本轮仅部署与验证；仓库代码即第一轮提交 `30f4f5a`）。
+
+主控部署（36.138.125.17，ecs-02826072，只做加法，未动既有 collector 容器/任务/代理）：
+
+- 仓库快进：`git bundle create` c0ae038..30f4f5a → scp → 36 `/opt/MyResearcher-DataCollector`
+  `git pull --ff-only /tmp/waygate-r2.bundle main`，快进成功，工作区干净。
+  （GitHub push 当时因本机网络失败，bundle 是既有 Mac 流程的同款替代；后续仍需 push 归档。）
+- 依赖：`apt-get update && apt-get install -y python3.12-venv`（阿里云镜像索引过期导致先 404）；
+  `python3 -m venv apps/waygate/.venv` + 华为云 pip 镜像装 `requirements-dev.txt`。
+  36 上 `check_project.py` 通过、`pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py`
+  **38 passed in 0.70s**、系统 python3 可 `import yaml`。
+- 账户/目录/凭据（均 0600，waygate:waygate）：新建系统用户 `waygate`（home /var/lib/waygate，
+  nologin）；`/etc/waygate/config.json`；`/etc/waygate/console.token`（复制自
+  `apps/http_backfill/data/console.token`，令牌轮换需同步更新副本）；
+  `/etc/waygate/keys/local`（既有 `testsg8100.pem` 的副本，用于 hub root@127.0.0.1，
+  未在 root authorized_keys 增加新条目）；`/var/lib/waygate/.ssh/known_hosts` 由
+  `/etc/ssh/ssh_host_ed25519_key.pub` 生成，并与 `ssh-keyscan -t ed25519 127.0.0.1` 实扫比对一致后才安装。
+- 配置要点：`listen 127.0.0.1:8791`；`collector_url http://127.0.0.1:8790`（本机 Docker 控制台）；
+  fleet 仅 `local` 节点，故 `ssh` 映射只有 `local` 键；`push.enabled=false`；
+  **`public_url` 为占位 `https://waygate.example.invalid/waygate`，待用户提供真实域名后更新并配 nginx**，
+  当前手机不可达是预期状态，不是缺陷。
+- systemd：`install -m 644 deploy/waygate.service` → `systemctl enable --now waygate`，active。
+
+服务端验收（全部真实 curl 于 36 本机执行；未创建验证会话，未触发任何节点控制/来源请求）：
+
+- `/health` → `{"ok": true}`；`/v1/inbox` 无令牌 → 401；带令牌 → items 1（当前 002648 真实阻断）、
+  nodes `local/online/blocked`、`poll_error` 空。
+- 一次性控制台入口：`POST /v1/console-ticket`（需 JSON body `{}`）→ `GET /console/?ticket=…`
+  → 302 至 `/console/` 并签发 `waygate_console` cookie；ticket 二次使用 → 401。
+- 经 hub 代理的现有 H5：`GET /console/` 返回原控制台首页；`/console/app.js` 200（173537B）、
+  `/console/styles.css` 200（35207B）；`/console/api/fleet`、`/console/api/status` 200（Bearer 由 hub 代持）。
+- `/v1/sessions/<不存在>/relay` → 409（路由存在且拒绝非法会话，不是 404）。
+- `systemctl restart waygate` 后 health/inbox 正常，待办经 SQLite 持久保留；journal 无错误。
+
+未验证事项：未创建真实验证会话（会暂停兄弟股票，属真机验收第 5/6 步，须由手机端触发、用户人工完成）；
+relay 数据面、ArkWeb、Push Kit（enabled=false，无华为凭据）、nginx HTTPS（无域名）均未开始；
+GitHub push 本轮仍失败（本机直连与系统代理均不通），提交先在本地与 36 bundle 归档。
+
+下一步：用户提供 DevEco Studio 6.x（华为账号登录下载）与主控 HTTPS 域名；随后真机编译/签名/安装与
+/waygate/ nginx 接入，进入 runs.md 验收表第 2 步之后各项。
