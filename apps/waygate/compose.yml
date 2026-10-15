@@ -1,0 +1,24 @@
+services:
+  waygate:
+    build:
+      context: ../..
+      dockerfile: apps/waygate/deploy/Dockerfile
+      network: host
+      args:
+        BASE_IMAGE: ${WAYGATE_BASE_IMAGE:-python:3.12-slim}
+        DEBIAN_MIRROR: ${WAYGATE_DEBIAN_MIRROR:-https://mirrors.aliyun.com}
+        PIP_INDEX_URL: ${WAYGATE_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./.runtime/config:/config:ro
+      - ./.runtime/data:/data
+      - ${WAYGATE_COLLECTOR_DATA:?Run deploy/start.sh first}:/collector-data:ro
+      - ${WAYGATE_SSH_DIR:?Run deploy/start.sh first}:/root/.ssh:ro
+    command: ["python", "-m", "apps.waygate.hub.service", "--config", "/config/config.json"]
+    stop_grace_period: 70s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; c=json.load(open('/config/config.json')); urllib.request.urlopen('http://127.0.0.1:'+str(c['port'])+'/health',timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

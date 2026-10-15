@@ -20,12 +20,12 @@ Live source probe/resume is only from the operator's explicit app confirmation.
 
 Windows handoff does not authorize upgrading the existing 36/43 collectors,
 changing their tasks, switching their proxy exits, or publishing SSH credentials.
-On 2026-10-15 the user explicitly said not to deploy yet and that they have a
-dedicated domain. The Windows agent had already deployed the internal hub on 36;
-read-only checks confirmed active/enabled on 127.0.0.1:8791, with a placeholder
-public_url and no 80/443 listener. Keep that existing service as-is, do not stop
-or redeploy it, and defer DNS, certificate, nginx or other publication until the
-user supplies the domain/deployment arrangement and explicitly asks to proceed.
-The Linux instructions in `runs.md` are reference only during this hold. Offline development and Windows builds
-may continue. When authorized later, preserve the existing console and collector
-configuration and reuse its fleet registration.
+On 2026-10-15 the user initially held deployment, then explicitly assigned the
+server side to this agent and requested a startup command for the existing main
+console at https://testapi.zuzurent.com.cn/collector (fzz-002). That latest request
+authorizes the server integration in deploy/start.sh, including checked nginx
+routing, while preserving collector containers/tasks and registry. App changes
+and device acceptance remain with the other environment. The Windows agent's
+internal systemd hub on 36 is a separate deployment: leave it as-is; it is not
+automatically the domain's main console. Do not represent a delivered script as
+an executed remote deployment. Keep runs.md current and push referenced changes.

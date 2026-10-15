@@ -49,3 +49,15 @@ focused offline tests, one native Linux systemd example and nginx location;
 private configuration example; Windows build/check script; API/architecture and
 test handoff in `runs.md`. All public referenced project files are committed.
 Runtime DBs, signing material, tokens and actual node configuration stay ignored.
+
+## 2026-10-15: existing main-console startup
+
+The user authorizes server implementation and requests one startup command on
+the existing Linux Docker main console. Add a script that discovers the running
+collector's published port and token mount, starts only a Waygate container,
+and adds its /v1/, /console/ and /health routes under the supplied existing HTTPS
+console URL. Preserve the original collector location, container, tasks and
+registry. Validate nginx before reload, back up modified files, restore on
+failure, and verify the public authenticated inbox. Do not claim remote startup
+from local checks. Reuse existing server SSH credentials when available; report
+missing SSH configuration separately from successful app/H5 connectivity.

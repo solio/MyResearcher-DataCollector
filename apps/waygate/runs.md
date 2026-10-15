@@ -4,17 +4,51 @@
 Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataCollector`，
 开发目录 `apps/waygate`，分支 `main`。不需要读取原会话。
 
-## 当前部署约束：等待用户的专属域名安排
+## 当前服务端入口：现有 collector 域名，一条命令启动
 
-2026-10-15 用户明确要求：没有部署就先不要部署，用户已有专属域名。
-同步另一环境的新提交后确认：Windows agent 已在 36 部署 Waygate 内部服务。
-本轮通过 SSH 只读复核：waygate.service 为 active/enabled，监听 127.0.0.1:8791，
-/health 返回 {"ok":true}；public_url 仍为 https://waygate.example.invalid/waygate，
-未发现 80/443 监听。此前仅按 Mac 旧记录判断“未部署”不准确，以本节为准。
-保留已有内部服务，不停机、不重新部署；下文 Linux 步骤仅供参考，暂不执行
-DNS、证书或 nginx 发布，也不更新 36/43 采集服务。等用户确定专属域名和
-部署位置并明确继续后再执行。
-Windows 工程编译、离线检查和代码修复可以继续；需要线上服务的联调留待部署后。
+2026-10-15 最新指令覆盖此前的部署暂缓：用户明确由本 agent 负责服务端，
+要求给现有主控 `fzz-002` 一条启动命令，App 继续由另一环境负责。
+主控地址已确定为 `https://testapi.zuzurent.com.cn/collector`，仓库在
+`/usr/local/src/MyResearcher-DataCollector`。在该主控以 root 执行：
+
+```bash
+cd /usr/local/src/MyResearcher-DataCollector && git pull && bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector
+```
+
+后续升级同一条命令。App 使用上述地址和原 collector 的 `console.token`。
+不在命令行填写 token；脚本从正在运行的 collector 的真实 `/data` 挂载读取。
+本轮交付的是启动入口，尚未在 fzz-002 执行；不能据离线检查宣称已上线。
+
+脚本 [deploy/start.sh](deploy/start.sh) → [deploy/start.py](deploy/start.py) 的行为：
+
+- 核对本机与公网 `/api/status` 的 instance_id 一致、现有 token 有效，以及唯一匹配的
+  HTTPS nginx server。发现多个 collector 时用 `--collector-container 容器名` 明确选择。
+- 用 [compose.yml](compose.yml) / [deploy/Dockerfile](deploy/Dockerfile) 构建 Waygate，
+  基于已在运行的 collector 镜像，复用 Python；构建网络使用宿主机，apt/pip 默认阿里云镜像，
+  SSH/依赖层可缓存。可用 WAYGATE_DEBIAN_MIRROR / WAYGATE_PIP_INDEX_URL 覆盖镜像源。
+  [Dockerfile.dockerignore](deploy/Dockerfile.dockerignore) 排除采集数据、配置、SSH key 和 token。
+- 仅启动项目名为 `waygate` 的附属容器；使用 Linux host network、监听 loopback，
+  8791 被占用时首次部署选 8792–8810。collector 容器继续运行，不改任务、代理或数据。
+- [nginx_routes.py](deploy/nginx_routes.py) 在原 HTTPS server 内加入三个更具体的路由：
+  `/collector/v1/`、`/collector/console/`、`/collector/health`。保留原 `/collector/`、
+  `/labeler/` 和其他路由。先备份、`nginx -t` 再 reload，检查公网 inbox 和原 collector；
+  失败恢复原配置，更新失败时尝试恢复旧 Waygate 镜像/配置。首次启动失败会停止新容器。
+- 实际配置、数据、nginx 备份保存在 `apps/waygate/.runtime/`（忽略，不提交）。
+  `.runtime/config/config.json` 可保存已有 SSH/推送设置，重复启动会保留这些设置。
+- 验证通道默认复用执行用户的 `~/.ssh`（只读挂载）；`--ssh-dir` 可指定其他目录。
+  根据已有 fleet 初始化 SSH host，默认 root:22，已有映射不覆盖。凭据与 host key
+  必须已能正常登录目标节点；不同用户/端口/私钥在 config.json 的 ssh 项配置，容器内
+  key 路径为 `/root/.ssh/...`。主控 `local` 的 SSH 指向主控自身，不是 36。
+  未准备 SSH 的节点可以看状态/使用原 H5，但不能声称其人工验证通道已可用。
+- 不创建验证码会话，不探测股吧、不恢复任何股票；Push Kit 保留已有配置，首次默认关闭。
+
+依赖：Linux root、Docker Compose、Python 3.6+、宿主机 nginx、现有可访问的 HTTPS 主控。
+nginx 不在 PATH 时加 `--nginx /实际路径/nginx`；nginx 位于另一个容器或域名在别的机器
+时本命令会停止，不能把其他机器的配置猜作本机。SSH/证书私密配置不会自动生成或公开。
+
+36 上 Windows agent 部署的 systemd hub 是另一个实例：此前只读核实为 active/enabled，
+127.0.0.1:8791、health ok、占位 public_url、无 80/443 监听。本轮保持它原状，
+不会把该实例当成 fzz-002 的已有主控，亦不擅自更新 36/43 collector。
 
 当前架构是两个服务进程、一个手机入口：已有 `http_backfill` 主控负责节点注册、
 采集任务和采集数据；Waygate hub 读取该主控的 fleet，负责手机待办、推送和临时
@@ -26,7 +60,7 @@ Windows 工程编译、离线检查和代码修复可以继续；需要线上服
 
 ## 当前交付状态
 
-**Windows 已编译出未签名 HAP；36 已运行内部 hub，域名/HTTPS 暂缓，签名与真机验收待完成。**
+**Windows 已编译出未签名 HAP；现有主控的一条启动命令已提供，待 fzz-002 执行；签名与真机验收待完成。**
 
 这次用户授权：在这个仓库开发鸿蒙 app；另一环境部署验证，也可继续修改代码；
 用本文件传递工作；本文件及引用的项目代码/文档自动 commit、push。
@@ -107,7 +141,7 @@ Mac 首次交付时未部署；随后 Windows agent 已部署 36 的内部 hub�
 
 ## Linux 主控：部署一次，所有手机复用
 
-**暂不执行：遵守本文件开头的专属域名部署约束。** 以下是待选定环境后的参考步骤。
+**现有 Docker 主控优先使用本文件开头的一条启动命令。** 以下仅供单独选择原生 systemd 部署时参考；不要在同一主控重复运行两套 hub。
 
 选择现在管理节点的那台 H5 主控，保留其原有 `http_backfill` 服务和节点注册。
 附属服务监听 `127.0.0.1:8791`；nginx 在已有 HTTPS 域名新增 `/waygate/`。
@@ -250,7 +284,7 @@ sudo journalctl -u waygate -n 60 --no-pager
   已用 IDE 内置 hvigor 编译成功，产出未签名 HAP。）
 - [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（IDE/SDK/构建命令已填，设备与安装待真机。）
 - [x] 36 内部附属服务和 local SSH 映射已部署并完成服务端检查（第二轮）。
-- [ ] 等用户确定专属域名/部署位置并明确继续后，再接入 HTTPS/WSS；暂不发布。
+- [ ] 在 fzz-002 执行本文件开头的启动命令，记录公网 inbox 检查、原 H5 与 WSS 结果。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
 - [ ] 配置华为 Push Kit 权益、签名和服务账号，实测锁屏推送。
 - [ ] 用户完成一次实际验证码；核对单次 probe 与本股继续、其他个股状态不变。
@@ -451,3 +485,25 @@ http://127.0.0.1:8790，public_url 仍为 example.invalid 占位；未发现 80/
 合并保留另一环境的 Windows SQLite 修复、ArkTS 编译修复和完整交接记录，
 更新本文开头、待办与 AGENTS.md：已有内部服务保持现状，域名/HTTPS 发布等用户安排。
 本轮只改文档并执行 git diff --check；未重新运行代码测试或真机验收。
+
+### 2026-10-15 / Mac / 主控 Docker 启动入口
+
+用户要求服务端由本 agent 负责、提供启动命令，App 由其他环境负责。
+新增上述 Compose/Dockerfile/start.sh/start.py/nginx_routes.py，仅修改服务端和交接文件。
+针对路由保留、幂等、并行编辑保护、nginx 失败/公网检查失败回退，以及真实 nginx 向两个
+loopback 后端转发进行了验证；未在 fzz-002 执行 Docker 构建或部署。
+
+本机执行：
+
+```text
+python -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py
+45 passed（其中 7 项部署验证含真实 nginx 路由；原有 38 项通过）
+docker compose -p waygate -f apps/waygate/compose.yml config --quiet
+bash -n apps/waygate/deploy/start.sh
+python apps/waygate/deploy/start.py --help
+git diff --check
+```
+
+Compose 校验使用临时非秘密路径变量；没有启动/重启本机或远端采集容器。
+下一步是 fzz-002 执行命令，成功后手机继续填原 `/collector` 地址；SSH 通道和推送
+分别需要主控现有 SSH 凭据及华为配置，不能以接口可登录替代这两项验收。

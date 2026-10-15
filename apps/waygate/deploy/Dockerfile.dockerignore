@@ -1,0 +1,11 @@
+**
+!apps/
+!apps/waygate/
+!apps/waygate/requirements.txt
+!apps/waygate/hub/
+!apps/waygate/hub/*.py
+!scripts/
+!scripts/ops/
+!scripts/ops/verify_http_backfill.py
+**/__pycache__/
+**/*.pyc
