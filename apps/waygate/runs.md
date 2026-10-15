@@ -824,3 +824,46 @@ ps -ef → com.myresearcher.waygate 常驻（PID 48739）
 
 提交卫生：`build-profile.json5` 临时写入本地签名后已 `git checkout` 还原（0 处口令残留）；
 未改任何服务器（服务端由另一环境在 fzz-002 负责）。
+
+### 2026-10-15 / Windows / 第八轮：手机直连 SSH 开工——原生模块里程碑 1
+
+按 [DIRECT_SSH.md](DIRECT_SSH.md) 分派的 App 侧工作开工。**现状核实（证据）**：App 仍走旧路径——
+[Index.ets:269](harmony/entry/src/main/ets/pages/Index.ets) 调
+`POST /v1/incidents/{id}/sessions`，[LocalProxy.ets:84](harmony/entry/src/main/ets/services/LocalProxy.ets)
+连 `/v1/sessions/{sid}/relay`；hub `service.py` 新旧接口并存
+（`/v1/incidents/{incident}/sessions` 与新增 `/v1/incidents/{incident}/verification`）。
+因此手机上点“现在处理”仍是 **fzz-002 的 hub 在 SSH worker**，必然报同一条指纹错；
+设计变更目前只落在服务端，App 侧（手机直连 SSH）尚未实现。
+
+依赖选型（本机实测，非推测）：
+
+- **ohpm 注册表没有任何 SSH 库**：`ssh2`/`@ohos/ssh2`/`openssh`/`libssh2`/`paramiko`/`node-ssh`
+  等 `ohpm info` 全部 404，注册表搜索接口返回空。
+- ArkTS SDK 无 SSH API；`cryptoFramework` 提供 AES/RSA/ECDH 等。
+- **有 NDK**（`native/build/cmake/ohos.toolchain.cmake`），但 sysroot **无 libssh2、无 OpenSSL**
+  （仅 `libnet_ssl`/`libohcrypto`/`libhuks_external_crypto`）→ 需自带并交叉编译。
+- 结论：走 **NDK 原生模块 + 自带 libssh2（配 mbedTLS）**，不用空的 TS 模拟冒充 SSH。
+
+里程碑 1（本轮已验证）：工程成功加入原生模块并可编译：
+
+- 新增 `entry/src/main/cpp/CMakeLists.txt`、`entry/src/main/cpp/napi_init.cpp`（仅 `ping()` 探针）、
+  `entry/src/main/cpp/types/libwaygate_ssh/{index.d.ts,oh-package.json5}`
+- `entry/build-profile.json5` 增加 `externalNativeOptions`（`abiFilters: arm64-v8a`）；
+  `entry/oh-package.json5` 增加本地 `file:` 依赖
+- `hvigor --mode module ... assembleHap --no-daemon` → **BUILD SUCCESSFUL**，
+  `BuildNativeWithCmake` 4.9s，产出 `libwaygate_ssh.so`（16992 B，strip 后 5808 B 进包）
+- `.cxx/` 已加入 `apps/waygate/.gitignore`
+
+后续里程碑（**未开始，不声称已完成**）：
+
+- M2：引入 libssh2 + mbedTLS 并交叉编译；NAPI 暴露 `connect` / `auth` / `hostkey`(TOFU 核对) /
+  `exec`(JSON stdin + EOF + stdout + exit status) / `direct-tcpip` / `cancel`。
+- M3：按 DIRECT_SSH.md 重接 [Index.ets](harmony/entry/src/main/ets/pages/Index.ets) `verify()`（改用描述接口
+  `GET /v1/incidents/{id}/verification` + 手机 SSH 编排 + dispatching 持久标记）、
+  [LocalProxy.ets](harmony/entry/src/main/ets/services/LocalProxy.ets)（本地 TCP → SSH direct-tcpip 到
+  `route.host:route.port`，替换 hub WSS）、
+  [SessionRuntime.ets](harmony/entry/src/main/ets/services/SessionRuntime.ets)（只清理手机自有 SSH/代理资源）；
+  凭据按 `node_id` 存 Asset Store。
+- M4：真机对着 tokenseller 打通 `audit → prepare → exit → 转发 → 人工验证 → probe → resume`。
+
+本轮未改服务端；旧路径的 known_hosts 补丁不再是本任务的答案。

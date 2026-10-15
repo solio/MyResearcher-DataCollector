@@ -11,6 +11,7 @@ local.properties
 .hvigor/
 oh_modules/
 node_modules/
+.cxx/
 *.hap
 *.app
 signing/
