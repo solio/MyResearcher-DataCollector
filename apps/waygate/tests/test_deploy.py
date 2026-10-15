@@ -42,19 +42,35 @@ class DeploymentTests(unittest.TestCase):
                     patch.object(start.sys, 'argv', ['start.py', '--public-url', ADDRESS]), \
                     patch.object(start, 'collector_info', return_value=(app, 'test-token-only', 'http://127.0.0.1:8790', 'local-collector')), \
                     patch.object(start, 'read_json', return_value={'nodes': [{'local': True}]}) as read, \
-                    patch.object(start, 'wait_inbox', return_value={'nodes': [], 'items': []}) as ready, \
+                    patch.object(start, 'wait_inbox', return_value={'nodes': [], 'items': [], 'last_poll': 0,
+                                 'error': 'collector /api/fleet 返回 HTTP 401'}) as ready, \
                     patch.object(start, 'command', side_effect=docker_only):
                 start.main()
             read.assert_called_once_with('http://127.0.0.1:8790/api/fleet', 'test-token-only')
             ready.assert_called_once_with('http://127.0.0.1:8791', 'test-token-only')
             self.assertTrue(any(args[-1:] == ['build'] for args in calls))
             self.assertTrue(any(args[-4:] == ['up', '-d', '--no-build', '--force-recreate'] for args in calls))
+            self.assertFalse(any('stop' in args for args in calls))
             self.assertFalse((app / '.runtime/nginx').exists())
             config = json.loads((app / '.runtime/config/config.json').read_text())
             self.assertEqual(config['port'], 8791)
             self.assertEqual(config['public_url'], ADDRESS)
             self.assertEqual(config['collector_token_file'], '/collector-data/console.token')
             self.assertNotIn('test-token-only', (app / '.runtime/config/config.json').read_text())
+
+    def test_poll_failure_retains_running_inbox_and_concrete_error(self):
+        data = {'nodes': [], 'items': [], 'last_poll': 0, 'error': 'collector /api/fleet 返回 HTTP 401'}
+        with patch.object(start, 'read_json', return_value=data), \
+                patch.object(start.time, 'monotonic', side_effect=[0, 0, 2]), \
+                patch.object(start.time, 'sleep'):
+            self.assertEqual(start.wait_inbox('http://127.0.0.1:8791', 'test-only', timeout=1), data)
+
+    def test_unreachable_inbox_still_fails_startup(self):
+        with patch.object(start, 'read_json', side_effect=RuntimeError('接口检查 HTTP 401')), \
+                patch.object(start.time, 'monotonic', side_effect=[0, 0, 2]), \
+                patch.object(start.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 401'):
+                start.wait_inbox('http://127.0.0.1:8791', 'test-only', timeout=1)
 
     @unittest.skipUnless(shutil.which('nginx'), 'nginx is required for the real routing check')
     def test_real_nginx_preserves_collector_and_proxies_hub_paths(self):

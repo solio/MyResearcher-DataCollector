@@ -19,6 +19,8 @@ git pull && bash apps/waygate/deploy/start.sh --public-url https://你的域名/
 已使用旧 `.runtime/nginx/waygate-locations.conf` include 的服务器，替换为上述路径；
 其他 URL 前缀由启动脚本在 Docker 操作前生成对应片段。
 完整命令和凭据说明见 [runs.md](runs.md)。
+启动输出分别显示接口就绪和 collector 同步结果。若接口已就绪但同步失败，
+会显示具体原因并保留容器运行，后台每轮间隔 10 秒重试；失败原因也写入 Docker 日志。
 
 **接手入口：[runs.md](runs.md)**。包含 Windows/DevEco 环境、Linux 主控部署、
 Push Kit 开通、验证顺序、已验证和待验证内容，以及提交约定。

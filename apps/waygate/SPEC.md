@@ -69,3 +69,12 @@ health. The Docker launcher uses a fixed loopback port 8791 to match that file;
 it must not silently select a different port. Other URL prefixes may still use
 a generated snippet, written before Docker operations. Do not ask operators to
 include a file that only exists after a successful backend startup.
+
+Collector fleet responses can arrive over multiple network reads. Read through
+EOF with the existing size/timeout bounds before JSON decoding and reconciliation;
+publish last_poll only after the snapshot is applied successfully. Preserve the
+previous snapshot on a failed read. Expose the concrete failure in the inbox,
+startup output and change-triggered logs without response bodies or credentials.
+A reachable authenticated inbox with a collector polling error is a degraded
+running service, not a reason to stop/rollback the container. Unreachable or
+unauthenticated Waygate startup still fails; do not call degraded polling synced.

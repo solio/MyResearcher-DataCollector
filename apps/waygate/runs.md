@@ -17,7 +17,9 @@ cd /usr/local/src/MyResearcher-DataCollector && git pull && bash apps/waygate/de
 命令只负责 Docker：读取本机运行中的 collector 端口和 token，构建/启动 Waygate，
 检查本机 inbox，输出监听端口。公网 URL 只作为 app 链接配置，不做公网访问前置检查。
 不再要求 nginx 二进制、server_name、443 监听或主配置路径。原 collector 容器继续运行。
-看到“Waygate 容器已启动，本机接口正常”只代表容器就绪，不表示公网已经接通。
+看到“Waygate 容器已启动，本机接口可访问”只代表容器就绪，不表示公网已经接通。
+另行显示“collector 状态已同步”或具体同步错误。接口已就绪但同步失败时保留容器运行，
+后台每轮间隔 10 秒重试，失败原因变化时写入 Docker 日志；不再因同步暂未完成而停止容器。
 
 首次公网接入由操作者在原 `/collector/` 所在的 nginx `server {}` 内加一行：
 
@@ -558,3 +560,28 @@ Waygate 以应用配置。其他 URL 前缀仍可生成片段，但写入移到 
 其中实际 nginx 加载仓库中的 include 做语法检查，并用隔离后端验证原 collector
 H5/API 与 Waygate 的三条路径、Authorization 转发。启动流程模拟确认固定 8791，
 Docker 操作前配置已存在，不创建默认 runtime include。未执行远端部署或来源请求。
+
+### 2026-10-15 / Mac / 修复 collector 状态分段读取及启动错误丢失
+
+用户反馈启动只显示“Waygate 尚未成功读取 collector 状态”。代码确认这条文案会
+覆盖 `/v1/inbox.error` 的具体失败，且随后回滚/停止 Waygate。没有远端原始异常，
+不能据此断言 fzz-002 当次失败属于哪一种连接/解析错误。
+
+已在实际 loopback HTTP 上复现一个明确读取缺陷：`response.content.read(n)`
+只保证返回当前可用的数据，完整合法的 fleet JSON 分两批传输时，旧实现只读到
+首批 1024 字节便解析，报 JSONDecodeError。改为有总量上限的分块读取，读到 EOF
+再解析并写入待办；16 MiB 与 25 秒限制保留。仅成功应用快照才更新 nodes/last_poll，
+读取失败保留已有状态。HTTP、连接拒绝、超时、传输中断、JSON/格式错误各有具体信息，
+不输出响应正文或凭据。
+
+启动检查保留实际 inbox.error。认证接口可达但同步暂时失败时，显示原因和本机
+collector 地址，保留运行让后台继续轮询；接口不可达、认证失败或格式错误仍视为
+Waygate 未就绪。后台同步失败写入 Docker 日志，同样错误不每轮重复刷屏。
+
+验证：先在旧代码复现分段响应失败，再修复后通过；包含 Content-Length 和 chunked
+两种传输、传输截断、非法 JSON、缺少 nodes、响应超限、失败不清空待办，以及同步
+失败不停止容器/接口不可达仍失败。
+`python -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py`：
+44 passed。启动脚本 Python 3.6 语法与 git diff --check 通过。
+本轮不改 nginx/App/采集任务；未登录 fzz-002，也未触发任何来源请求。
+服务器拉取后重跑顶部同一条启动命令即可；若仍有故障，新版会保留并显示具体原因。

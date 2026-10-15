@@ -68,15 +68,22 @@ def collector_info(container=None):
 
 def wait_inbox(base, token, timeout=45):
     deadline, error = time.monotonic() + timeout, ''
+    inbox = None
     while time.monotonic() < deadline:
+        inbox = None
         try:
             data = read_json(base + '/v1/inbox', token)
-            if data.get('last_poll') and not data.get('error') and isinstance(data.get('nodes'), list):
+            if not isinstance(data, dict) or not isinstance(data.get('nodes'), list) or not isinstance(data.get('items'), list):
+                raise RuntimeError('Waygate /v1/inbox 返回格式不正确')
+            inbox = data
+            if data.get('last_poll') and not data.get('error'):
                 return data
-            error = 'Waygate 尚未成功读取 collector 状态'
+            error = str(data.get('error') or 'collector 首次状态同步尚未完成').replace(token, '[redacted]')[:400]
         except RuntimeError as exc:
             error = str(exc)
         time.sleep(1)
+    if inbox is not None:
+        return dict(inbox, error=error)
     raise RuntimeError(error)
 
 
@@ -166,7 +173,13 @@ def main():
     except BaseException:
         restore_service()
         raise
-    print('\nWaygate 容器已启动，本机接口正常。')
+    print('\nWaygate 容器已启动，本机接口可访问。')
+    if inbox.get('error') or not inbox.get('last_poll'):
+        print('collector 状态尚未同步：' + str(inbox.get('error') or '首次同步尚未完成'))
+        print('读取地址：' + collector_url + '/api/fleet')
+        print('服务保留运行，后台每 10 秒重试同步；具体失败也会写入 Docker 日志。')
+    else:
+        print('collector 状态已同步。')
     print('本机监听：http://127.0.0.1:' + str(config['port']))
     print('App 地址：' + address)
     print('Token：继续使用原 collector 的 console.token（不输出、不复制）。')

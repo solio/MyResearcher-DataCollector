@@ -7,12 +7,13 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
-from aiohttp import WSMsgType
+from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from apps.waygate.hub.collector import allowed_connect, check_target
-from apps.waygate.hub.service import HUB_KEY, create_app
+from apps.waygate.hub.service import HUB_KEY, Waygate, create_app
 from apps.waygate.hub.store import Store, notification_payload
 
 
@@ -197,6 +198,69 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
     async def ready(self, sid):
         code, value = await self.post("/v1/sessions/" + sid + "/ready", {"browser_ip": "203.0.113.9"})
         self.assertEqual(code, 200, value)
+
+    async def test_fleet_reads_entire_response_before_parsing(self):
+        expected = fleet()
+        expected[0]["status"]["padding"] = "分批到达的状态" * 30000
+        body = json.dumps({"nodes": expected}, ensure_ascii=False).encode()
+        has_length = True
+
+        async def serve(request):
+            self.assertEqual(request.headers.get("Authorization"), self.headers["Authorization"])
+            headers = {"Content-Length": str(len(body))} if has_length else {}
+            response = web.StreamResponse(headers=headers)
+            await response.prepare(request)
+            await response.write(body[:1024])
+            await asyncio.sleep(.03)
+            await response.write(body[1024:])
+            await response.write_eof()
+            return response
+
+        source = web.Application()
+        source.router.add_get('/api/fleet', serve)
+        async with TestServer(source) as server:
+            self.hub.config['collector_url'] = str(server.make_url('/')).rstrip('/')
+            for has_length in (True, False):
+                with self.subTest(content_length=has_length):
+                    await Waygate.fleet(self.hub)
+                    self.assertEqual(self.hub.nodes, expected)
+                    self.assertGreater(self.hub.last_poll, 0)
+                    self.assertEqual(self.hub.poll_error, '')
+        self.assertEqual(self.fake.calls, [])
+
+    async def test_fleet_failures_preserve_snapshot_and_report_reason(self):
+        case = {}
+        async def serve(request):
+            if case.get('truncated'):
+                response = web.StreamResponse(headers={'Content-Length': '1000'})
+                await response.prepare(request)
+                await response.write(b'{"nodes":[')
+                request.transport.close()
+                return response
+            return web.Response(status=case.get('status', 200), body=case['body'])
+
+        source = web.Application()
+        source.router.add_get('/api/fleet', serve)
+        previous = copy.deepcopy(self.hub.nodes)
+        self.hub.last_poll = 123
+        cases = [
+            {'status': 401, 'body': b'private-response-secret', 'error': 'HTTP 401'},
+            {'body': b'private-response-secret', 'error': '无效 JSON'},
+            {'body': b'{"nodes":{}}', 'error': '缺少 nodes'},
+            {'truncated': True, 'error': '响应传输中断'},
+            {'body': b'x' * 129, 'limit': 128, 'error': '超过 16 MiB'},
+        ]
+        async with TestServer(source) as server:
+            self.hub.config['collector_url'] = str(server.make_url('/')).rstrip('/')
+            for case in cases:
+                with self.subTest(error=case['error']), \
+                        patch('apps.waygate.hub.service.MAX_FLEET_BYTES', case.get('limit', 16 * 1024 * 1024)):
+                    with self.assertRaisesRegex(ValueError, case['error']) as failure:
+                        await Waygate.fleet(self.hub)
+                    self.assertNotIn('private-response-secret', str(failure.exception))
+                    self.assertEqual(self.hub.nodes, previous)
+                    self.assertEqual(self.hub.last_poll, 123)
+                    self.assertEqual(len(self.hub.store.inbox(self.hub.nodes)), 1)
 
     async def test_auth_poll_does_not_contact_source_or_ssh(self):
         self.assertEqual((await self.client.get("/v1/inbox")).status, 401)

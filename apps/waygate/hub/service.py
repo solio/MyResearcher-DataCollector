@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import errno
 import hmac
 import ipaddress
 import json
@@ -14,11 +15,13 @@ import secrets
 import time
 from urllib.parse import urlsplit
 
-from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+from aiohttp import ClientConnectorError, ClientPayloadError, ClientSession, ClientTimeout, WSMsgType, web
 
 from .collector import Collector, allowed_connect, check_target, connection
 from .store import Store, fresh, notification_payload
 from .push import TokenProvider
+
+MAX_FLEET_BYTES = 16 * 1024 * 1024
 
 
 class Waygate:
@@ -41,16 +44,36 @@ class Waygate:
         return task
 
     async def fleet(self):
-        async with self.http.get(self.config["collector_url"].rstrip("/") + "/api/fleet",
-                                 headers={"Authorization": "Bearer " + self.token}, allow_redirects=False) as response:
-            if response.status != 200:
-                raise ValueError("读取主控状态失败：HTTP " + str(response.status))
-            body = await response.content.read(16 * 1024 * 1024 + 1)
-            if len(body) > 16 * 1024 * 1024:
-                raise ValueError("主控状态响应过大")
-            self.nodes = json.loads(body)["nodes"]
+        body = bytearray()
+        try:
+            async with self.http.get(self.config["collector_url"].rstrip("/") + "/api/fleet",
+                                     headers={"Authorization": "Bearer " + self.token}, allow_redirects=False) as response:
+                if response.status != 200:
+                    raise ValueError("collector /api/fleet 返回 HTTP " + str(response.status))
+                # StreamReader.read(n) may return just the first network fragment.
+                # Wait for EOF, retaining the response-size and total-time limits.
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    if len(body) + len(chunk) > MAX_FLEET_BYTES:
+                        raise ValueError("collector /api/fleet 响应超过 16 MiB 上限")
+                    body.extend(chunk)
+        except ClientConnectorError as exc:
+            reason = "连接被拒绝" if exc.os_error.errno == errno.ECONNREFUSED else "无法建立连接"
+            raise ValueError("collector /api/fleet " + reason + "（errno=" + str(exc.os_error.errno) + "）") from None
+        except ClientPayloadError:
+            raise ValueError("collector /api/fleet 响应传输中断（已收到 %d 字节）" % len(body)) from None
+        except asyncio.TimeoutError:
+            raise ValueError("collector /api/fleet 请求超时（25 秒，已收到 %d 字节）" % len(body)) from None
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ValueError("collector /api/fleet 返回无效 JSON（已读取 %d 字节，错误位置 %d）" % (len(body), exc.pos)) from None
+        except UnicodeError:
+            raise ValueError("collector /api/fleet 响应字符编码无效（已读取 %d 字节）" % len(body)) from None
+        if not isinstance(payload, dict) or not isinstance(payload.get("nodes"), list):
+            raise ValueError("collector /api/fleet 响应缺少 nodes 数组")
+        self.store.reconcile(payload["nodes"])
+        self.nodes = payload["nodes"]
         self.last_poll, self.poll_error = time.time(), ""
-        self.store.reconcile(self.nodes)
 
     async def create_session(self, ident):
         await self.fleet()
@@ -259,7 +282,10 @@ class Waygate:
             try:
                 await self.fleet()
             except Exception as exc:
-                self.poll_error = safe_error(exc)
+                error = safe_error(exc)
+                if error != self.poll_error:
+                    logging.warning("Waygate 同步 collector 失败：%s", error)
+                self.poll_error = error
             await asyncio.sleep(10)
 
     async def reap(self):
