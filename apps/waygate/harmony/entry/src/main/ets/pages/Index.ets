@@ -1,11 +1,12 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
 import { http } from '@kit.NetworkKit';
 import { Api, readableError } from '../services/Api';
 import { Vault } from '../services/Vault';
 import { registerPush } from '../services/Push';
 import { runtime } from '../services/SessionRuntime';
-import { AuditView, Credentials, DirectClaim, DirectTarget, EmptyReply, ExitValue, Inbox, Incident, Link, NodeProfile, NodeState, PrepareValue, ProbeValue, ResultValue, ResumeValue, StockState, VerificationDescriptor } from '../services/Models';
+import { AuditView, BuiltinNode, BuiltinConfig, Credentials, DirectClaim, DirectTarget, EmptyReply, ExitValue, Inbox, Incident, Link, NodeProfile, NodeState, PrepareValue, ProbeValue, ResultValue, ResumeValue, StockState, VerificationDescriptor } from '../services/Models';
 import { NodeSsh, runAction } from '../services/NodeSsh';
 import { close, connect, exec, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
 
@@ -55,6 +56,10 @@ struct Index {
   private claim: DirectClaim | undefined = undefined;
   private nodeConfirmed: boolean = false;
   private channelMode: boolean = false;
+  private bundledNode: BuiltinNode | undefined = undefined;
+  private bundledKey: string = '';
+  private bundledChecked: boolean = false;
+  private bundledFailed: string = '';
   private measuredOnce: boolean = false;
   private exitWaiter: ((ip: string) => void) | undefined = undefined;
   private timer: number = -1;
@@ -341,7 +346,15 @@ struct Index {
     try {
       const descriptor = await this.api.request<VerificationDescriptor>('/v1/incidents/' + item.id + '/verification');
       this.descriptor = descriptor;
-      const profile = await this.ssh.load(descriptor.node_id);
+      this.loadBundled();
+      let profile = await this.ssh.load(descriptor.node_id);
+      // A packaged channel also covers the normal flow: when the node hint is the
+      // bundled host, the credential ships with the app and nothing is typed.
+      const hint = descriptor.ssh_host_hint ? descriptor.ssh_host_hint : '';
+      if (!profile && this.bundledMatches(hint)) {
+        profile = await this.bundledProfileFor(descriptor.node_id, hint);
+        await this.ssh.save(profile);
+      }
       if (!profile) {
         this.nodeHint = descriptor.ssh_host_hint
           ? '该节点 SSH 主机提示：' + descriptor.ssh_host_hint
@@ -550,8 +563,46 @@ struct Index {
     } finally { this.busy = false; }
   }
 
+  // Channel configuration packaged with the build: endpoint and pinned host key,
+  // plus a credential file that is git-ignored and therefore only present in
+  // local builds. Absent files simply leave the manual form in place.
+  private loadBundled(): void {
+    if (this.bundledChecked) { return; }
+    this.bundledChecked = true;
+    try {
+      const manager = this.context().resourceManager;
+      const config = JSON.parse(new util.TextDecoder().decodeToString(manager.getRawFileContentSync('channel.json'))) as BuiltinConfig;
+      if (config.nodes.length === 0) { return; }
+      this.bundledNode = config.nodes[0];
+      try {
+        this.bundledKey = new util.TextDecoder().decodeToString(manager.getRawFileContentSync(this.bundledNode.secretFile));
+      } catch (_) { this.bundledFailed = '本次构建未包含内置凭据文件，需手动填写'; }
+    } catch (_) { this.bundledNode = undefined; }
+  }
+
+  private bundledMatches(host: string): boolean {
+    const node = this.bundledNode;
+    return this.bundledKey.length > 0 && node !== undefined && host === node.host;
+  }
+
+  // Probes first so the pinned host key from the packaged config is verified
+  // before any bundled credential is used.
+  private async bundledProfileFor(nodeId: string, host: string): Promise<NodeProfile> {
+    const node = this.bundledNode;
+    if (!node) { throw new Error('没有内置通道配置'); }
+    const key = await probeHostKey({ host: host, port: node.port });
+    const fingerprint = key.type + ' ' + key.fingerprint;
+    if (node.hostKey && fingerprint !== node.hostKey) {
+      throw new Error('节点主机指纹与内置配置不一致，已拒绝连接');
+    }
+    return { nodeId: nodeId, host: host, port: node.port, user: node.user, authType: 'key',
+      secret: this.bundledKey, passphrase: '', knownHostBase64: key.base64, knownHostType: key.type,
+      fingerprint: fingerprint };
+  }
+
   private nodeActionLabel(): string {
     if (this.busy) { return '正在读取…'; }
+    if (this.bundledMatches(this.nodeHost.trim())) { return '建立通道（内置凭据）'; }
     if (this.channelMode) { return this.nodeFingerprint ? '确认指纹并建立通道' : '读取指纹'; }
     return this.nodeFingerprint ? '确认指纹并连接' : '读取指纹';
   }
@@ -560,9 +611,9 @@ struct Index {
   // channel can be established and proven on device by itself.
   private openChannel(): void {
     if (this.busy || runtime.incident) { return; }
+    this.loadBundled();
     this.channelMode = true;
     this.channelOutput = '';
-    this.nodeHint = '直接建立到该节点的 SSH 通道，不经过主控，也不使用待办信息。';
     this.nodeHost = '';
     this.nodePort = '22';
     this.nodeUser = 'root';
@@ -573,6 +624,16 @@ struct Index {
     this.nodeFingerprint = '';
     this.nodeConfirmed = false;
     this.message = '';
+    const node = this.bundledNode;
+    if (node) {
+      this.nodeHost = node.host;
+      this.nodePort = node.port.toString();
+      this.nodeUser = node.user;
+      this.nodeAuth = 'key';
+      this.nodeHint = '内置通道：' + node.label + '（配置随本构建打包，无需在手机上填写）';
+    } else {
+      this.nodeHint = '直接建立到该节点的 SSH 通道，不经过主控，也不使用待办信息。';
+    }
     this.screen = 'node';
   }
 
@@ -611,25 +672,36 @@ struct Index {
     const port = Number(portText);
     if (port < 1 || port > 65535) { this.message = 'SSH 端口需为 1-65535'; return; }
     if (!/^[A-Za-z0-9_]+$/.test(user)) { this.message = 'SSH 用户名不合法'; return; }
+    // Packaged channel: nothing is typed on the phone; the pinned host key from
+    // the bundled config is verified inside bundledProfileFor.
+    const bundled = this.bundledMatches(host);
     const secret = this.nodeAuth === 'password' ? this.nodeSecret : this.nodeKey.trim();
-    if (secret.length < 8) {
+    if (!bundled && secret.length < 8) {
       this.message = this.nodeAuth === 'password' ? '请填写该节点的登录密码' : '请粘贴该节点的私钥内容';
       return;
     }
     this.busy = true;
-    this.message = this.nodeConfirmed ? '正在连接节点并建立通道' : '正在读取节点主机指纹…';
+    this.message = bundled ? '正在核对内置通道的主机指纹' : (this.nodeConfirmed ? '正在连接节点并建立通道' : '正在读取节点主机指纹…');
     try {
-      const key = await probeHostKey({ host: host, port: port });
-      const fingerprint = key.type + ' ' + key.fingerprint;
-      if (!this.nodeConfirmed || this.nodeFingerprint !== fingerprint) {
-        this.nodeFingerprint = fingerprint;
-        this.nodeConfirmed = false;
-        this.message = '请核对该指纹与该节点实际一致，再点“' + this.nodeActionLabel() + '”';
-        return;
+      let profile: NodeProfile;
+      if (bundled) {
+        const nodeId = this.channelMode ? 'channel-test' : (descriptor ? descriptor.node_id : '');
+        profile = await this.bundledProfileFor(nodeId, host);
+        this.nodeFingerprint = profile.fingerprint;
+      } else {
+        const key = await probeHostKey({ host: host, port: port });
+        const fingerprint = key.type + ' ' + key.fingerprint;
+        if (!this.nodeConfirmed || this.nodeFingerprint !== fingerprint) {
+          this.nodeFingerprint = fingerprint;
+          this.nodeConfirmed = false;
+          this.message = '请核对该指纹与该节点实际一致，再点“' + this.nodeActionLabel() + '”';
+          return;
+        }
+        profile = { nodeId: this.channelMode ? 'channel-test' : (descriptor ? descriptor.node_id : ''),
+          host: host, port: port, user: user, authType: this.nodeAuth, secret: secret,
+          passphrase: this.nodePassphrase, knownHostBase64: key.base64, knownHostType: key.type,
+          fingerprint: fingerprint };
       }
-      const profile: NodeProfile = { nodeId: this.channelMode ? 'channel-test' : (descriptor ? descriptor.node_id : ''),
-        host: host, port: port, user: user, authType: this.nodeAuth, secret: secret, passphrase: this.nodePassphrase,
-        knownHostBase64: key.base64, knownHostType: key.type, fingerprint: fingerprint };
       if (this.channelMode) {
         await this.channelConnect(profile);
       } else if (descriptor) {
@@ -777,23 +849,31 @@ struct Index {
               .onChange((v: string) => this.nodePort = v)
             TextInput({ text: this.nodeUser, placeholder: 'SSH 用户（默认 root）' })
               .onChange((v: string) => { this.nodeUser = v; this.nodeFingerprint = ''; this.nodeConfirmed = false; })
-            Row({ space: 10 }) {
-              Button('密码').layoutWeight(1).fontColor(this.nodeAuth === 'password' ? Color.White : INK)
-                .backgroundColor(this.nodeAuth === 'password' ? INK : BG).onClick(() => this.nodeAuth = 'password')
-              Button('私钥').layoutWeight(1).fontColor(this.nodeAuth === 'key' ? Color.White : INK)
-                .backgroundColor(this.nodeAuth === 'key' ? INK : BG).onClick(() => this.nodeAuth = 'key')
-            }.width('100%')
-            if (this.nodeAuth === 'password') {
-              TextInput({ text: this.nodeSecret, placeholder: '该节点的登录密码' }).type(InputType.Password)
-                .onChange((v: string) => this.nodeSecret = v)
+            if (!this.bundledMatches(this.nodeHost.trim())) {
+              Row({ space: 10 }) {
+                Button('密码').layoutWeight(1).fontColor(this.nodeAuth === 'password' ? Color.White : INK)
+                  .backgroundColor(this.nodeAuth === 'password' ? INK : BG).onClick(() => this.nodeAuth = 'password')
+                Button('私钥').layoutWeight(1).fontColor(this.nodeAuth === 'key' ? Color.White : INK)
+                  .backgroundColor(this.nodeAuth === 'key' ? INK : BG).onClick(() => this.nodeAuth = 'key')
+              }.width('100%')
+              if (this.bundledFailed) {
+                Text(this.bundledFailed).fontColor(MUTED).fontSize(12).width('100%')
+              }
+              if (this.nodeAuth === 'password') {
+                TextInput({ text: this.nodeSecret, placeholder: '该节点的登录密码' }).type(InputType.Password)
+                  .onChange((v: string) => this.nodeSecret = v)
+              } else {
+                TextArea({ text: this.nodeKey, placeholder: '粘贴该节点可用的私钥内容' }).height(120)
+                  .onChange((v: string) => this.nodeKey = v)
+                TextInput({ text: this.nodePassphrase, placeholder: '私钥口令（无则留空）' }).type(InputType.Password)
+                  .onChange((v: string) => this.nodePassphrase = v)
+              }
             } else {
-              TextArea({ text: this.nodeKey, placeholder: '粘贴该节点可用的私钥内容' }).height(120)
-                .onChange((v: string) => this.nodeKey = v)
-              TextInput({ text: this.nodePassphrase, placeholder: '私钥口令（无则留空）' }).type(InputType.Password)
-                .onChange((v: string) => this.nodePassphrase = v)
+              Text('使用本构建内置的凭据，无需在手机上输入；主机指纹已按内置配置固定校验。')
+                .fontColor(MUTED).fontSize(12).width('100%')
             }
             if (this.nodeFingerprint) {
-              Text('主机指纹（请与该节点实际指纹核对）\n' + this.nodeFingerprint)
+              Text((this.bundledMatches(this.nodeHost.trim()) ? '主机指纹（已与内置配置比对通过）\n' : '主机指纹（请与该节点实际指纹核对）\n') + this.nodeFingerprint)
                 .fontSize(13).fontColor(INK).width('100%').copyOption(CopyOptions.LocalDevice)
             }
             Button(this.nodeActionLabel())

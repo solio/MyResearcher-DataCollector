@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    {
+      "id": "36",
+      "label": "36 · 36.138.125.17",
+      "host": "36.138.125.17",
+      "port": 22,
+      "user": "root",
+      "hostKey": "ssh-ed25519 SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk",
+      "secretFile": "channel/36.pem"
+    }
+  ]
+}

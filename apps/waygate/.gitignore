@@ -15,6 +15,7 @@ node_modules/
 .clangd
 .clang-tidy
 wecode-cpp.db*
+harmony/entry/src/main/resources/rawfile/channel/*.pem
 *.hap
 *.app
 signing/

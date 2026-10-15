@@ -100,3 +100,17 @@ export interface NodeProfile {
   knownHostType: string;
   fingerprint: string;
 }
+
+// Packaged channel configuration: endpoint and pinned host key. The credential
+// itself lives in a git-ignored file next to this config and is bundled into the
+// build only when that file is present locally.
+export interface BuiltinNode {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  user: string;
+  hostKey: string;
+  secretFile: string;
+}
+export interface BuiltinConfig { nodes: BuiltinNode[]; }

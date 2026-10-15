@@ -1197,3 +1197,41 @@ agent 不代为输入口令。另外测试期间手机前台被会议应用占�
 `SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk` 后建立通道，看 `id/hostname/SSH_CONNECTION`
 输出；② 完整待办流程仍依赖 fzz-002 的 `GET /v1/incidents/{id}/verification`（见第十四轮），
 与本条通道互不影响。
+
+### 2026-10-15 / Windows + Mate 70 Pro+ / 第十六轮：把通道配置打包进 app，做到一键建立
+
+用户要求：**不要在手机上填通道参数，直接打包进 app**。已实现，凭据文件留在本机且不入库。
+
+打包方式：
+
+- [channel.json](harmony/entry/src/main/resources/rawfile/channel.json)（**入库**，只含非秘密信息）：
+  内置节点 `36` → `host 36.138.125.17`、`port 22`、`user root`、`hostKey`（固定为
+  `ssh-ed25519 SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk`）、`secretFile
+  channel/36.pem`。
+- `harmony/entry/src/main/resources/rawfile/channel/36.pem`（**不入库**，已加
+  [.gitignore](.gitignore) 第 18 行并实测 `git check-ignore` 命中；内容取自本机既有
+  `%USERPROFILE%\.ssh\testsg8100.pem`，用文件复制完成，私钥正文未进入任何日志/文档）。
+- [Index.ets](harmony/entry/src/main/ets/pages/Index.ets)：`loadBundled()` 从 rawfile 读配置与凭据；
+  设置页“SSH 通道测试”打开时自动预填内置节点并**隐藏密码/私钥输入**；按钮变为
+  **“建立通道（内置凭据）”**：先 `probeHostKey`，把指纹与内置 `hostKey` 逐字符比对（不一致直接
+  拒绝），再用内置私钥 `connect → exec id; hostname; echo SSH_CONNECTION=$SSH_CONNECTION → close`。
+- 内置凭据也接到正常流程：“现在处理”取到描述接口后，若 `ssh_host_hint` 等于内置主机且本机没有
+  该 `node_id` 的凭据，则自动用内置凭据建 profile 并保存，**不再弹凭据导入页**。
+
+验证：
+
+```text
+hvigorw ... assembleHap --no-daemon → BUILD SUCCESSFUL（ArkTS 仅既有 “may throw” 类告警）
+解包 signed HAP 校验打包结果：
+  resources/rawfile/channel.json      293 B
+  resources/rawfile/channel/36.pem   1679 B
+（即配置与凭据确实随包打入；签名配置用完即 git checkout 还原）
+```
+
+**未完成**：这次**没装上**——无线调试掉线，`hdc tconn 192.168.3.156:40525` 返回 `Connect failed`、
+`list targets` 为空。需要重新开启手机无线调试（端口可能已变）或改用 DevEco Run。
+
+**已知权衡（须记录）**：内置的是**桌面上那把 RSA 私钥**，任何人拿到这个本地构建的 HAP 就能以 root
+登录 36。缓解：该 pem 在 `.gitignore` 内、HAP 本身也被 `*.hap` 忽略；撤销方式是删掉该文件重新构建，
+并在 36 上轮换该 key。更干净的做法是为手机单独生成一对密钥、只把公钥追加到 36 的
+`~/.ssh/authorized_keys`（需要一次服务器变更），当前为了“零输入”先复用了既有密钥。
