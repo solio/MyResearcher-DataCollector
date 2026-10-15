@@ -52,6 +52,7 @@ inbox.error 为空，last_poll 对应 2026-10-15 11:39:53 北京时间。没有�
 
 **下一步由 Windows 环境 `git pull`，按下文已有 DevEco 构建/签名流程重新打包安装；
 本轮没有服务端改动，无需重新部署服务器。旧 App 可先彻底退出重开，清除内存中的旧提示。**
+（Windows 侧已于 2026-10-15 第七轮完成重新打包安装并做了部分真机复验，结果见文末。）
 
 真机重点检查：一次请求/服务端同步失败后恢复，首页提示清除且操作结果仍在；
 “诊断”能长按复制，历史故障标为历史；断网时能看清失败接口/网络错误码。
@@ -791,3 +792,35 @@ ps -ef → com.myresearcher.waygate 常驻（PID 48739）
 本轮只确认“编译 + 安装 + 启动成功”，UI 目视确认待用户解锁后补做。
 
 下一步：等另一环境给出可用入口（其 fzz-002 / Docker 启动流程）后，真机联调验收表第 3~9 步。
+
+### 2026-10-15 / Windows / 第七轮：真机复验——App 已连通服务端，诊断页与错误恢复通过
+
+按本文件顶部“当前优先处理”执行。`git pull`（rebase 到 `9bc228c`；该提交只改 SPEC/hub/helper/
+文档，**未改 ArkTS**），仍重新构建以确认 HEAD 可编译：
+
+- `hvigor ... assembleHap --no-daemon` → **BUILD SUCCESSFUL**，signed hap **201498 B**
+  （与第六轮同尺寸 → App 代码未变）。
+- 首次安装报 `[Fail][E001005] Device not found or connected`：无线调试掉线。
+  `hdc tconn 192.168.3.156:40525` → **Connect OK** 后 `install bundle successfully`；
+  `aa force-stop` + `aa start -a EntryAbility` 成功，进程常驻（PID 4089）。
+
+真机实测（截图证据；Mate 70 Pro+ `PLA-AL10` / HMOS 7.0.0.109 / API 26，无线调试）：
+
+- 首页从真实服务端拉到待办：**需要处理 5**，出现 `02 · 601888`、`ktopia-crmeb · 601888`、
+  `本机 · 601012`、**`tokenseller · 002648`**，均为“需要人工验证” → 公网入口
+  `https://testapi.zuzurent.com.cn/collector` 与 fleet 轮询在真机上可用。
+- 右上角「诊断」可打开并显示：当前状态 **连接正常**；主控
+  `https://testapi.zuzurent.com.cn/collector`；最近成功刷新 与 collector 最近同步 均为
+  `10/15/2026, 12:47:16 PM`；“最近一次同步故障（当前无同步故障）：无”“最近一次接口失败：无”；
+  含“刷新诊断”按钮与“长按下方文字可复制”提示。
+  → 直接验证了 handoff 要求的“恢复成功后首页提示清除”（当前无残留错误）。
+- 上述操作通过 `hdc shell uitest uiInput click` 驱动并截图，属真机操作，非模拟。
+
+未验证（需用户手工；agent 不便远程改变设备网络或核对剪贴板内容）：
+
+- 「诊断」文字长按复制到剪贴板（剪贴板内容需人工确认）。
+- 断网时失败接口/网络错误码的可见性。
+- “失败后恢复时操作结果不被清空”（需先人为制造一次失败再恢复）。
+
+提交卫生：`build-profile.json5` 临时写入本地签名后已 `git checkout` 还原（0 处口令残留）；
+未改任何服务器（服务端由另一环境在 fzz-002 负责）。
