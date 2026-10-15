@@ -354,7 +354,9 @@ sudo journalctl -u waygate -n 60 --no-pager
 
 - [x] DevEco Sync、实际 ArkTS 编译；必要时修复 SDK API 类型/工程配置。（见 2026-10-15 第三轮：
   已用 IDE 内置 hvigor 编译成功，产出未签名 HAP。）
-- [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（IDE/SDK/构建命令已填，设备与安装待真机。）
+- [x] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（见第四轮：DevEco 26.0.0.851 /
+  SDK apiVersion 26 / Mate 70 Pro+ `PLA-AL10` 系统 7.0.0.109 / 无线调试 `192.168.3.156:40525` /
+  `install bundle successfully` + `start ability successfully`。）
 - [x] 36 内部附属服务和 local SSH 映射已部署并完成服务端检查（第二轮）。
 - [ ] 在 fzz-002 执行启动命令；由操作者引用仓库中的 collector.nginx.conf（替换旧 runtime include），再记录公网 inbox、原 H5 与 WSS 结果。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
@@ -665,3 +667,97 @@ git diff --check
 覆盖截断 JSON 的提示与不泄露 token、HTTP/网络错误区分、服务端旧错误和客户端解析
 失败在恢复后消失、操作结果不被清空、诊断保留历史。这不是 ArkTS/ArkUI 编译器；
 Windows 必须重新完成构建签名和上述真机验收。所有改动和本文一并提交推送。
+
+### 2026-10-15 / Windows + Mate 70 Pro+ 真机 / 第四轮：真机连接、签名、安装、启动，并修登录页无反馈
+
+代码变化（仅 UI 反馈，未改校验/请求/保存逻辑）：
+
+- [Index.ets](harmony/entry/src/main/ets/pages/Index.ets)：登录页“连接并保存”此前只把
+  `busy` 置真以禁用按钮，**没有任何可见反馈**，而请求要等 12~35 秒超时才出错误信息，
+  表现为“点了完全没反应”。现：点击即设 `this.message = '正在连接主控并校验令牌…'`；
+  按钮 busy 时文案变为“正在连接…”、`opacity 0.6`；按钮下方新增
+  `LoadingProgress` + “正在连接主控并校验令牌…” 文案。
+
+环境与设备（实测，非推测）：
+
+- DevEco Studio 26.0.0.851（build `261.23567.138.36.2600851`），hvigor `6.26.8`，
+  IDE 内置 SDK `D:\kits\DevEco Studio\sdk\default`，apiVersion 26。
+- 真机 `PLA-AL10` HUAWEI Mate 70 Pro+：系统 `7.0.0.109(SP6C00E105R7P3)`、
+  `const.ohos.apiversion = 26`、`const.ohos.fullname = OpenHarmony-7.0.0.105`、devicetype `phone`。
+  与工程 SDK `apiVersion 26` 一致；`compatibleSdkVersion 6.0.0(20)` ≤ 26，安装兼容。
+- 连接：USB 多次插拔，Windows **从未枚举到华为设备**（只出现 `Mi USB Receiver`
+  VID_2717 与内置蓝牙，无 VID_12D1），判为数据线/口问题；改走**无线调试**
+  （手机 开发者选项→无线调试；笔记本 WLAN `192.168.3.236/24` 与手机 `192.168.3.156`
+  同网段），`hdc list targets` 直接显示 `192.168.3.156:40525  TCP  Connected`。
+  **结论：USB 非必需，无线调试可长期用于调试与安装。**
+
+签名与安装：
+
+- IDE Project Structure → Signing Configs 勾选自动签名，生成材料
+  `C:\Users\xiazhidao\.ohos\config\default_harmony_Ugupin*.{cer,p7b,p12,csr}`（在仓库外，未入库）。
+- IDE 只写入了 `signingConfigs` 数组，**未写产品引用**；缺失时 hvigor 报
+  `hvigor WARN: No signingConfig found for product default` 且产出仍是 `*-unsigned.hap`。
+  补 `"signingConfig": "default"` 到 product 后才产出签名产物。
+- 精确命令与结果：
+  - `hvigorw.js --mode module -p product=default -p module=entry@default -p buildMode=debug assembleHap --no-daemon`
+    → `BUILD SUCCESSFUL`，产出 `entry-default-signed.hap`（192232 B）。
+  - `hdc -t 192.168.3.156:40525 install -r <signed.hap>` → `install bundle successfully`。
+  - `aa force-stop` + `aa start -a EntryAbility -b com.myresearcher.waygate` → `start ability successfully`；
+    `ps -ef` 见 `com.myresearcher.waygate` 常驻；`snapshot_display` 截图确认 ArkUI 登录页正常渲染
+    （标题 Waygate、连接你的主控、地址/令牌输入、连接并保存按钮）。
+- 提交卫生：`build-profile.json5` 曾被写入本地签名路径/口令，构建后已用
+  `git checkout -- apps/waygate/harmony/build-profile.json5` 还原为 `"signingConfigs": []`
+  并移除 product 的 `signingConfig` 引用；签名材料、口令、构建日志、截图均未入库。
+
+未验证（按验收表顺序待做）：H5 控制台、应用内代理与切后台/取消清理、真实验证码（仅用户手动）、
+推送（`push.enabled` 仍 false，需华为凭据）。**服务端部署由另一环境负责**（见本文件其
+Docker / fzz-002 记录）；本环境只负责 App 侧。开工时误把 36 当成真实主控，见第五轮纠正。
+
+下一步：按“App 由本环境负责、服务端由另一环境负责”的分工，等另一环境给出可用入口后做真机联调；
+本轮不改远端、不接域名。
+
+### 2026-10-15 / Windows / 第五轮：纠正目标误判——36 不是真实主控
+
+**误判（本轮纠正）**：第二轮仅凭“本机唯一可达的 SSH 只有 36”以及 36 的 `/api/fleet` 只返回
+`local` 一项，就把 36 当成“管理节点的主控”并在其上部署了附属服务。用户指出其实际处理的是
+**tokenseller 节点**，**真正的 fleet 主控不在 36**。因此 36 上那套 hub 与 app 报错无关，
+也不一定是有用的部署目标；服务端实际由另一环境负责。
+
+证据（只读）：
+
+- app 报 `SSH 主机指纹尚未确认或已变化，请先正常 SSH 登录核对`，该文案来自
+  [scripts/ops/verify_http_backfill.py](../../scripts/ops/verify_http_backfill.py) 的 `remote()`，
+  属 **hub → 节点** 这一跳的 `Host key verification failed`。
+- 36 侧复核：`/var/lib/waygate/.ssh/known_hosts` 正确；以 `waygate` 用户实测
+  `ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i /etc/waygate/keys/local root@127.0.0.1 true`
+  → **exit=0**；且 `journalctl -u waygate` 最近 2 小时**无任何条目**（总计仅 7 行），
+  证明手机请求从未到达 36 的 hub。
+
+处置：遵守本文开头 HOLD，**未停止、未重启、未改 36 上的服务与配置**；36 那套部署去留由用户决定。
+
+### 2026-10-15 / Windows / 架构澄清与处置边界（回应“为什么 hub 要连节点”）
+
+**结论：hub → 节点这一跳是冻结设计，不是缺陷。** [SPEC.md](SPEC.md) 原文：
+“An additive Python hub service owns SSH credentials and temporary relay sessions; the phone
+never receives a server SSH key or changes its system proxy”，且 RELAY 一节写明
+“Relay authenticated WSS to the node's current HTTP proxy through temporary SSH … No open proxy
+… or direct fallback”。链路为
+`ArkWeb → 手机 loopback → 主控 WSS → 临时 SSH → 节点现用 HTTP/Mihomo 代理`。
+
+为什么不能“手机直连节点”：
+
+1. 节点代理只监听节点内网网桥（36 上实测 `172.22.0.1:7891`，不对公网开放），手机不可达；
+2. 直连等价于把节点 SSH 私钥 / 代理凭据下发到手机；
+3. 必须先由主控校验“浏览器出口 IP == 节点出口 IP”，否则验证结果不可信；
+4. 把节点代理直接暴露即为开放代理，被 SPEC 明令禁止。
+
+因此“手机直连节点”属于 **SPEC 变更**，需用户显式重新授权并接受上述代价；agent 不静默改设计。
+本轮按用户指示“终端问题你改、服务端问题写入 runs.md”执行：**未改任何 ArkTS/hub 代码**；
+app 只是忠实转达 hub 的错误文案，无客户端缺陷；服务端修复步骤记录如下（本环境不执行）：
+
+1. 在 hub 所在机器、以 hub 运行用户：`ssh-keyscan -t ed25519 <节点主机>` 取指纹，与节点
+   `/etc/ssh/ssh_host_ed25519_key.pub` 核对一致；
+2. 一致后写入该用户 `~/.ssh/known_hosts`（或正常 `ssh` 登录一次输 `yes`）；**禁止关闭
+   `StrictHostKeyChecking`**；
+3. 核对 `config.json`：`ssh` 键 == `urlsplit(base_url).hostname`（不是别名 `tokenseller`）、
+   `identity_file` 存在且对 hub 用户可读（0600）。

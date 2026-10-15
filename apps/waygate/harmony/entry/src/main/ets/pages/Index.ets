@@ -117,6 +117,7 @@ struct Index {
       this.message = '请填写主控的 console.token'; return;
     }
     this.busy = true;
+    this.message = '正在连接主控并校验令牌…';
     try {
       const next: Credentials = { hub: address, token: this.token.trim(), deviceId: this.credentials.deviceId,
         push: false, pendingSession: '' };
@@ -439,7 +440,14 @@ struct Index {
           Text('连接你的主控').fontSize(23).fontWeight(FontWeight.Bold).fontColor(INK).width('100%')
           TextInput({ text: this.hub, placeholder: 'https://你的域名/waygate' }).onChange((v: string) => this.hub = v)
           TextInput({ text: this.token, placeholder: '主控 console.token' }).type(InputType.Password).onChange((v: string) => this.token = v)
-          Button('连接并保存').width('100%').backgroundColor(INK).enabled(!this.busy).onClick(() => this.save())
+          Button(this.busy ? '正在连接…' : '连接并保存').width('100%').backgroundColor(INK)
+            .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.save())
+          if (this.busy) {
+            Row({ space: 8 }) {
+              LoadingProgress().width(18).height(18).color(INK)
+              Text('正在连接主控并校验令牌…').fontColor(MUTED).fontSize(13)
+            }.width('100%').justifyContent(FlexAlign.Center)
+          }
           if (this.api) {
             Button('开启任务通知').width('100%').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.enablePush(true))
             Text(this.notification).fontColor(MUTED).fontSize(13)
