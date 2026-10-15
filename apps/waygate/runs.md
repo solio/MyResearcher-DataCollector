@@ -761,3 +761,33 @@ app 只是忠实转达 hub 的错误文案，无客户端缺陷；服务端修�
    `StrictHostKeyChecking`**；
 3. 核对 `config.json`：`ssh` 键 == `urlsplit(base_url).hostname`（不是别名 `tokenseller`）、
    `identity_file` 存在且对 hub 用户可读（0600）。
+
+### 2026-10-15 / Windows / 第六轮：合并另一环境改动后的 ArkTS 修复与真机重装
+
+与 origin/main（含另一环境 5 个提交：Docker 启动、nginx include、分块读取、手机错误恢复与
+可复制诊断）rebase 并解决 runs.md 冲突后，合并结果暴露一个**只有 Windows ArkTS 编译能发现**的缺陷：
+
+- [Api.ets](harmony/entry/src/main/ets/services/Api.ets) `catch` 分支末尾 `throw err` 触发
+  `arkts-limited-throw`（`throw` 不得抛任意类型，报在 `Api.ets:62:7`）。
+  该缺陷来自另一环境的“诊断/错误分类”改动，其 Mac 侧 Node 类型擦除测试
+  （`node --test tests/test_app_connection.mjs`）覆盖不到 ArkTS 编译规则。
+- 修复：`const failure = err as Error; throw new Error(failure.message || '主控请求未完成；详情见“诊断”');`
+  —— 仍保留原始错误消息，行为不变。
+
+验证（工作目录 `apps/waygate/harmony`）：
+
+```text
+hvigor ... assembleHap --no-daemon   → BUILD SUCCESSFUL
+signed hap 201498 B（临时签名配置，构建后已 git checkout 还原 build-profile.json5，无口令入库）
+hdc -t 192.168.3.156:40525 install -r → install bundle successfully
+aa force-stop + aa start -a EntryAbility -b com.myresearcher.waygate → start ability successfully
+ps -ef → com.myresearcher.waygate 常驻（PID 48739）
+```
+
+合并后 App 同时包含另一环境的独立 `syncMessage`/“诊断”可复制入口/错误分类，与本环境的
+登录页即时反馈（`正在连接…` + `LoadingProgress`）。
+
+限制：本次 `snapshot_display` 时设备处于锁屏/通知界面，**未捕获到 App 前台 UI**；
+本轮只确认“编译 + 安装 + 启动成功”，UI 目视确认待用户解锁后补做。
+
+下一步：等另一环境给出可用入口（其 fzz-002 / Docker 启动流程）后，真机联调验收表第 3~9 步。

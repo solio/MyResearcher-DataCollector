@@ -59,7 +59,8 @@ export class Api {
         '\n响应长度：' + characters.toString() + ' 个字符' +
         (typeof code === 'number' ? '\n网络错误码：' + code.toString() : '');
       if (stage === '连接主控') { throw new Error('无法连接主控，请检查网络；详情见“诊断”'); }
-      throw err;
+      const failure = err as Error;
+      throw new Error(failure.message || '主控请求未完成；详情见“诊断”');
     } finally {
       client.destroy();
     }
