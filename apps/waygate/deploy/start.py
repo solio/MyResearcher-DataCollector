@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import time
@@ -88,7 +87,7 @@ def main():
     p.add_argument('--ssh-dir', type=Path, default=Path.home() / '.ssh')
     args = p.parse_args()
     address = args.public_url.rstrip('/')
-    public_address(address)
+    public = public_address(address)
     if sys.platform != 'linux' or os.geteuid() != 0:
         raise RuntimeError('请在现有主控的 Linux 服务器上以 root 执行')
     os.umask(0o077)
@@ -100,29 +99,25 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         raise RuntimeError('另一次 Waygate 启动正在执行，请等待完成') from None
+    include = APP / 'deploy/collector.nginx.conf'
+    if public.path != '/collector':
+        # Custom prefixes need rendering, but never depend on Docker succeeding.
+        runtime.chmod(0o755)
+        (runtime / 'nginx').mkdir(exist_ok=True)
+        (runtime / 'nginx').chmod(0o755)
+        include = runtime / 'nginx/waygate-locations.conf'
+        include.write_text(locations(address, 8791))
+        include.chmod(0o644)
     data, token, collector_url, base_image = collector_info(args.collector_container)
     fleet = read_json(collector_url + '/api/fleet', token)
-    for folder in (runtime, runtime / 'config', runtime / 'data', runtime / 'nginx'):
+    for folder in (runtime / 'config', runtime / 'data'):
         folder.mkdir(parents=True, exist_ok=True)
-    # nginx's master needs traversal access to the non-secret include directory.
-    runtime.chmod(0o755)
-    (runtime / 'nginx').chmod(0o755)
     config_path = runtime / 'config/config.json'
     previous_config = config_path.read_bytes() if config_path.exists() else None
     config = json.loads(previous_config.decode()) if previous_config else json.loads((APP / 'config.example.json').read_text())
     if previous_config is None:
         config['ssh'] = {}
-        for port in range(8791, 8811):
-            with socket.socket() as s:
-                try:
-                    s.bind(('127.0.0.1', port))
-                    break
-                except OSError:
-                    continue
-        else:
-            raise RuntimeError('8791–8810 均被占用；未启动服务')
-        config['port'] = port
-    config.update(listen='127.0.0.1', public_url=address, collector_url=collector_url,
+    config.update(listen='127.0.0.1', port=8791, public_url=address, collector_url=collector_url,
                   collector_token_file='/collector-data/console.token', data_dir='/data')
     ssh_dir = args.ssh_dir.resolve()
     if not ssh_dir.is_dir():
@@ -134,7 +129,6 @@ def main():
         if key:
             config['ssh'].setdefault(key, {'host': '127.0.0.1' if node.get('local') else host,
                                            'user': 'root', 'port': 22})
-    include = runtime / 'nginx/waygate-locations.conf'
     env = dict(os.environ, WAYGATE_BASE_IMAGE=base_image, WAYGATE_COLLECTOR_DATA=str(data),
                WAYGATE_SSH_DIR=str(ssh_dir))
     compose = ['docker', 'compose', '-p', 'waygate', '-f', str(APP / 'compose.yml')]
@@ -167,21 +161,18 @@ def main():
             config_path.write_bytes(previous_config)
         raise
     try:
-        command(compose + ['up', '-d', '--no-build'], env=env, visible=True)
+        command(compose + ['up', '-d', '--no-build', '--force-recreate'], env=env, visible=True)
         inbox = wait_inbox('http://127.0.0.1:' + str(config['port']), token)
     except BaseException:
         restore_service()
         raise
-    # Generate an optional snippet only. No nginx discovery, test, write or reload.
-    include.write_text(locations(address, config['port']))
-    include.chmod(0o644)
     print('\nWaygate 容器已启动，本机接口正常。')
     print('本机监听：http://127.0.0.1:' + str(config['port']))
     print('App 地址：' + address)
     print('Token：继续使用原 collector 的 console.token（不输出、不复制）。')
     print('节点：%d；待处理：%d' % (len(inbox['nodes']), len(inbox['items'])))
     print('配置：' + str(config_path))
-    print('nginx 未改动。首次接入时，在原 collector 所在 server {} 内加入：')
+    print('nginx 接入配置（在原 collector 所在 server {} 内，已有此行时无需重复添加）：')
     print('    include ' + str(include) + ';')
     print('再按你现有方式 reload nginx；完成后 App 才能通过公网地址连接。')
     print('日志：docker logs -f --tail=100 $(docker ps -q --filter label=com.docker.compose.project=waygate --filter label=com.docker.compose.service=waygate)')

@@ -16,7 +16,7 @@ def locations(address, port):
     prefix = public_address(address).path
     if not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError('Waygate 本机端口无效')
-    out = ['# Managed by Waygate deploy/start.sh; original collector location is unchanged.\n']
+    out = ['# Waygate routes; keep the existing collector location alongside these.\n']
     for modifier, path in [('^~', '/v1/'), ('^~', '/console/'), ('=', '/health')]:
         out.append('''location %s %s%s {
     proxy_pass http://127.0.0.1:%d%s;

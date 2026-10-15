@@ -22,23 +22,39 @@ cd /usr/local/src/MyResearcher-DataCollector && git pull && bash apps/waygate/de
 首次公网接入由操作者在原 `/collector/` 所在的 nginx `server {}` 内加一行：
 
 ```nginx
-include /usr/local/src/MyResearcher-DataCollector/apps/waygate/.runtime/nginx/waygate-locations.conf;
+include /usr/local/src/MyResearcher-DataCollector/apps/waygate/deploy/collector.nginx.conf;
 ```
 
-再按现有方式 reload nginx。此片段由脚本按实际端口生成，只增加
+再按现有方式 reload nginx。此文件随 Git 提供，pull 后立即存在，无需先成功启动容器。只增加
 `/collector/v1/`、`/collector/console/`、`/collector/health`，保留原 `/collector/` 和其他路由。
 不要重复添加 include。App 仍填 `https://testapi.zuzurent.com.cn/collector` 和原 `console.token`。
 本轮没有登录 fzz-002 执行启动或修改 nginx，实际上线结果须由服务器输出确认。
 
+如果已加上旧的 `.runtime/nginx/waygate-locations.conf` include，且 reload 报文件不存在，
+在 fzz-002 执行下面的修复。只替换已知错误路径，并备份原 `server.conf`；
+不是要求启动脚本重新探测 nginx：
+
+```bash
+cd /usr/local/src/MyResearcher-DataCollector && git pull && \
+sed -i.waygate-backup 's#/usr/local/src/MyResearcher-DataCollector/apps/waygate/\.runtime/nginx/waygate-locations\.conf#/usr/local/src/MyResearcher-DataCollector/apps/waygate/deploy/collector.nginx.conf#g' /usr/local/nginx/conf/server.conf && \
+/usr/local/nginx/sbin/nginx -t && /usr/local/nginx/sbin/nginx -s reload && \
+bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector
+```
+
+这条命令已替换 include，无需再添加。nginx reload 成功仅说明配置已加载；
+随后 Waygate 启动成功才代表本机后端就绪，仍需由 App 确认公网访问。
+
 启动实现：[deploy/start.sh](deploy/start.sh)、[deploy/start.py](deploy/start.py)、
 [compose.yml](compose.yml)、[deploy/Dockerfile](deploy/Dockerfile)。
-[nginx_routes.py](deploy/nginx_routes.py) 只生成可选配置片段，已删除自动发现和改写代码。
+[collector.nginx.conf](deploy/collector.nginx.conf) 是默认 `/collector` 的固定配置；
+[nginx_routes.py](deploy/nginx_routes.py) 仅供其他 URL 前缀生成片段，无自动发现和改写代码。
 
 - 基于现有 collector 镜像构建，build 使用宿主机网络，apt/pip 默认阿里云镜像；
   可通过 WAYGATE_DEBIAN_MIRROR / WAYGATE_PIP_INDEX_URL 覆盖。
 - [Dockerfile.dockerignore](deploy/Dockerfile.dockerignore) 不发送采集数据、凭据和运行配置。
-- Waygate 监听 loopback，首次从 8791–8810 选空闲端口，以后复用已保存的端口。
-  配置、数据、生成片段均在 `apps/waygate/.runtime/`，不进入 Git。
+- Docker 入口固定监听 `127.0.0.1:8791`，不再随机选择其他端口，与仓库 nginx 配置一致。
+  运行配置、数据和自定义前缀的生成片段在 `apps/waygate/.runtime/`，不进入 Git。
+  启动命令重新创建 Waygate 容器以应用端口/URL 配置，即使镜像构建使用缓存；仅作用于 Waygate。
 - `--collector-container 容器名` 用于本机有多个采集器；重复启动保留已有 SSH/推送配置。
 - 主控现有 `~/.ssh` 只读挂载到容器 `/root/.ssh`，可用 `--ssh-dir` 指定其他目录。
   默认按 fleet 填 SSH host、root:22；不同用户、端口、私钥在 `.runtime/config/config.json`
@@ -285,7 +301,7 @@ sudo journalctl -u waygate -n 60 --no-pager
   已用 IDE 内置 hvigor 编译成功，产出未签名 HAP。）
 - [ ] 填写 IDE / SDK / 设备型号及系统版本、构建命令、安装结果。（IDE/SDK/构建命令已填，设备与安装待真机。）
 - [x] 36 内部附属服务和 local SSH 映射已部署并完成服务端检查（第二轮）。
-- [ ] 在 fzz-002 执行启动命令；由操作者将生成的 include 加入现有 nginx 后，再记录公网 inbox、原 H5 与 WSS 结果。
+- [ ] 在 fzz-002 执行启动命令；由操作者引用仓库中的 collector.nginx.conf（替换旧 runtime include），再记录公网 inbox、原 H5 与 WSS 结果。
 - [ ] 真机验证 H5 控制台、应用内代理、切后台/取消清理。
 - [ ] 配置华为 Push Kit 权益、签名和服务账号，实测锁屏推送。
 - [ ] 用户完成一次实际验证码；核对单次 probe 与本股继续、其他个股状态不变。
@@ -524,3 +540,21 @@ Compose 校验使用临时非秘密路径变量；没有启动/重启本机或�
 保留真实 nginx 验证生成片段对原 H5/API 与 Waygate 路由的转发，不会把该测试加入启动流程。
 已删除只用于旧自动配置方案的测试。Python 3.6 语法、--help、git diff --check 通过。
 未在 fzz-002 执行 Docker 构建或声称公网已上线。
+
+### 2026-10-15 / Mac / 修复 nginx 引用不存在的 runtime 文件
+
+用户在 fzz-002 的 `/usr/local/nginx/conf/server.conf:89` 引用了前次给出的
+`.runtime/nginx/waygate-locations.conf`，nginx reload 因文件不存在而拒绝。
+旧脚本仅在 Docker 构建、启动及 inbox 检查全部成功后生成文件，给出的接入步骤
+错误地依赖了这个未确认完成的前置条件；不能从本次输出推断容器实际是否启动过。
+
+将默认 `/collector` 路由提交为 [deploy/collector.nginx.conf](deploy/collector.nginx.conf)，
+pull 后即存在，不依赖 runtime 或后端健康；Docker 入口固定使用 8791，重新创建
+Waygate 以应用配置。其他 URL 前缀仍可生成片段，但写入移到 Docker 操作之前。
+更新本文顶部修复命令，精确替换用户已经插入的错误路径，保留 server.conf 备份。
+启动脚本继续不读取、修改或 reload nginx。
+
+验证：`python -m pytest -q apps/waygate/tests/test_deploy.py`，2 passed；
+其中实际 nginx 加载仓库中的 include 做语法检查，并用隔离后端验证原 collector
+H5/API 与 Waygate 的三条路径、Authorization 转发。启动流程模拟确认固定 8791，
+Docker 操作前配置已存在，不创建默认 runtime include。未执行远端部署或来源请求。

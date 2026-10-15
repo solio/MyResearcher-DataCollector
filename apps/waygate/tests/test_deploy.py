@@ -17,6 +17,7 @@ from apps.waygate.deploy import start
 from apps.waygate.deploy.nginx_routes import locations
 
 ADDRESS = 'https://console.example/collector'
+TRACKED_INCLUDE = start.APP / 'deploy/collector.nginx.conf'
 
 
 class DeploymentTests(unittest.TestCase):
@@ -25,11 +26,14 @@ class DeploymentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             app = Path(tmp) / 'waygate'
             app.mkdir()
+            (app / 'deploy').mkdir()
+            shutil.copyfile(TRACKED_INCLUDE, app / 'deploy/collector.nginx.conf')
             (app / 'config.example.json').write_text(json.dumps({
                 'source_domains': ['eastmoney.com'], 'ssh': {}, 'push': {'enabled': False}}))
             calls = []
             def docker_only(args, **kwargs):
                 self.assertEqual(args[0], 'docker')
+                self.assertTrue((app / 'deploy/collector.nginx.conf').is_file())
                 calls.append(args)
                 return ''
             with patch.object(start, 'APP', app), \
@@ -42,11 +46,12 @@ class DeploymentTests(unittest.TestCase):
                     patch.object(start, 'command', side_effect=docker_only):
                 start.main()
             read.assert_called_once_with('http://127.0.0.1:8790/api/fleet', 'test-token-only')
-            self.assertTrue(ready.call_args.args[0].startswith('http://127.0.0.1:'))
+            ready.assert_called_once_with('http://127.0.0.1:8791', 'test-token-only')
             self.assertTrue(any(args[-1:] == ['build'] for args in calls))
-            self.assertTrue(any(args[-3:] == ['up', '-d', '--no-build'] for args in calls))
-            self.assertIn('/collector/v1/', (app / '.runtime/nginx/waygate-locations.conf').read_text())
+            self.assertTrue(any(args[-4:] == ['up', '-d', '--no-build', '--force-recreate'] for args in calls))
+            self.assertFalse((app / '.runtime/nginx').exists())
             config = json.loads((app / '.runtime/config/config.json').read_text())
+            self.assertEqual(config['port'], 8791)
             self.assertEqual(config['public_url'], ADDRESS)
             self.assertEqual(config['collector_token_file'], '/collector-data/console.token')
             self.assertNotIn('test-token-only', (app / '.runtime/config/config.json').read_text())
@@ -76,15 +81,24 @@ class DeploymentTests(unittest.TestCase):
                     sock.bind(('127.0.0.1', 0))
                     port = sock.getsockname()[1]
                 config = root / 'nginx.conf'
+                # Parse the actual checked-in include before any deployment exists.
+                self.assertEqual(TRACKED_INCLUDE.read_text(), locations(ADDRESS, 8791))
                 config.write_text('''pid %s/nginx.pid;
 error_log %s/error.log;
 events {}
 http { access_log off; client_body_temp_path %s/body; proxy_temp_path %s/proxy;
 server { listen 127.0.0.1:%d;
 location /collector/ { proxy_pass http://127.0.0.1:%d/; }
-%s
+include "%s";
 }}
-''' % (root, root, root, root, port, old.server_port, locations(ADDRESS, hub.server_port)))
+''' % (root, root, root, root, port, old.server_port, TRACKED_INCLUDE))
+                checked = subprocess.run([shutil.which('nginx'), '-t', '-p', str(root), '-c', str(config)],
+                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.assertEqual(checked.returncode, 0, checked.stderr)
+                # Exercise the same file with an isolated test backend port.
+                include = root / 'collector.nginx.conf'
+                include.write_text(TRACKED_INCLUDE.read_text().replace(':8791', ':' + str(hub.server_port)))
+                config.write_text(config.read_text().replace(str(TRACKED_INCLUDE), str(include)))
                 proc = subprocess.Popen([shutil.which('nginx'), '-p', str(root), '-c', str(config),
                                          '-g', 'daemon off;'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 try:

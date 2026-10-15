@@ -26,7 +26,8 @@ console at https://testapi.zuzurent.com.cn/collector (fzz-002). That latest requ
 authorizes server integration in deploy/start.sh while preserving collector
 containers/tasks and registry. The latest correction explicitly rejects nginx
 discovery/validation as a startup prerequisite: start the Docker service only,
-generate an optional route snippet, and leave existing nginx configuration and
+ship the /collector route include as deploy/collector.nginx.conf with fixed
+loopback port 8791 (available before Docker starts), and leave nginx configuration and
 reload to the operator. Do not restore automatic nginx edits or public-URL
 preflight gates. App changes
 and device acceptance remain with the other environment. The Windows agent's

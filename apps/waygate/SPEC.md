@@ -62,3 +62,10 @@ snippet separately for the operator's existing nginx configuration. Confirm the
 local hub inbox only; never label that as public connectivity. Preserve collector
 container/tasks/registry and existing SSH settings. Do not claim remote startup
 from local checks. Report missing SSH configuration separately from app access.
+
+The /collector nginx include must be a tracked deploy/collector.nginx.conf file,
+available immediately after git pull, independently of Docker build/start and
+health. The Docker launcher uses a fixed loopback port 8791 to match that file;
+it must not silently select a different port. Other URL prefixes may still use
+a generated snippet, written before Docker operations. Do not ask operators to
+include a file that only exists after a successful backend startup.

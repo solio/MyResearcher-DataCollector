@@ -11,9 +11,13 @@ git pull && bash apps/waygate/deploy/start.sh --public-url https://你的域名/
 
 从仓库根目录执行。脚本只启动独立 Waygate 容器，复用现有 collector 的端口、
 令牌和节点注册。需要 Linux、Docker Compose、Python 3；不查、不改、不 reload nginx，
-也不要求公网地址先能访问。运行后输出本机端口，并生成 `.runtime/nginx/waygate-locations.conf`。
-首次公网接入时，将输出的 `include /实际仓库/apps/waygate/.runtime/nginx/waygate-locations.conf;`
+也不要求公网地址先能访问。Waygate 固定监听 `127.0.0.1:8791`。
+`/collector` 的 nginx 片段 [deploy/collector.nginx.conf](deploy/collector.nginx.conf) 随 Git 提供，
+无需先成功启动容器。首次公网接入时，将
+`include /实际仓库/apps/waygate/deploy/collector.nginx.conf;`
 加入原 collector 所在的 nginx server 块，再按现有方式 reload。原 H5 路由保留。
+已使用旧 `.runtime/nginx/waygate-locations.conf` include 的服务器，替换为上述路径；
+其他 URL 前缀由启动脚本在 Docker 操作前生成对应片段。
 完整命令和凭据说明见 [runs.md](runs.md)。
 
 **接手入口：[runs.md](runs.md)**。包含 Windows/DevEco 环境、Linux 主控部署、
