@@ -4,6 +4,27 @@
 Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataCollector`，
 开发目录 `apps/waygate`，分支 `main`。不需要读取原会话。
 
+## 当前优先处理：手机错误残留与诊断入口，重新打包 App
+
+用户确认 `Unterminated string starting...` 出现在手机 App。本轮直接读取既有公网
+`/collector/v1/inbox` 和 `/collector/api/fleet`，均 HTTP 200、完整 JSON、5 个节点；
+inbox.error 为空，last_poll 对应 2026-10-15 11:39:53 北京时间。没有改服务器配置或触发来源请求。
+这是一次健康采样，不能代替手机侧网络诊断；同时代码确认 App 成功刷新时未清理旧错误。
+
+已修复 [Index.ets](harmony/entry/src/main/ets/pages/Index.ets) 和
+[Api.ets](harmony/entry/src/main/ets/services/Api.ets)：轮询错误与操作结果独立保存，
+恢复成功会清除当前轮询提示；原始 JSON 异常改为可读提示；首页右上角“诊断”能查看
+当前连接、最近成功刷新、collector 同步时间，以及最近故障的接口、HTTP、长度、阶段和网络错误码。
+历史故障保留在诊断页，并明确不代表当前仍失败。诊断是查看时的快照，长按可复制，
+“刷新诊断”只更新展示，不额外请求来源。请求 token、请求体和响应正文不写入诊断。
+
+**下一步由 Windows 环境 `git pull`，按下文已有 DevEco 构建/签名流程重新打包安装；
+本轮没有服务端改动，无需重新部署服务器。旧 App 可先彻底退出重开，清除内存中的旧提示。**
+
+真机重点检查：一次请求/服务端同步失败后恢复，首页提示清除且操作结果仍在；
+“诊断”能长按复制，历史故障标为历史；断网时能看清失败接口/网络错误码。
+本机只验证逻辑，不声称本轮 ArkTS 编译、HAP 构建或真机验收已完成。
+
 ## 当前服务端入口：只启动 Docker，nginx 单独接入
 
 2026-10-15 用户明确由本 agent 负责服务端，App 由另一环境负责。
@@ -585,3 +606,30 @@ Waygate 未就绪。后台同步失败写入 Docker 日志，同样错误不每�
 44 passed。启动脚本 Python 3.6 语法与 git diff --check 通过。
 本轮不改 nginx/App/采集任务；未登录 fzz-002，也未触发任何来源请求。
 服务器拉取后重跑顶部同一条启动命令即可；若仍有故障，新版会保留并显示具体原因。
+
+### 2026-10-15 / Mac / 手机错误恢复与可复制诊断
+
+用户补充错误位置为手机 App。先读取公网现状，确认该次完整状态响应健康，再检查手机
+刷新逻辑：`if (feed.error) { this.message = feed.error; }` 没有恢复成功分支，且 message
+同时承载验证/暂停等操作结果，不能简单在每次刷新后清空整个 message。
+
+本次最小客户端修复新增独立 syncMessage，仅正常刷新时清除此字段；保留操作结果。
+新增“诊断”入口，记录最新故障并可长按复制；解析错误、HTTP 错误、网络错误分开显示。
+相关 UI 使用既有 ArkUI Text 的 [copyOption](https://raw.githubusercontent.com/openharmony/docs/master/zh-cn/application-dev/reference/apis-arkui/arkui-ts/ts-basic-components-text.md#copyoption9)，
+未增加权限或依赖。诊断记录在本次进程内，不宣称重启后仍保留。未新增自动来源重试或继续任务。
+
+验证命令：
+
+```text
+node --test apps/waygate/tests/test_app_connection.mjs
+4 passed
+python apps/waygate/tools/check_project.py
+Project metadata/import paths OK
+git diff --check
+```
+
+[test_app_connection.mjs](tests/test_app_connection.mjs) 使用 Node >= 22.13 的类型擦除，
+执行实际 Api 与 Index 中的普通请求/刷新方法，替换平台 HTTP/Web/Vault 接口；
+覆盖截断 JSON 的提示与不泄露 token、HTTP/网络错误区分、服务端旧错误和客户端解析
+失败在恢复后消失、操作结果不被清空、诊断保留历史。这不是 ArkTS/ArkUI 编译器；
+Windows 必须重新完成构建签名和上述真机验收。所有改动和本文一并提交推送。

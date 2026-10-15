@@ -1,7 +1,7 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
-import { Api } from '../services/Api';
+import { Api, readableError } from '../services/Api';
 import { Vault } from '../services/Vault';
 import { registerPush } from '../services/Push';
 import { runtime } from '../services/SessionRuntime';
@@ -18,6 +18,8 @@ struct Index {
   @State items: Incident[] = [];
   @State nodes: NodeState[] = [];
   @State message: string = '';
+  @State syncMessage: string = '';
+  @State diagnosticSnapshot: string = '';
   @State busy: boolean = false;
   @State hub: string = '';
   @State token: string = '';
@@ -41,6 +43,9 @@ struct Index {
   private cleanupPending: Promise<void> | undefined = undefined;
   private checkingExit: boolean = false;
   private generation: number = 0;
+  private lastRefreshAt: string = '';
+  private lastCollectorSync: string = '';
+  private lastSyncFailure: string = '';
 
   aboutToAppear(): void { this.initialize(); }
   aboutToDisappear(): void { clearInterval(this.timer); runtime.background(); }
@@ -49,7 +54,24 @@ struct Index {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
   }
 
-  private error(err: Error): void { this.message = err.message || '操作未完成，请重试连接'; }
+  private error(err: Error): void { this.message = readableError(err.message || '操作未完成，请重试连接'); }
+
+  private syncFailed(message: string, details: string): void {
+    const safeMessage = message.split(this.credentials.token).join('[已隐藏]').slice(0, 400);
+    this.syncMessage = readableError(safeMessage);
+    this.lastSyncFailure = new Date().toLocaleString() + '\n' + safeMessage + '\n' + details;
+  }
+
+  private openDiagnostics(): void {
+    this.diagnosticSnapshot = '当前状态：' + (this.syncMessage || (this.lastRefreshAt ? '连接正常' : '尚未同步')) +
+      '\n主控：' + (this.api ? this.api.credentials.hub : this.hub) +
+      '\n最近成功刷新：' + (this.lastRefreshAt || '尚无') +
+      '\ncollector 最近同步：' + (this.lastCollectorSync || '尚无') +
+      '\n\n最近一次同步故障' + (this.syncMessage ? '：\n' : '（当前无同步故障）：\n') +
+      (this.lastSyncFailure || '无') +
+      '\n\n最近一次接口失败：\n' + (this.api && this.api.lastFailureDetails ? this.api.lastFailureDetails : '无');
+    this.screen = 'diagnostics';
+  }
 
   private async initialize(): Promise<void> {
     try {
@@ -108,6 +130,7 @@ struct Index {
       await this.vault.session('');
       this.credentials = next; this.api = api; runtime.api = api;
       this.screen = 'home'; this.message = ''; this.notification = '通知尚未开启';
+      this.syncMessage = ''; this.lastRefreshAt = ''; this.lastCollectorSync = ''; this.lastSyncFailure = '';
       await this.refresh();
     } catch (err) { this.error(err as Error); }
     finally { this.busy = false; }
@@ -135,12 +158,18 @@ struct Index {
       }
       const feed = await this.api.request<Inbox>('/v1/inbox');
       this.items = feed.items; this.nodes = feed.nodes;
-      if (feed.error) { this.message = feed.error; }
+      this.lastCollectorSync = feed.last_poll > 0 ? new Date(feed.last_poll * 1000).toLocaleString() : '';
+      if (feed.error) {
+        this.syncFailed(feed.error, '接口：GET /v1/inbox\nHTTP：200\n阶段：服务端同步 collector');
+      } else {
+        this.syncMessage = '';
+        this.lastRefreshAt = new Date().toLocaleString();
+      }
       if (!feed.push_enabled) { this.notification = '主控推送尚未配置，待办仍会保存'; }
       else if (feed.push_errors > 0) { this.notification = '有通知发送失败，请检查主控推送配置'; }
       this.prioritizeLink();
     } catch (err) {
-      this.error(err as Error);
+      this.syncFailed((err as Error).message || '主控刷新失败', this.api.lastFailureDetails);
       if (this.screen === 'verify') {
         await this.closeWindow();
         this.screen = 'home';
@@ -338,6 +367,8 @@ struct Index {
     Row() {
       Text('Waygate').fontSize(27).fontWeight(FontWeight.Bold).fontColor(INK).layoutWeight(1)
       if (this.screen === 'home') {
+        Button('诊断').backgroundColor(Color.Transparent).fontColor(MUTED)
+          .onClick(() => this.openDiagnostics())
         Button('设置').backgroundColor(Color.Transparent).fontColor(MUTED)
           .onClick(() => { this.screen = 'settings'; })
       } else if (this.api) {
@@ -400,6 +431,9 @@ struct Index {
       if (this.message) {
         Text(this.message).fontSize(14).fontColor(INK).width('100%').padding({ left: 22, right: 22, bottom: 12 })
       }
+      if (this.syncMessage) {
+        Text(this.syncMessage).fontSize(14).fontColor(INK).width('100%').padding({ left: 22, right: 22, bottom: 12 })
+      }
       if (this.screen === 'settings') {
         Column({ space: 18 }) {
           Text('连接你的主控').fontSize(23).fontWeight(FontWeight.Bold).fontColor(INK).width('100%')
@@ -414,6 +448,16 @@ struct Index {
         }.padding(24).width('100%')
       } else if (this.screen === 'home') {
         this.home()
+      } else if (this.screen === 'diagnostics') {
+        Scroll() {
+          Column({ space: 16 }) {
+            Text('连接诊断').fontSize(22).fontWeight(FontWeight.Bold).fontColor(INK).width('100%')
+            Text('长按下方文字可复制').fontColor(MUTED).fontSize(13).width('100%')
+            Text(this.diagnosticSnapshot).fontSize(14).fontColor(INK).width('100%')
+              .copyOption(CopyOptions.LocalDevice)
+            Button('刷新诊断').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.openDiagnostics())
+          }.width('100%').padding(22)
+        }.layoutWeight(1).width('100%')
       } else if (this.screen === 'verify' || this.screen === 'console') {
         if (this.screen === 'verify') { Text(this.stockTitle).fontColor(INK).padding(8) }
       } else {

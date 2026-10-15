@@ -78,3 +78,13 @@ startup output and change-triggered logs without response bodies or credentials.
 A reachable authenticated inbox with a collector polling error is a degraded
 running service, not a reason to stop/rollback the container. Unreachable or
 unauthenticated Waygate startup still fails; do not call degraded polling synced.
+
+The phone follow-up on 2026-10-15 identifies repeated JSON errors in the App.
+Keep polling errors separate from operation/verification results: a successful
+inbox refresh clears only the polling error. Provide a small diagnostics entry
+with the configured hub, last successful refresh, last collector sync and latest
+request failure (route, HTTP status, response character count, failure stage).
+Diagnostics must be copyable, exclude tokens/request and response bodies, and
+remain available after recovery without showing the historical error as active.
+Translate JSON parser failures into actionable text. Do not change verification
+or automatic retry/resume behavior. Windows still owns ArkTS build/device acceptance.
