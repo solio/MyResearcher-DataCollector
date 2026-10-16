@@ -1,5 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { http } from '@kit.NetworkKit';
 import { Api, readableError } from '../services/Api';
@@ -435,7 +436,9 @@ struct Index {
       runtime.proxy.markReady();
       this.verifiedExit = true;
       this.message = '已确认共同出口，请在下方手动完成验证';
-      this.browser.loadUrl(target.url ? target.url : 'https://api.ipify.org');
+      const targetUrl = target.url ? target.url : 'https://api.ipify.org';
+      hilog.info(0x3200, 'waygate_ui', 'showing target url=%{public}s', targetUrl);
+      this.browser.loadUrl(targetUrl);
     } catch (err) {
       await this.releaseAll();
       this.screen = 'home';
@@ -444,6 +447,7 @@ struct Index {
   }
 
   private async pageEnded(url: string): Promise<void> {
+    hilog.info(0x3200, 'waygate_ui', 'pageEnd %{public}s', url);
     if (this.exitWaiter && url.indexOf('https://api.ipify.org') === 0) {
       const waiter = this.exitWaiter;
       this.exitWaiter = undefined;

@@ -698,20 +698,15 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
             work->error = "无法初始化 SSH 转发会话";
             return;
         }
-        libssh2_session_set_blocking(created->session, 0);
-        auto handshakeDeadline = std::chrono::steady_clock::now() +
-                                 std::chrono::milliseconds(kHandshakeTimeoutMs);
-        int handshake = 0;
-        while ((handshake = libssh2_session_handshake(created->session, created->sshFd)) ==
-               LIBSSH2_ERROR_EAGAIN) {
-            if (std::chrono::steady_clock::now() >= handshakeDeadline) {
-                work->error = "SSH 转发会话握手超时";
-                return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        if (handshake != 0) {
-            work->error = "SSH 转发会话握手失败";
+        // Handshake and authentication run in blocking mode with a bounded session
+        // timeout. Until it is authenticated this session belongs to the forward alone,
+        // so there is nothing to multiplex, and the timeout is what turns a stalled
+        // worker into a clear error instead of a hang. It only becomes non-blocking
+        // after authentication, because the per-connection pump relies on EAGAIN.
+        libssh2_session_set_blocking(created->session, 1);
+        libssh2_session_set_timeout(created->session, kHandshakeTimeoutMs);
+        if (libssh2_session_handshake(created->session, created->sshFd) != 0) {
+            work->error = "SSH 转发会话握手失败或超时";
             return;
         }
         HostKey key;
@@ -720,32 +715,29 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
             work->error = "该主机指纹与已保存的不一致，已停止转发";
             return;
         }
+        // Authenticate once in blocking mode. The previous retry closure returned early
+        // whenever the previous call had answered EAGAIN, so on a non-blocking session
+        // it never retried at all and the loop merely span until its deadline.
+        libssh2_session_set_timeout(created->session, kAuthTimeoutMs);
         int auth = -1;
-        auto attempt = [&]() {
-            if (auth == 0 || auth == LIBSSH2_ERROR_EAGAIN) return;
-            if (!privateKey.empty()) {
-                auth = libssh2_userauth_publickey_frommemory(
-                    created->session, user.c_str(), user.length(), nullptr, 0,
-                    privateKey.c_str(), privateKey.length(),
-                    passphrase.empty() ? nullptr : passphrase.c_str());
-            } else if (!password.empty()) {
-                auth = libssh2_userauth_password(created->session, user.c_str(), password.c_str());
-            }
-        };
-        auto authDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kAuthTimeoutMs);
-        while (true) {
-            attempt();
-            if (auth == 0) break;
-            if (auth != LIBSSH2_ERROR_EAGAIN) {
-                work->error = "SSH 认证失败，请检查用户名或凭据";
-                return;
-            }
-            if (std::chrono::steady_clock::now() >= authDeadline) {
-                work->error = "SSH 转发会话认证超时";
-                return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (!privateKey.empty()) {
+            auth = libssh2_userauth_publickey_frommemory(
+                created->session, user.c_str(), user.length(), nullptr, 0,
+                privateKey.c_str(), privateKey.length(),
+                passphrase.empty() ? nullptr : passphrase.c_str());
+        } else if (!password.empty()) {
+            auth = libssh2_userauth_password(created->session, user.c_str(), password.c_str());
+        } else {
+            work->error = "缺少 SSH 认证方式";
+            return;
         }
+        if (auth != 0) {
+            work->error = "SSH 转发会话认证失败或超时，请检查用户名或凭据";
+            return;
+        }
+        // Authenticated: only the pump needs non-blocking behaviour from here on.
+        libssh2_session_set_blocking(created->session, 0);
+        libssh2_session_set_timeout(created->session, 0);
         created->listenFd = socket(AF_INET, SOCK_STREAM, 0);
         if (created->listenFd < 0) {
             work->error = "无法创建本地转发端口";

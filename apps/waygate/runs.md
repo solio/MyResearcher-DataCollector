@@ -1521,3 +1521,76 @@ python apps/waygate/tools/check_android.py
 `forward` 是否返回、`direct-tcpip` 是否真的泵数据、以及 `applyProxyOverride` 的回调是否必然触发，
 都还需要一次真机日志确认。重跑时看 `waygate_ssh` 应出现 `forward session ready host=… port=…`
 与 `direct-tcpip channel open host=… port=…`，屏幕文案应能走到“正在应用浏览器代理”。
+
+### 2026-10-16 / Windows + Mate 70 Pro+ / 第二十一轮：真机重跑暴露转发会话认证缺陷
+
+**现象**：用户重跑“现在处理”后报错 `ssh转发会话认证超时`。注意这**已经不是挂死**，而是明确失败——
+说明第二十轮的超时机制生效，且拆解 `gLock` 后 exec 侧不再被拖住。
+
+**根因（一行守卫写反，导致转发会话从未认证成功）**：
+
+```cpp
+auto attempt = [&]() { if (auth == 0 || auth == LIBSSH2_ERROR_EAGAIN) return; ... };
+```
+
+非阻塞会话下第一次 `libssh2_userauth_publickey_frommemory` 必然返回 `EAGAIN`，此后每轮 `attempt()`
+都因第二条判断**直接早退**，重试循环变成空转，直到 20s 上限才报错。也就是说：转发会话**从来没有
+通过认证**——这同时解释了第二十轮之前为何表现为无限挂起（当时没有上限）。
+
+**修法**（改为“阻塞握手与认证 + 认证成功后再切非阻塞”）：
+
+- 握手与认证使用**阻塞模式**，以 `libssh2_session_set_timeout` 兜底（握手 20s、认证 20s）；
+  认证前该会话只属于本转发、无需多路复用，阻塞不会影响别的会话。
+- 认证成功后 `libssh2_session_set_blocking(session, 0)` 并清掉超时——只有每个浏览器连接的泵
+  需要 EAGAIN 语义（第二十轮已把通道打开与写入改成“EAGAIN 重试 + 上限”）。
+- 删掉握手与认证两个 EAGAIN 重试循环及那个坏守卫。
+
+**验证**：`BUILD SUCCESSFUL in 7 s 431 ms`；`libwaygate_ssh.so` 17:41:16 重编，按 UTF-8 解码验尸
+三条串全部命中（`SSH 转发会话认证失败或超时`、`forward session ready`、`direct-tcpip channel open`）；
+signed HAP 5,662,094 B，`install bundle successfully`；签名配置用完已还原。
+
+**未验证**：仍需一次真机点击确认 forward 能认证并绑定端口。预期：屏幕文案走到
+「正在绑定本地转发端口」、`waygate_ssh` 出现 `forward session ready host=… port=…`，
+随后浏览器连接出现 `direct-tcpip channel open host=… port=…`。
+
+### 2026-10-16 / Windows + Mate 70 Pro+ / 第二十二轮：真机跑通到“带样式的验证页”，并改掉白名单语义
+
+**一、真机结果（本轮里程碑）**：第二十一轮修复后，用户点击“现在处理”：
+转发会话认证通过 → 出口核对通过（截图确认「已确认共同出口，请在下方手动完成验证」＋
+「取消／验证完成并继续」按钮）→ 页面**带样式正常渲染**。即
+`原生转发 → LocalProxy（向 Mihomo 发 CONNECT）→ direct-tcpip 数据泵 → ArkWeb 执行 JS 读出口 IP`
+这一整条链**首次在真机上完整跑通**。
+
+**二、白板 → 裸 HTML 的根因（有硬证据）**：出口核对后加载被阻断页面时是**纯白板**。
+上一轮给 LocalProxy 加了判定日志与可读拒绝体后，本轮日志直接给出答案：
+
+```text
+waygate_proxy: CONNECT host=gbfek.dfcfw.com allowed=no ready=yes domains=4   （重复 40+ 次）
+```
+
+`gbfek.dfcfw.com` 是东方财富的静态/脚本域名，**不在**主控给的 4 个 `source_domains` 里；
+`ready=yes` 说明出口核对已通过，但白名单仍把它拒了 → CSS/JS 全丢 → 退化成裸 HTML。
+（白板之所以是纯白而不是报错，是因为原先拒绝体是 `Content-Length: 0` 的空 403，
+ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原因。）
+
+**三、语义修改（用户拍板“把白名单去掉”＝对齐桌面）**：`LocalProxy.permitted()` 改为
+**核对前只放行 `api.ipify.org`；`markReady()` 之后不再限制任何域名**。
+理由：桌面流程用 `ssh -L` 直接出网、本来没有域名过滤；核对通过即等价于桌面通道，
+白名单只剩“核对前 fail-closed（通道是否真走节点出口尚未证明时不允许任意域名出网）”。
+拒绝话术同步改为“该域名在出口核对完成前不可通行：…”。
+
+**四、Android 移植版同步（保持两平台一致）**：[LocalProxy.kt](../../android/app/src/main/java/com/myresearcher/waygate/proxy/LocalProxy.kt)
+同步了三处——① `permitted()` 同语义；② 增加 `waygate_proxy` 判定日志与可读拒绝体；
+③ **修掉一处与鸿蒙端不一致的实质性错误**：Android 版原先由手机自己回
+`200 Connection Established` 再把裸 TLS 字节送给 Mihomo，而上游是 HTTP 代理、
+必须收到**原始 CONNECT** 才能建隧道——已改成把
+`CONNECT host:443 HTTP/1.1` 经通道发出去、让 Mihomo 的 200 回给浏览器。
+（Android 版仍未编译：本机 SDK 还缺 `platforms/android-37`。）
+
+**五、本轮未能自证的部分（如实记录）**：成功那次点击的 `waygate_proxy` 日志**没抓到**
+（hilog 环形缓冲被 chromium 60fps 刷屏冲掉，`allowed=no` 计数为 0），
+因此“样式正常”的证据是**用户肉眼确认**，不是日志。下次需要更靠近点击时刻 dump。
+
+**六、仍未验证**：用户反馈“现在没有节点阻塞、看不到验证码”，所以
+**最后一步 `人工验证码 → 「验证完成并继续」 → probe → result → resume` 仍未在真机跑过**；
+单次探测与 `prepare` 的真实副作用（暂停同任务采集）也仍未在真机触发。

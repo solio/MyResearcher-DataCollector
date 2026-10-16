@@ -9,6 +9,7 @@
 // SSH session. The guarantee is the same and one hop shorter.
 package com.myresearcher.waygate.proxy
 
+import android.util.Log
 import com.myresearcher.waygate.ssh.DirectTunnel
 import com.myresearcher.waygate.ssh.SshTransport
 import java.io.InputStream
@@ -20,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 private const val NEUTRAL_HOST = "api.ipify.org"
+private const val TAG = "waygate_proxy"
 private const val MAX_CONNECTIONS = 24
 private const val MAX_HEAD_BYTES = 4096
 private const val HEAD_TIMEOUT_MS = 10_000
@@ -86,11 +88,19 @@ class LocalProxy(private val transport: SshTransport) {
         try {
             client.soTimeout = HEAD_TIMEOUT_MS
             val head = readHead(client.getInputStream()) ?: return
-            val target = parseConnect(head) ?: return refuse(client, "400 Bad Request")
-            if (!permitted(target, domains)) { return refuse(client, "403 Forbidden") }
+            val target = parseConnect(head) ?: return refuse(client, "")
+            val allowed = permitted(target)
+            Log.i(TAG, "CONNECT host=" + target.host + " allowed=" + allowed + " ready=" + ready +
+                " domains=" + domains.size)
+            if (!allowed) { return refuse(client, target.host) }
+            // The phone must not answer the browser's CONNECT itself: the upstream here is
+            // the worker's HTTP proxy (Mihomo), which establishes the tunnel, so its own
+            // CONNECT has to travel through the channel and its 200 has to come back.
             tunnel = transport.openDirect(sessionId, routeHost, routePort)
             tunnels[id] = tunnel
-            write(client.getOutputStream(), "HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.UTF_8))
+            val request = ("CONNECT " + target.host + ":443 HTTP/1.1\r\nHost: " + target.host +
+                ":443\r\n\r\n").toByteArray(Charsets.UTF_8)
+            write(tunnel.output, request)
             client.soTimeout = 0
             pump(client, tunnel)
         } catch (err: Exception) {
@@ -120,10 +130,16 @@ class LocalProxy(private val transport: SshTransport) {
         return Target(host, port)
     }
 
-    private fun permitted(target: Target, domains: List<String>): Boolean {
+    // The allowlist is the pre-check guard only: before the shared exit is confirmed
+    // nothing but the neutral probe host may pass. Once markReady() has run this channel
+    // is what the desktop `ssh -L` path provides, and that path has no domain filter -
+    // keeping one broke page rendering on the HarmonyOS side, where the page's static
+    // host (gbfek.dfcfw.com) was refused while the exit was already confirmed and the
+    // operator was left looking at raw unstyled HTML.
+    private fun permitted(target: Target): Boolean {
         if (target.host == NEUTRAL_HOST) { return true }
         if (!ready) { return false }
-        return domains.any { target.host == it || target.host.endsWith("." + it) }
+        return true
     }
 
     private fun acceptedDomains(domains: List<String>): List<String> =
@@ -141,9 +157,20 @@ class LocalProxy(private val transport: SshTransport) {
         return null
     }
 
-    private fun refuse(client: Socket, status: String) {
+    // A readable refusal body, never an empty 403: on the HarmonyOS side an empty body
+    // rendered as a blank page and made a policy refusal look like a broken tunnel.
+    private fun refuse(client: Socket, host: String) {
+        val reason = if (host.isEmpty()) {
+            "无法识别的 CONNECT 目标（只接受 CONNECT host:443）"
+        } else {
+            "该域名在出口核对完成前不可通行：" + host + "（核对通过后不再限制域名；核对前仅放行出口测量用的 api.ipify.org）"
+        }
+        val body = reason.toByteArray(Charsets.UTF_8)
         runCatching {
-            write(client.getOutputStream(), ("HTTP/1.1 " + status + "\r\nContent-Length: 0\r\n\r\n").toByteArray(Charsets.UTF_8))
+            val stream = client.getOutputStream()
+            write(stream, ("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8" +
+                "\r\nConnection: close\r\nContent-Length: " + body.size + "\r\n\r\n").toByteArray(Charsets.UTF_8))
+            write(stream, body)
         }
     }
 

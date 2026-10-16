@@ -1,11 +1,14 @@
 import { socket } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 // ArkWeb talks to this app-local HTTP proxy. Each browser CONNECT is validated
 // against the same rules the hub relay used, then forwarded as raw bytes over the
 // native SSH direct-tcpip listener to the worker's own proxied exit. Neither the
 // hub nor the phone decrypts browser traffic.
+const LOG_DOMAIN = 0x3200;
+const LOG_TAG = 'waygate_proxy';
 const HEAD_LIMIT = 16384;
 const HEAD_TIMEOUT = 12000;
 const OUTSTANDING_LIMIT = 1024 * 1024;
@@ -53,13 +56,17 @@ function connectTarget(head: ArrayBuffer): string {
   return host;
 }
 
-function permitted(host: string, domains: string[], ready: boolean): boolean {
+// The allowlist is the pre-check guard only: before the shared exit is confirmed
+// nothing but the neutral probe host may pass. Once markReady() has run this channel
+// is the same thing the desktop `ssh -L` path provides, and that path has no domain
+// filter at all. Keeping one broke page rendering, because stylesheets and scripts
+// come from hosts that are not in the descriptor's source domains (observed:
+// gbfek.dfcfw.com, a dfcfw static host, refused with allowed=no while ready=yes,
+// which left the operator looking at raw unstyled HTML).
+function permitted(host: string, ready: boolean): boolean {
   if (host === 'api.ipify.org') { return true; }
   if (!ready) { return false; }
-  for (const domain of domains) {
-    if (host === domain || host.endsWith('.' + domain)) { return true; }
-  }
-  return false;
+  return true;
 }
 
 class Pipe {
@@ -99,9 +106,12 @@ class Pipe {
       const end = headEnd(this.head);
       if (end < 0) { return; }
       const host = connectTarget(this.head);
-      if (host.length === 0 || !permitted(host, this.domains, this.ready.value)) {
-        this.client.send({ data: ascii('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n') }).catch(() => {});
-        this.close();
+      const allowed = host.length > 0 && permitted(host, this.ready.value);
+      hilog.info(LOG_DOMAIN, LOG_TAG,
+        'CONNECT host=%{public}s allowed=%{public}s ready=%{public}s domains=%{public}d',
+        host, allowed ? 'yes' : 'no', this.ready.value ? 'yes' : 'no', this.domains.length);
+      if (!allowed) {
+        this.refuse(host);
         return;
       }
       const rest = this.head.slice(end);
@@ -111,6 +121,20 @@ class Pipe {
       return;
     }
     this.push(data);
+  }
+
+  // A readable refusal body, never an empty 403: the empty body rendered as a blank
+  // page and made a policy refusal indistinguishable from a broken tunnel.
+  private refuse(host: string): void {
+    const reason = host.length === 0
+      ? '无法识别的 CONNECT 目标（只接受 CONNECT host:443）'
+      : '该域名在出口核对完成前不可通行：' + host +
+        '（核对通过后不再限制域名；核对前仅放行出口测量用的 api.ipify.org）';
+    const body = ascii(reason);
+    const head = ascii('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close' +
+      '\r\nContent-Length: ' + body.byteLength.toString() + '\r\n\r\n');
+    this.client.send({ data: joined(head, body) }).catch(() => {});
+    this.close();
   }
 
   private async openUpstream(host: string, rest: ArrayBuffer): Promise<void> {
@@ -124,7 +148,10 @@ class Pipe {
       if (this.closed) { return; }
       await upstream.send({ data: ascii('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n') });
       if (rest.byteLength > 0) { await upstream.send({ data: rest }); }
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'upstream tunnel ready host=%{public}s rest=%{public}d',
+        host, rest.byteLength);
     } catch (_) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'upstream tunnel failed host=%{public}s', host);
       this.close();
     }
   }
