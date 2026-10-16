@@ -110,8 +110,10 @@ export interface BuiltinNode {
   host: string;
   port: number;
   user: string;
+  // 'key' uses the private key in secretFile; 'password' uses it as the password.
+  authType: string;
   // Every fingerprint the server may legitimately present. The negotiated type
-  // depends on libssh2's algorithm order, so ed25519 and rsa are both pinned.
+  // depends on libssh2's algorithm order, so all of them are pinned.
   hostKeys: string[];
   secretFile: string;
 }

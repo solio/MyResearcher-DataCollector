@@ -1298,3 +1298,56 @@ libssh2 无论协商到哪一种都会被接受，其余一律拒绝。
 `audit → prepare → exit → 原生转发 → 浏览器出口核对 → 人工验证码 → probe → result → resume`。
 注意 `prepare` 会**暂停 36 上同任务在跑的采集**，`probe` 会对原失败请求**发一次真实探测**，
 验证码必须人工完成；失败不自动重试。
+
+### 2026-10-16 / Windows + Mate 70 Pro+ / 第十八轮：内置通道扩到三个节点（手机专用密钥 + 全部主机指纹）
+
+用户给出两台新节点（`43.160.196.129`、`43.132.206.172`）的口令并要求“通道也弄进去”。
+**口令这条路先被证据排除**：在两台用口令登录均被拒——
+`BadAuthenticationType: allowed types ['publickey','gssapi-keyex','gssapi-with-mic']`
+（即这两台 sshd 不允许密码认证）。用户随后改为**他本人把公钥加到三台机器**，这也是最干净的做法。
+口令未写入仓库、文档、日志或提交。
+
+手机专用密钥（不再复用桌面私钥）：
+
+- 新生成 ED25519、**无口令**；公钥（用户已授权到 3 台）：
+  `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH8R7jbdxtbso9w7YWvVKHl/8VuSEO2ByKri7oqDdPFY waygate-phone`
+  指纹 `SHA256:4J5j9AKB7+26MikduCb4D+ILs/phgiIkf2szorL+XNo`。
+- 私钥放 `rawfile/channel/phone-ed25519.pem`（git-ignored）；**旧包内的桌面私钥 `36.pem` 已删除**，
+  三台统一只用这把手机密钥（撤销＝从他的 authorized_keys 删掉那一行）。
+
+只读登录验证 + 指纹采集（新密钥，本机执行，三台全部成功）：
+
+```text
+36.138.125.17    -> uid=0(root)  hostname=ecs-02826072
+43.160.196.129   -> uid=0(root)  hostname=VM-0-14-opencloudos
+43.132.206.172   -> uid=0(root)  hostname=VM-0-8-opencloudos
+```
+
+各机 `ssh-keygen -lf /etc/ssh/*.pub` 取回的指纹（按 App 同款“type + SHA256:base64无padding”格式，
+已全部写入 channel.json）：
+
+```text
+36       ecdsa-sha2-nistp256 SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w
+36       ssh-ed25519        SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk
+36       ssh-rsa            SHA256:tsnfhOBHxe02IHsRBdCv750q/wJkZo9v3Ymf98yrqiE
+43.160   ssh-dss            SHA256:GCF3ruwQIegwqSbFYbnV4t0QtX8KPpa0pvnV1m1Kc70
+43.160   ecdsa-sha2-nistp256 SHA256:1+953wgooWmyQqRqMoaT4bP2k9dTWIOsM8iN5xglBBY
+43.160   ssh-ed25519        SHA256:QJnUv91xE1qKvtQXlFdXcLtDmH5Ce9G2ha9rfamC4x0
+43.160   ssh-rsa            SHA256:ejo+MUgkmLUJhB7MlcNQKr+gWTRbmVP5sV7NzeVauwU
+43.132   ssh-dss            SHA256:7OSAqZyTNGO+VWweE2dASXleepBIB14kJTi0wolPx3M
+43.132   ecdsa-sha2-nistp256 SHA256:H50ZG32IGzOI0O5wGJiAnyLxj6brqmtqyv55X66kF+I
+43.132   ssh-ed25519        SHA256:yqWfUP0PqXA3y7A1uzLs2B031qOMSE4Sq2suKx+2Yuw
+43.132   ssh-rsa            SHA256:+t1TknZxgNJgkDxy5GI7uc+Ql8YoJ/uAxS3agPooVmU
+```
+
+代码变化：`BuiltinNode` 增加 `authType`（key/password）；`loadBundled()` 改为多节点、按
+`secretFile` 缓存凭据；`bundledFor(host)` 按主机匹配（description 的 `ssh_host_hint` 或手填地址都能命中）；
+`bundledProfileFor()` 按 `authType` 构造 profile（不再写死 'key'）；通道页新增**节点选择按钮**
+（36 / 43-160 / 43-132）。构建验证：`BUILD SUCCESSFUL`；解包 HAP 确认
+`resources/rawfile/channel.json`(1561B) 与 `resources/rawfile/channel/phone-ed25519.pem`(399B) 都在；
+`install bundle successfully`。
+
+真机状态：36 已于第十七轮 PASS；**新增两台尚未在手机上跑通道测试**——驱动到一半用户切到微信，
+已立即停止 UI 驱动，避免干扰其使用。待用户空闲或自行点击：设置 → SSH 通道测试 → 顶部选
+`43-160` / `43-132` → 「建立通道（内置凭据）」，预期同样出现
+`uid=0(root) / hostname=VM-0-14-opencloudos（或 VM-0-8）`。
