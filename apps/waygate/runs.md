@@ -1470,3 +1470,54 @@ python apps/waygate/tools/check_android.py
 下一步（Android）：用 Android Studio 打开 `apps/waygate/android`（或先生成 wrapper）
 → `assembleDebug` 修编译错误 → 有 Android 真机后做通道测试与完整流程，
 验收项与鸿蒙端同一张表。
+
+### 2026-10-16 / Windows + Mate 70 Pro+ / 第二十轮：定位并修掉“卡在建立应用内 SSH 通道”
+
+**一、用户现象**：真机点“现在处理”后长时间停在 `正在建立应用内 SSH 通道`。
+
+**二、取证（手机日志已丢，改用节点侧 + 代码）**
+- 手机 hilog 环形缓冲已把这轮 `waygate_ssh` 冲掉：导出 1,213,844 字节、匹配 `waygate_ssh` **0 行**。
+- 节点侧（只读）三台全部正常：`mihomo` 分别在 `127.0.0.1:7890` 与 `:9090` 监听；sshd 正常接受手机
+  这把 `ED25519 SHA256:4J5j9AKB…`。
+- 43.132.206.172 的 sshd 记录把这次流程的两条会话都留下了：
+
+  ```text
+  17:18:19 Received disconnect ... port 48846 [preauth] "probe"      ← 取指纹，正常收尾
+  17:18:19 Accepted publickey root ... port 48849                    ← exec 会话（audit/prepare/exit）
+  17:27:23 Accepted publickey root ... port 16295                    ← 第二条会话＝forward，此后无 disconnect
+  现在    ESTAB 10.5.0.8:22 ↔ 112.66.184.52:16295，Recv-Q=2564       ← 服务器有数据待发，手机没在读
+  ```
+
+  另：此刻手机对三台各挂一条 ESTAB 会话（36:43109、43.160:43103、43.132:16295），均为多次尝试后未收尾。
+
+**三、根因（代码级，与节点无关）**
+1. `gLock` 被长时间持有且跨越**无超时**的阻塞调用：`ForwardStart` 的整段握手/认证/绑定都在锁内，
+   `Exec` 的阻塞读循环也在锁内；而 `TcpConnect` 的 `connect()`、握手、认证、`Exec` 读循环**都没有超时**。
+   任何一次卡顿都会连锁卡死后续所有 native SSH 调用——这是“一挂就挂到底”的结构性原因。
+2. `PumpConnection` 在 `libssh2_session_set_blocking(session, 0)` 的非阻塞会话上**只调用一次**
+   `libssh2_channel_direct_tcpip_ex`：非阻塞下必须对 `EAGAIN` 重试，所以**每一个浏览器连接的转发通道
+   都打不开**；`libssh2_channel_write` 的 `EAGAIN` 也被当作致命错误。服务端 `Recv-Q` 堆积与此吻合。
+
+**四、改动（`entry/src/main/cpp/napi_init.cpp`）**
+- `TcpConnect` 改为非阻塞 `connect` + `poll` 10s 上限 + `SO_ERROR` 判定，失败即报错不悬挂。
+- 新增超时常量并落地：握手 20s、认证 20s、exec 会话 60s（`libssh2_session_set_timeout`）、
+  通道打开 15s、通道写 30s。
+- `ForwardStart`：**不再在 `gLock` 内做握手/认证/绑定**（该会话不进 `gSessions`，只由本转发自己的线程使用），
+  `gLock` 只保护 `gForwards` 插入；握手/认证的 EAGAIN 循环加上限，超时给出明确错误。
+- `PumpConnection`：通道打开改为“`EAGAIN` 重试 + 15s 上限”（每 10ms 一次、仅在调用瞬间持 `forward->lock`）；
+  写入改为 `EAGAIN` 重试 + 30s 上限；新增 `forward session ready` / `direct-tcpip channel open` 成功日志。
+
+**五、ArkTS 阶段标记（`pages/Index.ets` `begin()`）**：在 `forward` → `proxy.start` → `applyProxyOverride`
+之间补两句文案 `正在绑定本地转发端口`、`正在应用浏览器代理`（原实现这三步之间没有文案更新，
+所以卡住时分不清是哪一步——这也是本轮定位变慢的原因）。
+
+**六、验证**
+- `BUILD SUCCESSFUL in 10 s 981 ms`；`libwaygate_ssh.so` 于 17:36:06 重编（未 strip 6,597,176 B）；
+  用新增日志串验尸：`forward session ready`、`direct-tcpip channel open` **均在 .so 中命中**
+  （中文串因按 ASCII 解码未命中，属方法限制，非缺改）。
+- signed HAP 5,666,191 B，`install bundle successfully`；签名配置用完已 `git checkout` 还原。
+
+**七、未验证（下一步要真机重跑）**：手机当时锁屏，**尚未重跑“现在处理”**，所以
+`forward` 是否返回、`direct-tcpip` 是否真的泵数据、以及 `applyProxyOverride` 的回调是否必然触发，
+都还需要一次真机日志确认。重跑时看 `waygate_ssh` 应出现 `forward session ready host=… port=…`
+与 `direct-tcpip channel open host=… port=…`，屏幕文案应能走到“正在应用浏览器代理”。

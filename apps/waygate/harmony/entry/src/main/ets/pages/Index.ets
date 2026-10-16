@@ -412,7 +412,9 @@ struct Index {
       if (profile.passphrase) { forwarding.passphrase = profile.passphrase; }
       const tunnel = await forward(forwarding);
       runtime.forwardId = tunnel.id;
+      this.message = '正在绑定本地转发端口';
       const endpoint = await runtime.proxy.start(tunnel.port, descriptor.source_domains);
+      this.message = '正在应用浏览器代理';
       const config = new webview.ProxyConfig();
       config.insertProxyRule(endpoint);
       config.clearImplicitRules();

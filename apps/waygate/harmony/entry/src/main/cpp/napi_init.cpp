@@ -18,8 +18,12 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
+#include <poll.h>
 #include <atomic>
 #include <functional>
 #include <map>
@@ -31,6 +35,15 @@ namespace {
 
 std::once_flag gLibInit;
 std::mutex gLock;  // libssh2 sessions are not thread safe; serialise every call.
+
+// Every blocking wait is bounded. Without these the phone had no way to fail: a
+// throttled banner, a stalled exec or an unreachable forward endpoint hung forever.
+constexpr int kConnectTimeoutMs = 10000;
+constexpr int kHandshakeTimeoutMs = 20000;
+constexpr int kAuthTimeoutMs = 20000;
+constexpr int kExecTimeoutMs = 60000;
+constexpr int kChannelOpenTimeoutMs = 15000;
+constexpr int kChannelWriteTimeoutMs = 30000;
 
 struct Session {
     int fd = -1;
@@ -130,7 +143,30 @@ int TcpConnect(const std::string& host, int port, std::string& error) {
     for (struct addrinfo* item = list; item != nullptr; item = item->ai_next) {
         fd = socket(item->ai_family, item->ai_socktype, item->ai_protocol);
         if (fd < 0) continue;
-        if (connect(fd, item->ai_addr, item->ai_addrlen) == 0) break;
+        // Bounded connect: a throttled or firewalled host must not hold this call, and
+        // through it the shared session lock, indefinitely.
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int result = connect(fd, item->ai_addr, item->ai_addrlen);
+        if (result != 0 && errno == EINPROGRESS) {
+            struct pollfd waiting;
+            waiting.fd = fd;
+            waiting.events = POLLOUT;
+            waiting.revents = 0;
+            if (poll(&waiting, 1, kConnectTimeoutMs) > 0) {
+                int pending = 0;
+                socklen_t length = sizeof(pending);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &pending, &length) == 0 && pending == 0) {
+                    result = 0;
+                } else {
+                    result = -1;
+                }
+            } else {
+                result = -1;
+            }
+        }
+        if (flags >= 0) fcntl(fd, F_SETFL, flags);
+        if (result == 0) break;
         close(fd);
         fd = -1;
     }
@@ -251,6 +287,7 @@ static napi_value ProbeHostKey(napi_env env, napi_callback_info info) {
             work->error = "无法初始化 SSH 会话";
             return;
         }
+        libssh2_session_set_timeout(session, kHandshakeTimeoutMs);
         if (libssh2_session_handshake(session, fd) != 0) {
             libssh2_session_free(session);
             close(fd);
@@ -322,6 +359,7 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
             return;
         }
         libssh2_session_set_blocking(session, 1);
+        libssh2_session_set_timeout(session, kHandshakeTimeoutMs);
         if (libssh2_session_handshake(session, fd) != 0) {
             libssh2_session_free(session);
             close(fd);
@@ -358,6 +396,9 @@ static napi_value Connect(napi_env env, napi_callback_info info) {
             close(fd);
             return;
         }
+        // Later exec calls on this session are bounded too, so a worker command that
+        // never exits cannot hold the shared lock forever.
+        libssh2_session_set_timeout(session, kExecTimeoutMs);
         int handle = gNextId++;
         Session* entry = new Session();
         entry->fd = fd;
@@ -536,16 +577,29 @@ int gNextForwardId = 1;
 
 void PumpConnection(Forward* forward, int clientFd) {
     LIBSSH2_CHANNEL* channel = nullptr;
-    {
-        std::lock_guard<std::mutex> guard(forward->lock);
-        channel = libssh2_channel_direct_tcpip_ex(forward->session, forward->host.c_str(),
-                                                  forward->hostPort, "127.0.0.1", 0);
+    // This session is non-blocking, so a channel open returns EAGAIN until the worker's
+    // sshd confirms it. Calling it once (the previous behaviour) refused every browser
+    // connection, which is why the shared-exit check never got its page loaded.
+    auto openDeadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kChannelOpenTimeoutMs);
+    while (!forward->stopped.load() && std::chrono::steady_clock::now() < openDeadline) {
+        {
+            std::lock_guard<std::mutex> guard(forward->lock);
+            channel = libssh2_channel_direct_tcpip_ex(forward->session, forward->host.c_str(),
+                                                      forward->hostPort, "127.0.0.1", 0);
+            if (channel != nullptr) break;
+            if (libssh2_session_last_errno(forward->session) != LIBSSH2_ERROR_EAGAIN) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     if (channel == nullptr) {
-        OH_LOG_ERROR(LOG_APP, "direct-tcpip channel open failed");
+        OH_LOG_ERROR(LOG_APP, "direct-tcpip channel open failed host=%{public}s port=%{public}d",
+                     forward->host.c_str(), forward->hostPort);
         close(clientFd);
         return;
     }
+    OH_LOG_INFO(LOG_APP, "direct-tcpip channel open host=%{public}s port=%{public}d",
+                forward->host.c_str(), forward->hostPort);
     char buffer[16384];
     while (!forward->stopped.load()) {
         fd_set readSet;
@@ -559,11 +613,19 @@ void PumpConnection(Forward* forward, int clientFd) {
             ssize_t got = recv(clientFd, buffer, sizeof(buffer), 0);
             if (got <= 0) break;
             ssize_t offset = 0;
+            auto writeDeadline = std::chrono::steady_clock::now() +
+                                 std::chrono::milliseconds(kChannelWriteTimeoutMs);
             while (offset < got) {
-                std::lock_guard<std::mutex> guard(forward->lock);
-                ssize_t written = libssh2_channel_write(channel, buffer + offset, got - offset);
-                if (written <= 0) { offset = -1; break; }
-                offset += written;
+                {
+                    std::lock_guard<std::mutex> guard(forward->lock);
+                    ssize_t written = libssh2_channel_write(channel, buffer + offset, got - offset);
+                    if (written > 0) { offset += written; continue; }
+                    if (written != LIBSSH2_ERROR_EAGAIN) { offset = -1; break; }
+                }
+                // EAGAIN on a non-blocking session means the socket needs to drain; it is
+                // not fatal, but it must not spin forever either.
+                if (std::chrono::steady_clock::now() >= writeDeadline) { offset = -1; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
             if (offset < 0) break;
         }
@@ -623,7 +685,9 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
     created->host = remoteHost;
     created->hostPort = remotePort;
     work->run = [=]() {
-        std::lock_guard<std::mutex> guard(gLock);
+        // Deliberately outside gLock: this session never enters gSessions, only this
+        // forward's own threads touch it, and a stalled handshake here must not block
+        // the exec session the app is still using.
         std::call_once(gLibInit, []() { libssh2_init(0); });
         created->sshFd = TcpConnect(host, port, work->error);
         if (created->sshFd < 0) return;
@@ -635,8 +699,20 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
             return;
         }
         libssh2_session_set_blocking(created->session, 0);
-        while (libssh2_session_handshake(created->session, created->sshFd) == LIBSSH2_ERROR_EAGAIN) {
+        auto handshakeDeadline = std::chrono::steady_clock::now() +
+                                 std::chrono::milliseconds(kHandshakeTimeoutMs);
+        int handshake = 0;
+        while ((handshake = libssh2_session_handshake(created->session, created->sshFd)) ==
+               LIBSSH2_ERROR_EAGAIN) {
+            if (std::chrono::steady_clock::now() >= handshakeDeadline) {
+                work->error = "SSH 转发会话握手超时";
+                return;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (handshake != 0) {
+            work->error = "SSH 转发会话握手失败";
+            return;
         }
         HostKey key;
         if (!GrabHostKey(created->session, key) ||
@@ -656,11 +732,16 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
                 auth = libssh2_userauth_password(created->session, user.c_str(), password.c_str());
             }
         };
+        auto authDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kAuthTimeoutMs);
         while (true) {
             attempt();
             if (auth == 0) break;
             if (auth != LIBSSH2_ERROR_EAGAIN) {
                 work->error = "SSH 认证失败，请检查用户名或凭据";
+                return;
+            }
+            if (std::chrono::steady_clock::now() >= authDeadline) {
+                work->error = "SSH 转发会话认证超时";
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -685,8 +766,13 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
         socklen_t length = sizeof(local);
         getsockname(created->listenFd, reinterpret_cast<struct sockaddr*>(&local), &length);
         created->port = ntohs(local.sin_port);
-        *newId = gNextForwardId++;
-        gForwards[*newId] = created;
+        {
+            std::lock_guard<std::mutex> guard(gLock);
+            *newId = gNextForwardId++;
+            gForwards[*newId] = created;
+        }
+        OH_LOG_INFO(LOG_APP, "forward session ready host=%{public}s port=%{public}d",
+                    host.c_str(), created->port);
         Forward* entry = created;
         entry->acceptor = std::thread([entry]() {
             while (!entry->stopped.load()) {
