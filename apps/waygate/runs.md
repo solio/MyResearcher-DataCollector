@@ -1235,3 +1235,66 @@ hvigorw ... assembleHap --no-daemon → BUILD SUCCESSFUL（ArkTS 仅既有 “ma
 登录 36。缓解：该 pem 在 `.gitignore` 内、HAP 本身也被 `*.hap` 忽略；撤销方式是删掉该文件重新构建，
 并在 36 上轮换该 key。更干净的做法是为手机单独生成一对密钥、只把公钥追加到 36 的
 `~/.ssh/authorized_keys`（需要一次服务器变更），当前为了“零输入”先复用了既有密钥。
+
+### 2026-10-16 / Windows + Mate 70 Pro+ / 第十七轮：手机→36 SSH 通道**真机跑通**；确认主控已更新
+
+**一、通道测试真机 PASS（本轮最重要结论）**
+
+真机点 设置 → 「SSH 通道测试（手机 → 节点）」→「建立通道（内置凭据）」，页面输出（布局 dump 原文）：
+
+```text
+SSH 通道可用
+主机指纹（已与内置配置比对通过）
+ecdsa-sha2-nistp256 SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w
+通道已建立，主机指纹已核对
+退出码：0
+--- stdout ---
+uid=0(root) gid=0(root) groups=0(root)
+ecs-02826072
+SSH_CONNECTION=112.66.184.52 23773 10.18.0.3 22
+```
+
+设备日志（`hilog -x`，tag `waygate_ssh`）同一时刻：
+
+```text
+10-16 14:08:17.186 ... waygate_ssh: probeHostKey start host=36.138.125.17 port=22
+10-16 14:08:17.631 ... waygate_ssh: probeHostKey ok type=ecdsa-sha2-nistp256 fingerprint=SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w
+```
+
+即 **手机 → 36.138.125.17:22 建立 SSH 通道、主机指纹核对通过、root 认证成功、只读命令执行成功**。
+本次全程未调用 audit/prepare/probe，**没有暂停任何采集、没有发起来源请求**，36 侧无任何改动。
+
+**二、第三个主机指纹（ECDSA）与交叉核对**
+
+手机实际协商到的是 **ecdsa-sha2-nistp256**（不是 ED25519、也不是 RSA）。第一次比对被拒的报错是
+`节点主机指纹与内置配置不一致，已拒绝连接（本次协商到 ecdsa-sha2-nistp256 SHA256:nTL9m…）`
+——这条报错带了实际值，直接定位到原因（只固定了 ED25519+RSA 两条）。
+随后在 36 上**只读**列出并计算全部 host key 指纹：
+
+```text
+SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk  (ED25519)
+SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w  (ECDSA)
+SHA256:tsnfhOBHxe02IHsRBdCv750q/wJkZo9v3Ymf98yrqiE  (RSA)
+```
+
+手机报的 ECDSA 值与 36 `/etc/ssh/ssh_host_ecdsa_key.pub` 的指纹**逐字符一致** → 既确认了
+手机端 SHA256 指纹计算实现正确，也确认连的确实是 36。三个指纹已全部写入
+[channel.json](harmony/entry/src/main/resources/rawfile/channel.json) 的 `hostKeys`，
+libssh2 无论协商到哪一种都会被接受，其余一律拒绝。
+
+**三、主控已更新（由手机行为反证）**
+
+上一轮点“现在处理”报的是 404；本轮报的是上面那条**指纹不一致**。而这条报错来自
+`bundledProfileFor()`，它只在 `GET /v1/incidents/{id}/verification` **成功返回之后**才会被调用
+（见 `verify()`）。→ **fzz-002 上的主控已经带上描述接口，十四轮的 404 已消除**，并且
+“现在处理”已经自动改用内置凭据（说明该待办的 `ssh_host_hint` 就是 `36.138.125.17`，即
+36 在这批待办里是可处理的）。本轮**没有**继续往 audit/prepare 走。
+
+**四、代码变化**：`channel.json` 增加第三条指纹；`Models.ets` 的 `BuiltinNode.hostKey` 改为
+`hostKeys: string[]`；`Index.ets` 的 `bundledProfileFor()` 按列表比对，报错带上本次协商值。
+构建/安装：`BUILD SUCCESSFUL` → signed HAP → `install bundle successfully`（签名配置用完即还原）。
+
+**下一步（未做，需真实副作用知情）**：点属于 36 的那条待办走完整流程
+`audit → prepare → exit → 原生转发 → 浏览器出口核对 → 人工验证码 → probe → result → resume`。
+注意 `prepare` 会**暂停 36 上同任务在跑的采集**，`probe` 会对原失败请求**发一次真实探测**，
+验证码必须人工完成；失败不自动重试。

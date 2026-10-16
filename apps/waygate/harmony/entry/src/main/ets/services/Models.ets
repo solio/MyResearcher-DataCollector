@@ -110,7 +110,9 @@ export interface BuiltinNode {
   host: string;
   port: number;
   user: string;
-  hostKey: string;
+  // Every fingerprint the server may legitimately present. The negotiated type
+  // depends on libssh2's algorithm order, so ed25519 and rsa are both pinned.
+  hostKeys: string[];
   secretFile: string;
 }
 export interface BuiltinConfig { nodes: BuiltinNode[]; }

@@ -6,7 +6,11 @@
       "host": "36.138.125.17",
       "port": 22,
       "user": "root",
-      "hostKey": "ssh-ed25519 SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk",
+      "hostKeys": [
+        "ssh-ed25519 SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk",
+        "ecdsa-sha2-nistp256 SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w",
+        "ssh-rsa SHA256:tsnfhOBHxe02IHsRBdCv750q/wJkZo9v3Ymf98yrqiE"
+      ],
       "secretFile": "channel/36.pem"
     }
   ]

@@ -592,8 +592,9 @@ struct Index {
     if (!node) { throw new Error('没有内置通道配置'); }
     const key = await probeHostKey({ host: host, port: node.port });
     const fingerprint = key.type + ' ' + key.fingerprint;
-    if (node.hostKey && fingerprint !== node.hostKey) {
-      throw new Error('节点主机指纹与内置配置不一致，已拒绝连接');
+    const accepted = node.hostKeys;
+    if (accepted.length > 0 && !accepted.some((pinned: string) => pinned === fingerprint)) {
+      throw new Error('节点主机指纹与内置配置不一致，已拒绝连接（本次协商到 ' + fingerprint + '）');
     }
     return { nodeId: nodeId, host: host, port: node.port, user: node.user, authType: 'key',
       secret: this.bundledKey, passphrase: '', knownHostBase64: key.base64, knownHostType: key.type,
