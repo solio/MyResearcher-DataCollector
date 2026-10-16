@@ -1389,3 +1389,84 @@ libssh2 无论协商到哪一种都会被接受，其余一律拒绝。
 （`audit → prepare → exit → 原生转发 → 浏览器出口核对 → 人工验证码 → probe → result → resume`）。
 其中 `prepare` 会暂停该节点上同任务在跑的采集、`probe` 会对原失败请求发一次真实探测，
 验证码必须人工完成，失败不自动重试。
+
+### 2026-10-16 / Windows / 第十九轮：Android 移植代码就绪（**未编译、未真机**）
+
+用户要求“按同样的套路也准备一份 android 的 app（准备好代码就行），暂时没有真机”。
+本轮只准备代码与静态自检，**没有 APK、没有安装、没有真机验证**。
+
+环境事实（决定了本轮的验证上限）：本机有 Temurin JDK 21，但
+**没有 Android SDK、没有 Gradle、没有 kotlinc、没有 Android Studio**
+（`ANDROID_HOME`/`ANDROID_SDK_ROOT` 为空，`D:\kits` 下只有 DevEco 与 Maven/JDK）。
+→ 本次无法编译，也无法出 APK。仓库同样没有 `gradlew`/`gradle-wrapper.jar`（二进制文件）。
+
+技术选型（含被否决的方案与理由）：
+
+- SSH 用 **sshj 0.41.1**（`com.hierynomus:sshj`）+ **BouncyCastle 1.84**
+  （`bcprov-jdk18on`、`bcpkix-jdk18on`）。Ed25519 必须自带 BC：Android 内置的是精简版。
+  **否决 Apache MINA sshd**：其默认传输用 `java.nio.channels.AsynchronousSocketChannel`，
+  Android 的 libcore 不实现该异步 socket 通道。**此项经核对官方文档与 Android desugaring 表，
+  但仍属推断，未在真机确认。**
+- WebView 代理用 **androidx.webkit 1.17.1 `ProxyController`**（`WebViewFeature.PROXY_OVERRIDE`），
+  对应鸿蒙端 ArkWeb ProxyController；应用与清除均为异步、必须等回调。
+- `minSdk 28`：避免 API 26/27 平台自带旧 BC 与打入的 1.84 冲突；`compileSdk/targetSdk 35`；
+  AGP 8.7.3 / Kotlin 2.0.21 / Gradle 8.9 三者配套固定。
+
+新增文件（`apps/waygate/android/`）：
+
+```text
+settings.gradle.kts / build.gradle.kts / gradle.properties / gradle/wrapper/gradle-wrapper.properties
+app/build.gradle.kts / app/proguard-rules.pro / app/src/main/AndroidManifest.xml
+app/src/main/res/values/waygate.xml / res/xml/network_security_config.xml
+app/src/main/res/layout/activity_main.xml / layout/item_incident.xml
+app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml / drawable/ic_launcher_foreground.xml
+app/src/main/assets/channel.json            ← 与鸿蒙 rawfile 同一份节点配置（自检逐节点比对）
+app/src/main/java/com/myresearcher/waygate/
+    MainActivity.kt                          ← 屏幕状态机 + WebView + VerificationHost 实现
+    core/{Models,Api,Vault,SecureStore,NodeProfiles,BundledChannel}.kt
+    ssh/{SshTransport,SshjTransport,Fingerprints,WorkerAction}.kt
+    proxy/{LocalProxy,ProxyOverride}.kt
+    runtime/Runtime.kt
+    verify/DirectVerifier.kt                 ← verify/begin/finish/resumeClaim 的逐句镜像
+```
+
+与鸿蒙端的**有意差异**（均记入 README）：
+
+1. `NodeProfile` 增加 `pinned` 字段：按“全部已固定指纹”比对。鸿蒙端只按导入时协商到的那
+   一把密钥原始字节比对（第十七轮正是因此被 ECDSA 误拒），移植版把这个坑补掉。
+2. 本地代理对每个浏览器连接直接开 `direct-tcpip` 通道，不再经第二个本地监听端口转发，
+   少一跳；**白名单仍在手机侧判定**（未 `markReady()` 只放行 `api.ipify.org`，之后才放行
+   `source_domains`），因此安全性质不变。
+3. WebView 复用同一个实例并导航到 `about:blank`，不销毁重建（ArkWeb 侧是销毁重建）。
+4. 出口测量一律显式 `loadUrl('https://api.ipify.org')`，不依赖“首次挂载即加载”的时序。
+
+静态自检（本机可跑、已通过）：新增 [tools/check_android.py](tools/check_android.py)，
+核对 ① manifest/布局里所有 `@string/@color/@style/@layout/@drawable/@xml/@mipmap/@id` 引用都能解析；
+② Kotlin 里每个 `R.id.*` 都能在布局中找到 `@+id`；③ 每个 Kotlin 文件包名与目录一致、
+顶层类名与文件名一致；④ Android 与鸿蒙两份 `channel.json` **逐节点完全一致**（3 节点）；
+⑤ 私钥路径被 `.gitignore` 覆盖、且没有任何被跟踪文件含真正的 PEM 私钥块。
+
+```text
+python apps/waygate/tools/check_android.py
+→ channel.json nodes identical on both platforms (3 nodes)
+→ credential path is git-ignored
+→ Android project structure OK (not compiled: no Android SDK on this machine)
+```
+
+**必须说明：该脚本只是静态核对，不是 Kotlin 编译器**，类型/API 错误它查不出来。
+
+未验证（**不声称可用**）：
+
+- **未编译、无 APK、未装到任何 Android 设备**；本轮没有任何 Android 真机结果。
+- sshj 的三处 API 细节未编译验证：`loadKeys(privateKey, publicKey, passphrase)` 传内存密钥、
+  `newDirectConnection(host, port)` 的并发通道、以及 keepAlive 链式属性
+  （`connection.keepAlive.keepAliveInterval`，已单独隔离并注释“若不通过编译就删掉”）。
+- **推送未接线**：Android 侧需要 Firebase 工程与 `google-services.json`，本轮只保留
+  `POST /v1/devices {"id","token"}` 的契约说明，未引入 FCM 依赖。
+- `minSdk 28` 规避 BC 冲突属推断，未实测 26/27。
+- 三台节点（36 / 43-160 / 43-132）的 Android 通道**未在 Android 上跑过**；
+  鸿蒙端三台均为真机 PASS（第十七、十八轮）。
+
+下一步（Android）：用 Android Studio 打开 `apps/waygate/android`（或先生成 wrapper）
+→ `assembleDebug` 修编译错误 → 有 Android 真机后做通道测试与完整流程，
+验收项与鸿蒙端同一张表。

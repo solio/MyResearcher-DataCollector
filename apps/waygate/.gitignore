@@ -18,6 +18,7 @@ wecode-cpp.db*
 harmony/entry/src/main/resources/rawfile/channel/*.pem
 harmony/entry/src/main/resources/rawfile/channel/*.pub
 harmony/entry/src/main/resources/rawfile/channel/*.pwd
+android/app/src/main/assets/channel/*
 *.hap
 *.app
 signing/
