@@ -62,6 +62,7 @@ struct Index {
   private bundledChecked: boolean = false;
   private bundledFailed: string = '';
   private measuredOnce: boolean = false;
+  private probeWaitAborted: boolean = false;
   private exitWaiter: ((ip: string) => void) | undefined = undefined;
   private timer: number = -1;
   private polling: boolean = false;
@@ -81,7 +82,12 @@ struct Index {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
   }
 
-  private error(err: Error): void { this.message = readableError(err.message || '操作未完成，请重试连接'); }
+  // Failures carry the node/task they belong to, so a stale message is never mistaken
+  // for the node the operator is working on now.
+  private error(err: Error): void {
+    const context = this.stockTitle ? this.stockTitle + '：' : '';
+    this.message = readableError(context + (err.message || '操作未完成，请重试连接'));
+  }
 
   private syncFailed(message: string, details: string): void {
     const safeMessage = message.split(this.credentials.token).join('[已隐藏]').slice(0, 400);
@@ -171,7 +177,9 @@ struct Index {
       this.items = feed.items; this.nodes = feed.nodes;
       this.lastCollectorSync = feed.last_poll > 0 ? new Date(feed.last_poll * 1000).toLocaleString() : '';
       if (feed.error) {
-        this.syncFailed(feed.error, '接口：GET /v1/inbox\nHTTP：200\n阶段：服务端同步 collector');
+        // The feed error is the hub's own collector sync, not a node problem: label it so
+        // it cannot be read as "the node I just touched failed".
+        this.syncFailed('主控同步失败：' + feed.error, '接口：GET /v1/inbox\nHTTP：200\n阶段：服务端同步 collector');
       } else {
         this.syncMessage = '';
         this.lastRefreshAt = new Date().toLocaleString();
@@ -255,6 +263,7 @@ struct Index {
   // Releases every resource this phone created for the current verification.
   private async releaseAll(): Promise<void> {
     this.generation++;
+    this.probeWaitAborted = true;
     await this.stopWindow();
     await runtime.releaseSsh();
     runtime.incident = '';
@@ -265,20 +274,31 @@ struct Index {
     try {
       await this.releaseAll();
       this.screen = runtime.dispatching ? 'result' : 'home';
+      if (!runtime.dispatching) { this.message = ''; }
       await this.refresh();
     } catch (err) { this.error(err as Error); }
   }
 
+  // Leaving the result screen must not lock the app: the claim stays durable and the
+  // same incident routes back here, while every other incident and the console become
+  // usable again.
   private async leaveResult(): Promise<void> {
     try {
       await this.releaseAll();
+      runtime.dispatching = false;
       this.screen = 'home';
+      this.message = '';
       await this.refresh();
     } catch (err) { this.error(err as Error); }
   }
 
   private async openConsole(): Promise<void> {
-    if (!this.api || this.busy || runtime.dispatching) { return; }
+    // A pending probe result must not stop the operator from using the console: only a
+    // verification that is actually running occupies the phone's one channel.
+    if (!this.api || this.busy || (runtime.incident && !runtime.dispatching)) {
+      if (runtime.incident && !runtime.dispatching) { this.message = '另一个待办正在验证中，请稍候'; }
+      return;
+    }
     this.busy = true;
     try {
       await this.releaseAll();
@@ -327,7 +347,7 @@ struct Index {
     const guard = setTimeout(() => {
       const waiter = this.exitWaiter;
       if (waiter) { this.exitWaiter = undefined; waiter(''); }
-    }, 25000);
+    }, 45000);
     try {
       if (this.measuredOnce) { this.browser.loadUrl('https://api.ipify.org'); }
       return await measured;
@@ -335,8 +355,18 @@ struct Index {
   }
 
   private async verify(item: Incident): Promise<void> {
-    if (!this.api || this.busy || runtime.incident || runtime.dispatching) {
-      if (runtime.dispatching) { this.message = '请先核对上次的探测结果'; }
+    // One probe per incident, never a second one: an incident that already has an
+    // unconfirmed claim goes back to the result screen instead of verifying again.
+    if (this.claim && this.claim.incident === item.id) {
+      this.claimMessage = '该待办已有一次探测结果待核对（没有重发任何请求）';
+      this.message = '正在核对上次的探测结果';
+      this.screen = 'result';
+      return;
+    }
+    // A pending claim on another incident must not lock the app; only a verification
+    // that is actually running does.
+    if (!this.api || this.busy || (runtime.incident && !runtime.dispatching)) {
+      if (runtime.incident && !runtime.dispatching) { this.message = '另一个待办正在验证中，请稍候'; }
       return;
     }
     this.busy = true; this.message = '正在读取该节点的验证信息';
@@ -429,7 +459,14 @@ struct Index {
       this.webUrl = 'https://api.ipify.org';
       this.screen = 'verify'; this.showWeb = true;
       this.message = '正在核对手机与节点的共同出口';
-      const ip = await this.measureExit();
+      let ip = await this.measureExit();
+      if (ip.length === 0) {
+        // One bounded retry before failing the whole flow: on a weak link the neutral
+        // page often needs a second attempt, and tearing the tunnel down for that is
+        // expensive for the operator.
+        this.message = '未能读取手机出口地址，正在重试';
+        ip = await this.measureExit();
+      }
       if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
       if (ip.length === 0) { throw new Error('未能读取手机出口地址，请重试'); }
       if (ip !== target.exit_ip) { throw new Error('手机出口与节点出口不一致，已关闭通道'); }
@@ -464,6 +501,11 @@ struct Index {
   private async waitProbeResult(command: string, target: DirectTarget, beforeId: number): Promise<string> {
     const deadline = Date.now() + 125000;
     while (Date.now() < deadline) {
+      // Leaving the screen or backgrounding has to take effect now, not after this poll
+      // finishes; the claim stays readable and nothing is ever resent.
+      if (this.probeWaitAborted || !this.foreground) {
+        throw new Error('已停止等待探测结果；没有再次请求，可在结果页重新核对');
+      }
       const result = await runAction<ResultValue>(runtime.sshId, command,
         JSON.stringify({ action: 'result', target: target, before_request_id: beforeId }));
       if (result.done && result.request) { return result.request.outcome; }
@@ -511,6 +553,7 @@ struct Index {
       claim.at = Date.now();
       await this.vault.claim(JSON.stringify(claim));
       this.claimCanResume = true;
+      this.probeWaitAborted = false;
       const outcome = await this.waitProbeResult(descriptor.worker_command, target, queued.before_request_id);
       if (outcome !== 'real_data' && outcome !== 'detail_unavailable') {
         throw new Error('探测未通过，任务保持暂停');
@@ -554,6 +597,7 @@ struct Index {
       if (profile.passphrase) { options.passphrase = profile.passphrase; }
       const session = await connect(options);
       runtime.sshId = session.id;
+      this.probeWaitAborted = false;
       const outcome = await this.waitProbeResult(claim.worker_command, target, claim.before_request_id);
       if (outcome !== 'real_data' && outcome !== 'detail_unavailable') {
         throw new Error('探测未通过，任务保持暂停');
