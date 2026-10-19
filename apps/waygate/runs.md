@@ -1668,3 +1668,35 @@ ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原�
 
 **未验证**：手机上 5 个节点按钮**尚未逐个跑通道测试**（点击时手机锁屏，`aa start` 报
 “屏幕锁定”，无法驱动 UI）；`251`/`252` 的真机通道测试待解锁后进行。
+
+### 2026-10-19 / Windows + Mate 70 Pro+ / 第二十五轮：五节点通道真机全部 PASS
+
+用户解锁后由 agent 代点（`uitest uiInput click`），五台全部跑通，页面输出与 hilog 双向留证。
+
+- **`251`（8.148.251.114，fzz-002，主控兼 worker）PASS**：
+
+  ```text
+  主机指纹（已与内置配置比对通过）
+  ecdsa-sha2-nistp256 SHA256:ZEoQL7Y09TiO+ILTDJrrdiYoWFyA33T4hLQmFBRKW8o
+  通道已建立，主机指纹已核对     退出码：0
+  uid=0(root) gid=0(root) groups=0(root) / fzz-002
+  SSH_CONNECTION=112.66.178.114 18106 172.21.153.219 22
+  ```
+
+  hilog：`11:49:25 probeHostKey start host=8.148.251.114 port=22` →
+  `probeHostKey ok type=ecdsa-sha2-nistp256 fingerprint=SHA256:ZEoQL7Y0…KW8o`（与固定值一致）。
+- **`252`（8.148.252.117，FZZ-003）PASS**：同样路径，协商到 ECDSA
+  `SHA256:8ez3chbYLqN4bD2D/PC6TvdaKY5YG7ZjKfYAyCdaIdc`（与固定值一致），
+  `退出码：0`，stdout `uid=0(root) / FZZ-003`，
+  `SSH_CONNECTION=112.66.178.114 16743 172.21.153.222 22`；hilog 11:52:38 对应记录同上。
+- **五节点真机状态**：`36 → ecs-02826072`、`43-160 → VM-0-14-opencloudos`、
+  `43-132 → VM-0-8-opencloudos`、`251 → fzz-002`、`252 → FZZ-003`，全部 `退出码 0`，
+  且都只执行 `id/hostname/SSH_CONNECTION`（未调 audit/prepare/probe）。
+- 5 个节点按钮在 1316px 宽下**一行放得下**，无需改两行。
+- **UI 驱动经验（值得记）**：通道页在上一次测试出现结果文字后会**整体下移/上移**（本轮实测
+  按钮行 y 从 1150 → 908 → 1199 变化过三次），按旧坐标点会误点进“节点地址”输入框
+  （表现为地址没切换、无新 hilog）。稳妥做法：**每次点击前重新 dump 布局、按解析出的
+  `bounds` 中心点**，不要复用上一轮坐标。
+- 另在设置页观察到采集器侧报错
+  `ktopia-crmeb · 601888：<urlopen error [SSL: UNEXPECTED_EOF_WHILE_READING] …>` ——
+  与机场限频导致代理降级（`订阅过于频繁`占位节点）相互印证，属服务端/代理侧问题，非 App。
