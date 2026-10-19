@@ -12,13 +12,32 @@ export function readableError(message: string): string {
 export class Api {
   credentials: Credentials;
   lastFailureDetails: string = '';
+  lastFailureStage: string = '';
 
   constructor(credentials: Credentials) {
     this.credentials = credentials;
   }
 
+  // Repeating a request is only justified when it never reached the hub: a timeout or
+  // a DNS/TCP failure on a weak link is transient, while a 4xx/5xx answer means the hub
+  // is alive and answered, so repeating it would only waste the operator's time.
   async request<T>(path: string, method: http.RequestMethod = http.RequestMethod.GET,
-    body: string = ''): Promise<T> {
+    body: string = '', attempts: number = 1): Promise<T> {
+    const total = attempts > 1 ? attempts : 1;
+    let lastError: Error = new Error('主控请求未完成；详情见“诊断”');
+    for (let index = 0; index < total; index++) {
+      try {
+        return await this.attempt<T>(path, method, body);
+      } catch (err) {
+        lastError = err as Error;
+        if (this.lastFailureStage !== '连接主控') { throw lastError; }
+        if (index + 1 < total) { await new Promise<void>((r) => setTimeout(r, 900 * (index + 1))); }
+      }
+    }
+    throw lastError;
+  }
+
+  private async attempt<T>(path: string, method: http.RequestMethod, body: string): Promise<T> {
     const client = http.createHttp();
     let status: number = 0;
     let characters: number = 0;
@@ -53,6 +72,7 @@ export class Api {
       }
     } catch (err) {
       const code = (err as BusinessError).code;
+      this.lastFailureStage = stage;
       this.lastFailureDetails = '记录时间：' + new Date().toLocaleString() +
         '\n接口：' + method + ' ' + path.split('?')[0] +
         '\n阶段：' + stage + '\nHTTP：' + (status > 0 ? status.toString() : '未收到响应') +

@@ -2,7 +2,7 @@ import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
-import { http } from '@kit.NetworkKit';
+import { connection, http } from '@kit.NetworkKit';
 import { Api, readableError } from '../services/Api';
 import { Vault } from '../services/Vault';
 import { registerPush } from '../services/Push';
@@ -23,6 +23,7 @@ struct Index {
   @State nodes: NodeState[] = [];
   @State message: string = '';
   @State syncMessage: string = '';
+  @State failure: string = '';
   @State diagnosticSnapshot: string = '';
   @State busy: boolean = false;
   @State hub: string = '';
@@ -74,9 +75,31 @@ struct Index {
   private lastRefreshAt: string = '';
   private lastCollectorSync: string = '';
   private lastSyncFailure: string = '';
+  // The step that failed keeps everything it needs to be retried in place.
+  private retryDescriptor: VerificationDescriptor | undefined = undefined;
+  private retryProfile: NodeProfile | undefined = undefined;
 
-  aboutToAppear(): void { this.initialize(); }
+  aboutToAppear(): void { this.initialize(); this.watchNetwork(); }
   aboutToDisappear(): void { clearInterval(this.timer); runtime.background(); }
+
+  // A real detection mechanism instead of waiting for a timeout to declare failure:
+  // the system tells the app when the link disappears and when it comes back, so the
+  // operator sees the reason immediately and a returning link recovers on its own.
+  private watchNetwork(): void {
+    try {
+      const monitor = connection.createNetConnection();
+      monitor.on('netLost', () => { this.message = '网络已断开；恢复后会自动重试，已建立的验证不受影响'; });
+      monitor.on('netAvailable', () => {
+        this.message = '网络已恢复，正在重新同步';
+        this.refresh();
+      });
+      monitor.register((err) => {
+        if (err) { this.message = '网络状态监听不可用；仍会按超时提示失败原因'; }
+      });
+    } catch (_) {
+      this.message = '网络状态监听不可用；仍会按超时提示失败原因';
+    }
+  }
 
   private context(): common.UIAbilityContext {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -173,7 +196,7 @@ struct Index {
     if (!this.api || this.polling || !this.foreground) { return; }
     this.polling = true;
     try {
-      const feed = await this.api.request<Inbox>('/v1/inbox');
+      const feed = await this.api.request<Inbox>('/v1/inbox', http.RequestMethod.GET, '', 2);
       this.items = feed.items; this.nodes = feed.nodes;
       this.lastCollectorSync = feed.last_poll > 0 ? new Date(feed.last_poll * 1000).toLocaleString() : '';
       if (feed.error) {
@@ -295,13 +318,15 @@ struct Index {
   private async openConsole(): Promise<void> {
     // A pending probe result must not stop the operator from using the console: only a
     // verification that is actually running occupies the phone's one channel.
-    if (!this.api || this.busy || (runtime.incident && !runtime.dispatching)) {
-      if (runtime.incident && !runtime.dispatching) { this.message = '另一个待办正在验证中，请稍候'; }
-      return;
-    }
+    // The console is never blocked by a verification: reaching it ends the phone-side
+    // verification (the worker's task stays paused) and no request is ever resent.
+    if (!this.api || this.busy) { return; }
+    if (runtime.incident) { this.message = '已结束本次验证并进入控制台（该任务保持暂停）'; }
     this.busy = true;
     try {
       await this.releaseAll();
+      runtime.dispatching = false;
+      runtime.incident = '';
       const link = await this.api.post<Link>('/v1/console-ticket');
       if (!this.foreground) { return; }
       this.browser = new webview.WebviewController();
@@ -375,7 +400,8 @@ struct Index {
     this.verifiedExit = false;
     this.measuredOnce = false;
     try {
-      const descriptor = await this.api.request<VerificationDescriptor>('/v1/incidents/' + item.id + '/verification');
+      const descriptor = await this.api.request<VerificationDescriptor>(
+        '/v1/incidents/' + item.id + '/verification', http.RequestMethod.GET, '', 3);
       this.descriptor = descriptor;
       this.loadBundled();
       let profile = await this.ssh.load(descriptor.node_id);
@@ -468,7 +494,11 @@ struct Index {
         ip = await this.measureExit();
       }
       if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
-      if (ip.length === 0) { throw new Error('未能读取手机出口地址，请重试'); }
+      if (ip.length === 0) {
+        // The tunnel may be up while the node's own proxy is degraded, which is a real
+        // state (a throttled subscription serves placeholder nodes) and not a phone fault.
+        throw new Error('未能读取手机出口地址；可能是节点代理不可用，可重试或进入控制台检查该节点');
+      }
       if (ip !== target.exit_ip) { throw new Error('手机出口与节点出口不一致，已关闭通道'); }
       runtime.proxy.markReady();
       this.verifiedExit = true;
@@ -477,10 +507,41 @@ struct Index {
       hilog.info(0x3200, 'waygate_ui', 'showing target url=%{public}s', targetUrl);
       this.browser.loadUrl(targetUrl);
     } catch (err) {
-      await this.releaseAll();
-      this.screen = 'home';
-      this.error(err as Error);
+      // Hold at the failing step instead of tearing everything down and dumping the
+      // operator on the home screen. The worker's task stays paused exactly as prepare
+      // left it, nothing is ever resent, and the screen offers retry, abandon and the
+      // console so a transient network problem cannot lock the app for hours.
+      runtime.incident = '';
+      runtime.dispatching = false;
+      this.retryDescriptor = descriptor;
+      this.retryProfile = profile;
+      this.failure = readableError((err as Error).message || '验证未完成，请重试');
+      this.message = this.failure;
+      this.screen = 'retry';
     }
+  }
+
+  private async retryStep(): Promise<void> {
+    if (!this.retryDescriptor || !this.retryProfile || this.busy) { return; }
+    this.busy = true;
+    try {
+      await this.removeProxy();
+      await this.stopWindow();
+      await runtime.releaseSsh();
+      await this.begin(this.retryDescriptor, this.retryProfile);
+    } catch (err) { this.error(err as Error); }
+    finally { this.busy = false; }
+  }
+
+  private async abandonRetry(): Promise<void> {
+    this.retryDescriptor = undefined;
+    this.retryProfile = undefined;
+    await this.releaseAll();
+    runtime.dispatching = false;
+    runtime.incident = '';
+    this.screen = 'home';
+    this.message = this.failure.length > 0 ? this.failure + '；已返回，任务保持暂停' : '';
+    await this.refresh();
   }
 
   private async pageEnded(url: string): Promise<void> {
@@ -988,7 +1049,19 @@ struct Index {
         if (this.screen === 'verify') { Text(this.stockTitle).fontColor(INK).padding(8) }
       } else {
         Column({ space: 20 }) {
-          if (this.screen !== 'result' || runtime.dispatching) { LoadingProgress().width(44).height(44).color(INK) }
+          if ((this.screen !== 'result' && this.screen !== 'retry') || runtime.dispatching) {
+            LoadingProgress().width(44).height(44).color(INK)
+          }
+          if (this.screen === 'retry') {
+            // The failing step is held, not swallowed: retry it, abandon it, or walk to
+            // the console. Nothing is ever resent, so retrying is safe.
+            Text(this.failure).fontSize(14).fontColor(INK).width('100%')
+              .padding({ left: 30, right: 30 }).textAlign(TextAlign.Center)
+            Button(this.busy ? '正在重试…' : '重试本步').backgroundColor(INK)
+              .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.retryStep())
+            Button('放弃并返回待办').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.abandonRetry())
+            Button('进入控制台').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.openConsole())
+          }
           if (this.claimMessage) {
             Text(this.claimMessage).fontSize(14).fontColor(INK).width('100%')
               .padding({ left: 30, right: 30 }).textAlign(TextAlign.Center)
@@ -999,6 +1072,7 @@ struct Index {
           }
           if (this.screen === 'result') {
             Button('返回待办').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.leaveResult())
+            Button('进入控制台').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.openConsole())
           }
         }.layoutWeight(1).justifyContent(FlexAlign.Center)
       }
@@ -1019,6 +1093,7 @@ struct Index {
       if (this.screen === 'verify') {
         Row({ space: 12 }) {
           Button('取消').fontColor(INK).backgroundColor('#DDECE4').onClick(() => this.goHome())
+          Button('控制台').fontColor(INK).backgroundColor('#DDECE4').onClick(() => this.openConsole())
           Button('验证完成并继续').layoutWeight(1).backgroundColor(INK)
             .enabled(this.verifiedExit && !this.busy).onClick(() => this.finish())
         }.padding(16).width('100%')
