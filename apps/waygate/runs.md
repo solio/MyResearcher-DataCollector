@@ -1636,3 +1636,35 @@ ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原�
 **未做/未验证（如实记录）**：Android 版**尚未同步**这三处；弱网的分级超时与“保留已建立通道、
 只重试失败那一步”还没实施；消息归集只做了最明显的一层（未做“其他节点 · N 条历史”折叠）；
 以上改动**均未经真机复验**。
+
+### 2026-10-19 / Windows + Mate 70 Pro+ / 第二十四轮：纳入两台新节点（含 testapi 主控兼 worker）
+
+用户要求把 `8.148.251.114`、`8.148.252.117` 也纳入 App 管理。
+
+- **一处纠正**：用户最初贴出的公钥是
+  `ssh-ed25519 …IKiiM6zwasvBYankxfRctVWgCtMxkbcZ/6BraHkx+Gkk frontend-test-deploy@MacBook-Pro.local`
+  ——那是**其 Mac 上的私钥**对应的公钥，不是 App 内置的 `waygate-phone`；据此测试两台均为
+  `Permission denied (publickey,…)`。用户补加 `waygate-phone` 公钥后，两台登录通过
+  （`hostname=fzz-002` / `hostname=FZZ-003`，`root`）。
+- **主机指纹取法**：先用 `ssh-keyscan -t ed25519,ecdsa,rsa` 预览，再登录读取**主机自己的**
+  `/etc/ssh/ssh_host_{ed25519,ecdsa,rsa}_key.pub` 逐一复核——六个指纹全部一致后才写入配置：
+
+  ```text
+  fzz-002   ed25519 SHA256:dBI6KNT5jDMG4NgYiMKf+++D6iiyCQxfsQsV1HFBpZQ
+            ecdsa   SHA256:ZEoQL7Y09TiO+ILTDJrrdiYoWFyA33T4hLQmFBRKW8o
+            rsa     SHA256:sIIUq1o9MYVQMyUcyDtmfCGzbDEOApMGu2yjvgmxRk8
+  FZZ-003   ed25519 SHA256:pwHxj/2XzXHgpmV/cxaTDipcULbIFd8lNaExPDTVKgU
+            ecdsa   SHA256:8ez3chbYLqN4bD2D/PC6TvdaKY5YG7ZjKfYAyCdaIdc
+            rsa     SHA256:sB8ad0Etjy/OWOp+hmPW1fAiv80SNKbj9XHOI0/FBf0
+  ```
+
+- **配置**：两份 `channel.json`（鸿蒙 `rawfile/channel.json` 与 Android `assets/channel.json`）
+  同步扩到 **5 个节点**——`36`、`43-160`、`43-132`、`251`、`252`；
+  [check_android.py](tools/check_android.py) 核对“两平台逐节点一致”通过 ✓。
+- 用户澄清 `testapi`（即 8.148.251.114）**既是主控也是 worker**，因此 `251` 保留，
+  标签写明「主控兼 worker」。
+- 构建/安装：`BUILD SUCCESSFUL`；signed HAP 5,671,627 B（2026-10-19 09:35:40），
+  `install bundle successfully`；hilog 已清空。
+
+**未验证**：手机上 5 个节点按钮**尚未逐个跑通道测试**（点击时手机锁屏，`aa start` 报
+“屏幕锁定”，无法驱动 UI）；`251`/`252` 的真机通道测试待解锁后进行。
