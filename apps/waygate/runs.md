@@ -1778,3 +1778,49 @@ ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原�
   的 `diagnostics → home` 分支在真机上生效，返回键不再像失灵。
 - **白屏那一条路径仍未复现性验证**：它只在 `verify` 屏（已展示 Web 后）失败时触发，
   需要一次真实失败才能确认“不再白屏”。本轮未主动制造失败以避免触碰真实任务。
+
+### 2026-10-19 / Windows + Mate 70 Pro+ / 第二十八轮：待办是否 stale 的取证 + 自适应刷新
+
+用户问：所有节点都正常采集了，App 还显示待处理吗？并明确要求**不要频繁轮询**，要一个更好的机制。
+
+**先取证，不改猜测**：用 App 内置的 `waygate-phone` 私钥从 Windows SSH 到主控节点 `251`，
+发现主控跑在 **Docker 容器**里（进程 cwd `/opt/waygate`，容器根在 `/proc/PID/root`），
+待办库为容器内 `/data/waygate.sqlite3`。分别读库与读**实时 `/v1/inbox`**，结论一致：
+
+- **节点侧一切正常**：`nodes` 里 5 个节点全部 `online=true`，每支股票 `state=running`
+  （本机 601012、02 300124、ktopia-crmeb 601888、hk 600031、tokenseller 002648），
+  `last_poll` 为当前时间，`error` 为空。
+- **待办确认为 4 条，且不是 stale**：`items` 恰好 4 条，全部 `kind=challenge`
+  （标题「需要人工验证」）、`online=true`、`can_verify=true`、`snoozed=0`：
+  `02·002648`、`本机·600312`、`ktopia-crmeb·002648`、`tokenseller·603039`。
+  库中 `state` 直方图为 **cleared 106 / pending 4**；这 4 条的 `seen` 均为 **约 6 秒前**
+  （`reconcile` 在节点每次上报状态时调用，[service.py](hub/service.py:74)），
+  各自 target 都带当前 `instance_id / job / stock / task / request_id / revision`。
+  即**节点此刻仍在主动上报这 4 个 (节点, 股票) 上的活动 halt**，所以库把它们保持 pending。
+- **为什么“正在采集”和“还显示待处理”能同时成立**：`live_target()` 看的是
+  `stock_runtimes + detached_stock_runtimes` 里带 `active_halt` 的行
+  （[store.py](hub/store.py:20)）；节点当前窗口跑的是**另一只股票**，而被 halt 的那只
+  （detached）仍然停在原地等人核对。hub 只在节点**自己**报告该 halt 消失后才置 `cleared`
+  （[store.py](hub/store.py:96)），并不因“别的股票在跑”而清。
+- 所以答案：**是，仍显示 4 条待处理，而且这是主控的当前真实状态，不是 App 的陈旧缓存。**
+
+**另：主控 `push_enabled=false`，即还没有设备推送通道**，所以“改用推送、彻底不轮询”
+这条现在走不通；轮询仍是唯一机制，只能把它做得更省。
+
+**改了什么（[Index.ets](harmony/entry/src/main/ets/pages/Index.ets)）——把固定 5 s 轮询换成自适应轮询**
+
+1. 删掉 `setInterval(..., 5000)`，改为**自调度单次定时**：每轮结束后按当前状态决定下一次延迟。
+2. 延迟取自“还能变多少”：基线 `30 s`；**待办集合连续未变时退避** → `60 s` → 闲置 3 轮后
+   `120 s` 封顶；**验证/控制台 Web 打开时 `15 s`**（操作者正在等它的结果）。
+3. **“有变化”的判据只看可操作状态**：待办 id/snooze 与节点在线位。
+   **刻意不看帖子计数**——采集时它在不停变，算进去会让退避永远归零、等于没退避。
+4. **切后台彻底停轮询**（不在后台空转与丢弃结果），回前台、`netAvailable`、以及首页新增的
+   `刷新` 按钮都立刻打一轮并重置退避。
+
+**验证**：`BUILD SUCCESSFUL in 8 s 421 ms`；signed HAP 5,697,429 B（2026-10-19 14:05:37），
+`install bundle successfully`；临时签名配置用后已 `git checkout --` 还原。
+
+**未验证（不声称完成）**：退避/停后台的**实际节奏未经真机计时确认**（需解锁后观察数分钟）；
+首页 `刷新` 按钮未点过；Android 版仍未同步。（取证时读到的容器内 `console.token` 只在本机使用，
+未打印、未入库。）
+

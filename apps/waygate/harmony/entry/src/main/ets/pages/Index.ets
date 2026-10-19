@@ -15,6 +15,16 @@ const INK = '#173E37';
 const MUTED = '#657970';
 const BG = '#F3F6F5';
 
+// The hub exposes no device push channel yet, so the app still has to ask; it only
+// decides how often from how much can have changed. A moving feed (or any user action)
+// keeps the short interval, an unchanged feed backs off, and a running verification
+// keeps the short interval because its outcome is what the operator is waiting on.
+const POLL_ACTIVE_MS = 15000;
+const POLL_BASE_MS = 30000;
+const POLL_SLOW_MS = 60000;
+const POLL_IDLE_MS = 120000;
+const POLL_IDLE_ROUNDS = 3;
+
 @Entry
 @Component
 struct Index {
@@ -66,6 +76,10 @@ struct Index {
   private probeWaitAborted: boolean = false;
   private exitWaiter: ((ip: string) => void) | undefined = undefined;
   private timer: number = -1;
+  private disposed: boolean = false;
+  // Counts consecutive polls whose actionable state did not move; drives the back-off.
+  private unchangedRounds: number = 0;
+  private feedSignature: string = '';
   private polling: boolean = false;
   private proxyApplied: boolean = false;
   private destroyWeb: (() => void) | undefined = undefined;
@@ -80,7 +94,7 @@ struct Index {
   private retryProfile: NodeProfile | undefined = undefined;
 
   aboutToAppear(): void { this.initialize(); this.watchNetwork(); }
-  aboutToDisappear(): void { clearInterval(this.timer); runtime.background(); }
+  aboutToDisappear(): void { this.disposed = true; this.stopRefresh(); runtime.background(); }
 
   // A real detection mechanism instead of waiting for a timeout to declare failure:
   // the system tells the app when the link disappears and when it comes back, so the
@@ -91,7 +105,7 @@ struct Index {
       monitor.on('netLost', () => { this.message = '网络已断开；恢复后会自动重试，已建立的验证不受影响'; });
       monitor.on('netAvailable', () => {
         this.message = '网络已恢复，正在重新同步';
-        this.refresh();
+        this.scheduleRefresh(true);
       });
       monitor.register((err) => {
         if (err) { this.message = '网络状态监听不可用；仍会按超时提示失败原因'; }
@@ -99,6 +113,31 @@ struct Index {
     } catch (_) {
       this.message = '网络状态监听不可用；仍会按超时提示失败原因';
     }
+  }
+
+  // One self-rescheduling poll instead of a fixed tick: each round picks the next delay
+  // from the current state, so an idle phone backs off while an active one stays quick.
+  // Passing immediate=true is how user actions and link/network events jump the queue.
+  private scheduleRefresh(immediate: boolean = false): void {
+    this.stopRefresh();
+    if (this.disposed || !this.api) { return; }
+    const delay = immediate ? 0 : this.nextRefreshDelay();
+    this.timer = setTimeout(() => {
+      this.timer = -1;
+      this.refresh().finally(() => { this.scheduleRefresh(); });
+    }, delay);
+  }
+
+  private stopRefresh(): void {
+    if (this.timer !== -1) { clearTimeout(this.timer); this.timer = -1; }
+  }
+
+  private nextRefreshDelay(): number {
+    if (!this.foreground) { return POLL_IDLE_MS; }
+    if (runtime.dispatching || this.showWeb) { return POLL_ACTIVE_MS; }
+    if (this.unchangedRounds >= POLL_IDLE_ROUNDS) { return POLL_IDLE_MS; }
+    if (this.unchangedRounds >= 1) { return POLL_SLOW_MS; }
+    return POLL_BASE_MS;
   }
 
   private context(): common.UIAbilityContext {
@@ -161,7 +200,7 @@ struct Index {
       this.error(err as Error);
       this.screen = this.api ? 'home' : 'settings';
     }
-    this.timer = setInterval(() => { if (this.foreground) { this.refresh(); } }, 5000);
+    this.scheduleRefresh(true);
   }
 
   private async save(): Promise<void> {
@@ -198,6 +237,14 @@ struct Index {
     try {
       const feed = await this.api.request<Inbox>('/v1/inbox', http.RequestMethod.GET, '', 2);
       this.items = feed.items; this.nodes = feed.nodes;
+      // Only the actionable state decides the cadence: an incident appearing or clearing,
+      // or a node going offline. Post counters move constantly while the fleet collects,
+      // so including them would keep resetting the back-off and defeat the whole point.
+      const signature = feed.items.map((item: Incident): string => item.id + '|' + item.snoozed).join(',') +
+        '#' + feed.nodes.map((node: NodeState): string => node.id + ':' + (node.online ? '1' : '0')).join(',') +
+        '#' + (feed.error ? '1' : '0');
+      if (signature === this.feedSignature) { this.unchangedRounds++; }
+      else { this.unchangedRounds = 0; this.feedSignature = signature; }
       this.lastCollectorSync = feed.last_poll > 0 ? new Date(feed.last_poll * 1000).toLocaleString() : '';
       if (feed.error) {
         // The feed error is the hub's own collector sync, not a node problem: label it so
@@ -249,7 +296,12 @@ struct Index {
       if (open) {
         this.releaseAll().then(() => { this.screen = runtime.dispatching ? 'result' : 'home'; });
       } else { this.generation++; }
-    } else { this.refresh(); }
+      // Nothing can be seen or acted on while hidden, so stop asking entirely instead of
+      // waking up to discard work; coming back to the foreground refreshes at once.
+      this.stopRefresh();
+    } else {
+      this.scheduleRefresh(true);
+    }
   }
 
   private async detach(): Promise<void> {
@@ -899,6 +951,9 @@ struct Index {
     Row() {
       Text('Waygate').fontSize(27).fontWeight(FontWeight.Bold).fontColor(INK).layoutWeight(1)
       if (this.screen === 'home') {
+        // The poll backs off when nothing moves, so an explicit refresh stays available.
+        Button('刷新').backgroundColor(Color.Transparent).fontColor(MUTED)
+          .onClick(() => this.scheduleRefresh(true))
         Button('诊断').backgroundColor(Color.Transparent).fontColor(MUTED)
           .onClick(() => this.openDiagnostics())
         Button('设置').backgroundColor(Color.Transparent).fontColor(MUTED)
