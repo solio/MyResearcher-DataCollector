@@ -1731,3 +1731,39 @@ ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原�
 **未验证（不声称完成）**：以上改动**均未经真机复验**——`netLost/netAvailable` 的实际回调、
 `retry` 屏的三条路径、控制台按钮都需要在真机上触发一次失败/断网才能确认。
 另：Android 版**未同步**这些改动（两平台行为暂不一致）。
+
+### 2026-10-19 / Windows + Mate 70 Pro+ / 第二十七轮：修处理页白屏与返回键失效
+
+用户反馈：处理（验证）页遇到网络问题后**出现莫名其妙的白屏，且返回键不能用**。
+
+**根因**（不是两件事，是同一条失败路径留下的残骸）：
+
+1. `begin()` 失败后进 `retry` 屏时**没有清理 Web 与代理覆盖**。`showWeb` 仍为 `true`，
+   验证 Web 仍以 `layoutWeight(1)` 参与布局、代理覆盖仍指向已拆除的隧道，
+   于是内容区只剩一块空白 Web ⇒ 表现为白屏。
+2. 那块**存活的 Web 组件会吞掉系统返回键**，而当时也只有“首页/设置外一律 goHome”这一条
+   粗糙的 `onBackPress`，在 `retry` 屏上没有对应的“放弃并返回待办”语义 ⇒ 返回键像失灵。
+
+**改了什么（[Index.ets](harmony/entry/src/main/ets/pages/Index.ets)）**
+
+1. `begin()` 的失败分支补上 `await removeProxy(); await stopWindow(); this.showWeb = false;
+   this.proxyApplied = false;`——失败一步不再留下死 Web 和悬空代理。
+2. `abandonRetry()` 同样清 `showWeb` / `proxyApplied`。
+3. 扩展现有 `onBackPress()`：`retry → 放弃并返回待办`、`result → leaveResult`、
+   `diagnostics → 回首页`，其余非 `home/settings` 屏 `goHome`（等价于对应按钮动作）。
+
+**构建期间发现并修掉的问题**：本轮首次编译报
+`Duplicate function implementation`（`Index.ets:88` 与 `:902`）——文件里本就有 `onBackPress`，
+我新增的版本与之重复。处理：**删掉新增的重复定义，把增强路由并入原有那一处**，
+而不是留下两个实现。
+
+**验证**：`BUILD SUCCESSFUL in 8 s 78 ms`；signed HAP 5,692,861 B（2026-10-19 13:45:45），
+`install bundle successfully`。
+
+**签名取回说明（不提交凭据）**：`build-profile.json5` 本轮开始时已是空 `signingConfigs`
+（上次签名后已还原），从 `.hvigor/cache/task-cache.json` 的 `SignHap` 任务输入中取回本机
+加密口令与 p12/cer/p7b 路径，临时写回、签名后再次 `git checkout --` 还原；ciphertext 未入 Git。
+
+**未验证（不声称完成）**：白屏与返回键修复**尚未在真机上复现性验证**——需要在处理页
+制造一次网络失败，确认不再白屏、且返回键能回到待办。第二十六轮的 `netLost/netAvailable`、
+`retry` 三条路径仍在真机待验。Android 版仍未同步。

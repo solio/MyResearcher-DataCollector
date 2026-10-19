@@ -513,6 +513,13 @@ struct Index {
       // console so a transient network problem cannot lock the app for hours.
       runtime.incident = '';
       runtime.dispatching = false;
+      // The failed step must not leave a dead Web or a proxy override pointing at a
+      // torn-down tunnel behind it: that is what turned into a blank screen, and a live
+      // Web component also swallows the system back key.
+      await this.removeProxy();
+      await this.stopWindow();
+      this.showWeb = false;
+      this.proxyApplied = false;
       this.retryDescriptor = descriptor;
       this.retryProfile = profile;
       this.failure = readableError((err as Error).message || '验证未完成，请重试');
@@ -539,6 +546,8 @@ struct Index {
     await this.releaseAll();
     runtime.dispatching = false;
     runtime.incident = '';
+    this.showWeb = false;
+    this.proxyApplied = false;
     this.screen = 'home';
     this.message = this.failure.length > 0 ? this.failure + '；已返回，任务保持暂停' : '';
     await this.refresh();
@@ -872,7 +881,15 @@ struct Index {
     return state;
   }
 
+  // The system back key must work on every screen: it is easy for a live Web component
+  // to swallow it, and silently doing nothing leaves the operator stuck. Each branch
+  // routes to the same action as the on-screen button, and leaving mid-flight
+  // invalidates the running flow at its next checkpoint while the worker's task stays
+  // paused and the phone-side resources are released.
   onBackPress(): boolean {
+    if (this.screen === 'retry') { this.abandonRetry(); return true; }
+    if (this.screen === 'result') { this.leaveResult(); return true; }
+    if (this.screen === 'diagnostics') { this.screen = 'home'; return true; }
     if (this.screen !== 'home' && this.screen !== 'settings') { this.goHome(); return true; }
     return false;
   }
