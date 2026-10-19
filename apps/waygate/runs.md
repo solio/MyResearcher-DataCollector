@@ -1767,3 +1767,14 @@ ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原�
 **未验证（不声称完成）**：白屏与返回键修复**尚未在真机上复现性验证**——需要在处理页
 制造一次网络失败，确认不再白屏、且返回键能回到待办。第二十六轮的 `netLost/netAvailable`、
 `retry` 三条路径仍在真机待验。Android 版仍未同步。
+
+**真机取证（本轮已做，2026-10-19 13:47 前后，Mate 70 Pro+，包 5,692,861 B）**：
+
+- `aa start -a EntryAbility -b com.myresearcher.waygate` → `start ability successfully`。
+- 首页信息栏出现 `网络已恢复，正在重新同步` —— 这是**第二十六轮新增的 `netAvailable`
+  回调在真机上真实触发**的证据（不是编译通过的自证）。
+- 点 `诊断` 进入诊断屏 → 按系统返回键（`uitest uiInput keyEvent Back`）→ **回到首页**
+  （dump 布局确认 `Waygate / 诊断 / 设置` 头与待办列表均回来）。即新一轮 `onBackPress`
+  的 `diagnostics → home` 分支在真机上生效，返回键不再像失灵。
+- **白屏那一条路径仍未复现性验证**：它只在 `verify` 屏（已展示 Web 后）失败时触发，
+  需要一次真实失败才能确认“不再白屏”。本轮未主动制造失败以避免触碰真实任务。
