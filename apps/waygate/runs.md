@@ -1932,5 +1932,46 @@ fleet 应对外报出节点**手机可拨通的公网 SSH 地址**（252→8.148
 **本轮未改任何代码**（服务端只记录，不改）；无构建、无安装。取证用的 `console.token` 只在本机使用，
 未打印、未入库。
 
+### 2026-10-20 / Windows / 第三十一轮：把「等一个永远不来的回调」这一类卡死封掉
+
+用户报：App **「页面什么都干不了只能杀死进程」**（和前面白屏同类卡死）。
+
+**取证受限，先说清楚**：手机当时正被另一个应用占用（配送 App），随后连无线调试也断了
+（`hdc tconn` → `Connect failed`），所以**没拿到卡死画面也没有当时的 hilog**；唯一确认的是
+进程还活着（`pidof com.myresearcher.waygate` 有值）。因此本轮是**按代码上可证的卡死族**来修，
+不是按现场证据修。
+
+**卡死族（会让 `busy` 永远为 true，于是所有按钮 `.enabled()` 全为假 ⇒ 只能杀进程）**
+
+1. `verify()` 的失败分支里现在有 `await removeProxy()` + `await stopWindow()`
+   （第二十七轮为修白屏加的），而：
+   - `removeProxy()` 等的是 `ProxyController.removeProxyOverride(cb)` 回调；
+   - `stopWindow()` → `detach()` 等的是 Web 组件 `.onDisAppear` 回调。
+   **这两个回调只要不来，await 就永远不返回**，于是 catch 卡住，
+   `finally { leaveBusy() }` 永远执行不到 → 全屏控件灰掉。
+2. `detachPending` 一旦被赋成「永不 resolve」的 promise，**之后每次 `detach()` 都会复用它**，
+   即进程内永久卡死，只能杀。
+3. `begin()` 里 `applyProxyOverride(config, cb)` 的回调同理。
+
+**改了什么（[Index.ets](harmony/entry/src/main/ets/pages/Index.ets)，只动 App）**
+
+1. 新增模块级 `bounded(promise, ms=2500)`：**所有这类回调等待都和超时赛跑**，超时即继续；
+   迟到的 rejection 被显式吃掉（避免 race 已结算后的 unhandled rejection）。
+2. `detach()` 用 `bounded` 等待，且**无论超时与否都清掉 `detachPending` / `destroyWeb`**，
+   不留不可解的 promise；`removeProxy()` 同样有界、改为尽力而为（不再 reject 卡住）。
+3. `busy` 统一走 `enterBusy()` / `leaveBusy()`（8 处入口、`finally` 全部收口），
+   并给 busy 挂 **watchdog（`BUSY_WATCHDOG_MS` = 5 分钟）**：任何一步真的回不来，
+   也会强制放开操作并提示「上一步超时未返回，已恢复操作；可重试或进入控制台」。
+   （5 分钟取在合法最坏耗时之上：探测等待上限 125 s + 出口测量最多 2×45 s。）
+
+**构建**：`BUILD SUCCESSFUL in 8 s 762 ms`；signed HAP 5,701,938 B（2026-10-20 14:45:58）。
+**安装未完成**：手机无线调试已断开，`hdc tconn 192.168.3.156:40525` 返回 `Connect failed`，
+待设备可达后再装。临时签名配置用后已 `git checkout --` 还原。
+
+**未验证（不声称完成）**：真机上「卡死后能自愈」没验过；本轮只封了「等待无上限」这一类，
+**不排除还有别的卡死源**（例如原生 SSH 若阻塞 UI 线程，那不是 await 超时能救的）。
+要真正定位，需要拿到卡死现场：页面 dump + 卡死时的 hilog。
+
+
 
 

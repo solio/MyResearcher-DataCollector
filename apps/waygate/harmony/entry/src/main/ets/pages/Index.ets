@@ -24,6 +24,18 @@ const POLL_BASE_MS = 30000;
 const POLL_SLOW_MS = 60000;
 const POLL_IDLE_MS = 120000;
 const POLL_IDLE_ROUNDS = 3;
+// A step that never returns must not leave the screen with every control disabled, which
+// used to leave killing the process as the only way out. Every callback-based wait is
+// therefore raced against a timeout, and a stuck busy flag is force-released.
+const CALLBACK_WAIT_MS = 2500;
+const BUSY_WATCHDOG_MS = 300000;
+
+function bounded(work: Promise<void>, ms: number = CALLBACK_WAIT_MS): Promise<void> {
+  // A rejection that arrives after the race settled has nobody left to observe it, so it
+  // is consumed here; a rejection that arrives in time still propagates through the race.
+  work.catch(() => {});
+  return Promise.race([work, new Promise<void>((resolve) => { setTimeout(() => { resolve(); }, ms); })]);
+}
 
 @Entry
 @Component
@@ -76,6 +88,7 @@ struct Index {
   private probeWaitAborted: boolean = false;
   private exitWaiter: ((ip: string) => void) | undefined = undefined;
   private timer: number = -1;
+  private busyTimer: number = -1;
   private disposed: boolean = false;
   // Counts consecutive polls whose actionable state did not move; drives the back-off.
   private unchangedRounds: number = 0;
@@ -94,7 +107,7 @@ struct Index {
   private retryProfile: NodeProfile | undefined = undefined;
 
   aboutToAppear(): void { this.initialize(); this.watchNetwork(); }
-  aboutToDisappear(): void { this.disposed = true; this.stopRefresh(); runtime.background(); }
+  aboutToDisappear(): void { this.disposed = true; this.stopRefresh(); this.stopBusyTimer(); runtime.background(); }
 
   // A real detection mechanism instead of waiting for a timeout to declare failure:
   // the system tells the app when the link disappears and when it comes back, so the
@@ -130,6 +143,29 @@ struct Index {
 
   private stopRefresh(): void {
     if (this.timer !== -1) { clearTimeout(this.timer); this.timer = -1; }
+  }
+
+  // Busy is the flag that greys out every control, so it is armed together with a
+  // watchdog: however a step ends, the operator always gets the app back.
+  private enterBusy(): void {
+    this.busy = true;
+    this.stopBusyTimer();
+    this.busyTimer = setTimeout(() => {
+      this.busyTimer = -1;
+      if (this.busy) {
+        this.busy = false;
+        this.message = '上一步超时未返回，已恢复操作；可重试或进入控制台';
+      }
+    }, BUSY_WATCHDOG_MS);
+  }
+
+  private leaveBusy(): void {
+    this.stopBusyTimer();
+    this.busy = false;
+  }
+
+  private stopBusyTimer(): void {
+    if (this.busyTimer !== -1) { clearTimeout(this.busyTimer); this.busyTimer = -1; }
   }
 
   private nextRefreshDelay(): number {
@@ -211,7 +247,7 @@ struct Index {
     if (this.token.trim().length < 16 || this.token.trim().length > 1023) {
       this.message = '请填写主控的 console.token'; return;
     }
-    this.busy = true;
+    this.enterBusy();
     this.message = '正在连接主控并校验令牌…';
     try {
       const next: Credentials = { hub: address, token: this.token.trim(), deviceId: this.credentials.deviceId,
@@ -228,7 +264,7 @@ struct Index {
       this.syncMessage = ''; this.lastRefreshAt = ''; this.lastCollectorSync = ''; this.lastSyncFailure = '';
       await this.refresh();
     } catch (err) { this.error(err as Error); }
-    finally { this.busy = false; }
+    finally { this.leaveBusy(); }
   }
 
   private async refresh(): Promise<void> {
@@ -312,16 +348,21 @@ struct Index {
       this.destroyWeb = resolve;
       this.showWeb = false;
     });
-    await this.detachPending;
+    await bounded(this.detachPending);
+    // Drop the pending promise even after a timeout: keeping a never-resolving one here
+    // would make every later detach() wait on it forever.
     this.detachPending = undefined;
+    this.destroyWeb = undefined;
   }
 
   private async removeProxy(): Promise<void> {
     if (!this.proxyApplied) { return; }
-    await new Promise<void>((resolve, reject) => {
+    // The override is also dropped by the app itself when the process ends, so a callback
+    // that never arrives may not park the operator here: this is bounded and best effort.
+    await bounded(new Promise<void>((resolve) => {
       try { webview.ProxyController.removeProxyOverride(() => resolve()); }
-      catch (_) { reject(new Error('清理应用代理失败，请关闭应用后重新打开')); }
-    });
+      catch (_) { resolve(); }
+    }));
     this.proxyApplied = false;
   }
 
@@ -374,7 +415,7 @@ struct Index {
     // verification (the worker's task stays paused) and no request is ever resent.
     if (!this.api || this.busy) { return; }
     if (runtime.incident) { this.message = '已结束本次验证并进入控制台（该任务保持暂停）'; }
-    this.busy = true;
+    this.enterBusy();
     try {
       await this.releaseAll();
       runtime.dispatching = false;
@@ -384,7 +425,7 @@ struct Index {
       this.browser = new webview.WebviewController();
       this.webUrl = link.url; this.screen = 'console'; this.showWeb = true;
     } catch (err) { this.error(err as Error); }
-    finally { this.busy = false; }
+    finally { this.leaveBusy(); }
   }
 
   private text(value: string | number | undefined): string {
@@ -446,7 +487,7 @@ struct Index {
       if (runtime.incident && !runtime.dispatching) { this.message = '另一个待办正在验证中，请稍候'; }
       return;
     }
-    this.busy = true; this.message = '正在读取该节点的验证信息';
+    this.enterBusy(); this.message = '正在读取该节点的验证信息';
     this.incidentId = item.id;
     this.stockTitle = item.name + ' · ' + item.stock;
     this.verifiedExit = false;
@@ -482,7 +523,7 @@ struct Index {
       await this.releaseAll();
       this.screen = 'home';
       this.error(err as Error);
-    } finally { this.busy = false; }
+    } finally { this.leaveBusy(); }
   }
 
   private async begin(descriptor: VerificationDescriptor, profile: NodeProfile): Promise<void> {
@@ -530,10 +571,10 @@ struct Index {
       config.insertProxyRule(endpoint);
       config.clearImplicitRules();
       this.proxyApplied = true;
-      await new Promise<void>((resolve, reject) => {
+      await bounded(new Promise<void>((resolve, reject) => {
         try { webview.ProxyController.applyProxyOverride(config, () => resolve()); }
         catch (_) { reject(new Error('此系统无法应用 ArkWeb 验证代理')); }
-      });
+      }));
       if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
       this.browser = new webview.WebviewController();
       this.webUrl = 'https://api.ipify.org';
@@ -584,14 +625,14 @@ struct Index {
 
   private async retryStep(): Promise<void> {
     if (!this.retryDescriptor || !this.retryProfile || this.busy) { return; }
-    this.busy = true;
+    this.enterBusy();
     try {
       await this.removeProxy();
       await this.stopWindow();
       await runtime.releaseSsh();
       await this.begin(this.retryDescriptor, this.retryProfile);
     } catch (err) { this.error(err as Error); }
-    finally { this.busy = false; }
+    finally { this.leaveBusy(); }
   }
 
   private async abandonRetry(): Promise<void> {
@@ -654,7 +695,7 @@ struct Index {
     if (!this.api || !runtime.incident || !this.verifiedExit || this.busy || !this.descriptor || !runtime.target) { return; }
     const descriptor = this.descriptor;
     const target = runtime.target;
-    this.busy = true;
+    this.enterBusy();
     this.message = '正在复核共同出口';
     try {
       const ip = await this.measureExit();
@@ -699,7 +740,7 @@ struct Index {
         this.screen = 'home';
         this.error(err as Error);
       }
-    } finally { this.busy = false; }
+    } finally { this.leaveBusy(); }
   }
 
   // Read-only follow-up after a restart or disconnect: only the original probe's
@@ -710,7 +751,7 @@ struct Index {
     if (!claim) { return; }
     if (claim.before_request_id <= 0) { this.message = '上次未收到探测编号，无法核对；请到控制台核对'; return; }
     const target = JSON.parse(claim.target) as DirectTarget;
-    this.busy = true;
+    this.enterBusy();
     this.message = '正在连接节点核对探测结果';
     try {
       const profile = await this.ssh.load(claim.node);
@@ -734,7 +775,7 @@ struct Index {
       this.claimMessage = '探测结果尚未确认：' + (err as Error).message;
       this.message = '没有重发请求；请到控制台核对';
       await runtime.releaseSsh();
-    } finally { this.busy = false; }
+    } finally { this.leaveBusy(); }
   }
 
   // Channel configuration packaged with the build: endpoints, pinned host keys and
@@ -863,7 +904,7 @@ struct Index {
         await close(session.id).catch(() => {});
       }
     } catch (err) { this.error(err as Error); }
-    finally { this.busy = false; }
+    finally { this.leaveBusy(); }
   }
 
   private async saveNode(): Promise<void> {
@@ -887,7 +928,7 @@ struct Index {
       this.message = this.nodeAuth === 'password' ? '请填写该节点的登录密码' : '请粘贴该节点的私钥内容';
       return;
     }
-    this.busy = true;
+    this.enterBusy();
     this.message = bundled ? '正在核对内置通道的主机指纹' : (this.nodeConfirmed ? '正在连接节点并建立通道' : '正在读取节点主机指纹…');
     try {
       let profile: NodeProfile;
@@ -916,7 +957,7 @@ struct Index {
         await this.begin(descriptor, profile);
       }
     } catch (err) { this.error(err as Error); }
-    finally { this.busy = false; }
+    finally { this.leaveBusy(); }
   }
 
   private async enablePush(ask: boolean): Promise<void> {
