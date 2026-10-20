@@ -1894,4 +1894,42 @@ fleet 应对外报出节点**手机可拨通的公网 SSH 地址**（252→8.148
 
 **仍未验证**：`local`(=251) 待办的端到端「现在处理」单独取证；Android 版仍未编译。
 
+### 2026-10-20 / Windows / 第三十轮：「正常节点有待办、被拦截的 hk 反而没有」的真相
+
+用户报：现在正常的节点显示「需要处理」，而被拦截的 hk 节点反而没有。**查完发现：不是 hk 漏报，
+而是它那条待办已经被人处理掉了。**
+
+**取的证据**
+
+1. **主控库里 hk 的待办确实建过、也已经清了**（`waygate.sqlite3`）：
+   `tokenSeller · 002463 kind=challenge` —— **created 37 分钟前、seen 29 分钟前、现 state=cleared**。
+2. **hk 节点（43.132.206.172）自己的事件流**（`collector.db` 的 `events`，时间戳逐条对上）：
+   - `1792461661`（≈37 分钟前）`challenge`：「检测到身份核实页面；已停止自动请求」，
+     evidence 2864（`身份核实`、assets `em_capt.js/fd_guba_validate/validate.js`、
+     `server_blacklist: unproven`）；紧接着 `node_source_auth_stopped`：
+     「验证码或身份核验：本节点后续来源请求已停止」。⇒ 这一步 `_halt("blocked","challenge")`
+     写下了 `active_halt=challenge`，主控因此**建了那条待办**。
+   - `1792462192`（≈29 分钟前）`probe_scheduled`：「单次探测已排队…结束后暂停」。
+   - `1792462194` `detail_acquired`（request 2865，正是被拦的那篇 `1561403249`）+
+     `node_source_auth_cleared`：「**人工单次探测**取得有效来源响应；节点停止已解除」+ `probe_success`。
+     ⇒ 探测成功 → `_clear_active_halt()`，`active_halt` 变 null。
+   - `1792462197` `recovery_checkpoint_resumed`（`reason: manual_resume`）+ `started`：「开始/继续任务」。
+   - 之后事件全部是 `detail_acquired` / `list_acquired`（002463 一直采到 10:39），
+     即 hk **现在没有处于拦截状态**，`state=running`、`last_success` 就在 1 分钟前。
+3. **hub 侧为什么随后清掉待办**：`reconcile` 里「节点自己报 halt 没了就置 cleared」
+   （[store.py](hub/store.py:96-L98)）—— hk 的 `active_halt` 归 null 后，
+   `live_target()` 返回 None，那条 pending 就被清。这是**规则本身**，不是丢报。
+4. **对照：local/02/sg 为什么还显示待办**：它们的运行记录里**仍挂着 detached 的旧 halt**
+   （`local` 600312 / `02` 002648 / `sg` 603039，`active_halt=challenge` + `halt_task_id` 齐全，
+   `seen` 0.1 分钟前仍在上报），**根本还没处理**；它们当前窗口跑的是另一只股票，与待办无关。
+   `03` 则是**当前**窗口（601888）被拦，带 `node_source_auth_barrier`。
+
+**结论**：两边都不是显示错误 —— hub 的规则是「节点报 halt 在→保持待办；节点报 halt 没了→清待办」。
+「被拦截却看不到待办」= 那条拦截**已经完成了一次人工探测并继续采集**（事件里写明 `manual_resume`）。
+若该探测不是操作者本人做的，才需要进一步追（那就是「谁在替我们发探测」的另一种性质的问题）。
+
+**本轮未改任何代码**（服务端只记录，不改）；无构建、无安装。取证用的 `console.token` 只在本机使用，
+未打印、未入库。
+
+
 
