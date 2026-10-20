@@ -2,6 +2,12 @@ import { http } from '@kit.NetworkKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { ApiError, Credentials } from './Models';
 
+// A weak link needs more patience than a good one: the same request that dies in 10 s on a
+// bad link to a node may still succeed at 40 s. The timeouts therefore step up while
+// requests keep dying before they reach the hub, and step back down once requests are
+// healthy again, instead of being fixed at one value that is either too slow or too short.
+const TIMEOUT_TIERS: number[][] = [[10000, 30000], [15000, 45000], [25000, 70000], [40000, 100000]];
+
 export function readableError(message: string): string {
   if (/Unterminated string|JSONDecodeError|Unexpected end of JSON|Expecting .*delimiter/i.test(message)) {
     return '主控状态数据解析失败；详情见“诊断”';
@@ -13,9 +19,19 @@ export class Api {
   credentials: Credentials;
   lastFailureDetails: string = '';
   lastFailureStage: string = '';
+  // Index into TIMEOUT_TIERS; raised by a failure that never reached the hub.
+  tier: number = 0;
 
   constructor(credentials: Credentials) {
     this.credentials = credentials;
+  }
+
+  private connectTimeout(): number {
+    return TIMEOUT_TIERS[this.tier][0];
+  }
+
+  private readTimeout(): number {
+    return TIMEOUT_TIERS[this.tier][1];
   }
 
   // Repeating a request is only justified when it never reached the hub: a timeout or
@@ -47,8 +63,8 @@ export class Api {
         method: method,
         header: { 'Authorization': 'Bearer ' + this.credentials.token, 'Content-Type': 'application/json' },
         extraData: body,
-        connectTimeout: 12000,
-        readTimeout: 35000,
+        connectTimeout: this.connectTimeout(),
+        readTimeout: this.readTimeout(),
         usingCache: false,
         expectDataType: http.HttpDataType.STRING
       });
@@ -56,6 +72,8 @@ export class Api {
       const text = response.result as string;
       characters = text.length;
       stage = 'HTTP 响应';
+      // The hub answered, so this link is healthy whatever the status code says.
+      if (this.tier > 0) { this.tier--; }
       if (response.responseCode < 200 || response.responseCode >= 300) {
         let message = '主控请求失败：HTTP ' + response.responseCode;
         try {
@@ -78,7 +96,11 @@ export class Api {
         '\n阶段：' + stage + '\nHTTP：' + (status > 0 ? status.toString() : '未收到响应') +
         '\n响应长度：' + characters.toString() + ' 个字符' +
         (typeof code === 'number' ? '\n网络错误码：' + code.toString() : '');
-      if (stage === '连接主控') { throw new Error('无法连接主控，请检查网络；详情见“诊断”'); }
+      if (stage === '连接主控') {
+        // Nothing arrived, so this link needs more patience next time.
+        if (this.tier < TIMEOUT_TIERS.length - 1) { this.tier++; }
+        throw new Error('无法连接主控，请检查网络；详情见“诊断”');
+      }
       const failure = err as Error;
       throw new Error(failure.message || '主控请求未完成；详情见“诊断”');
     } finally {

@@ -46,6 +46,10 @@ struct Index {
   @State message: string = '';
   @State syncMessage: string = '';
   @State failure: string = '';
+  // Messages from other nodes are folded away instead of being shown in place of the node
+  // the operator is working on now.
+  @State otherNodeNotes: string[] = [];
+  @State showOtherNotes: boolean = false;
   @State diagnosticSnapshot: string = '';
   @State busy: boolean = false;
   @State hub: string = '';
@@ -95,6 +99,9 @@ struct Index {
   private feedSignature: string = '';
   private polling: boolean = false;
   private proxyApplied: boolean = false;
+  // True once the SSH tunnel and the browser proxy are up and usable, so a failure after
+  // that can be retried without rebuilding them; cleared whenever everything is released.
+  private channelReady: boolean = false;
   private destroyWeb: (() => void) | undefined = undefined;
   private detachPending: Promise<void> | undefined = undefined;
   private cleanupPending: Promise<void> | undefined = undefined;
@@ -102,6 +109,8 @@ struct Index {
   private lastRefreshAt: string = '';
   private lastCollectorSync: string = '';
   private lastSyncFailure: string = '';
+  // Latest message per node label, so one node's miss is never read as another node's.
+  private nodeNotes: Map<string, string> = new Map();
   // The step that failed keeps everything it needs to be retried in place.
   private retryDescriptor: VerificationDescriptor | undefined = undefined;
   private retryProfile: NodeProfile | undefined = undefined;
@@ -184,7 +193,19 @@ struct Index {
   // for the node the operator is working on now.
   private error(err: Error): void {
     const context = this.stockTitle ? this.stockTitle + '：' : '';
-    this.message = readableError(context + (err.message || '操作未完成，请重试连接'));
+    const text = readableError(context + (err.message || '操作未完成，请重试连接'));
+    this.message = text;
+    this.noteForNode(text);
+  }
+
+  private noteForNode(text: string): void {
+    const current = this.stockTitle ? this.stockTitle : '其他';
+    this.nodeNotes.set(current, text);
+    const others: string[] = [];
+    this.nodeNotes.forEach((note: string, label: string) => {
+      if (label !== current) { others.push(note); }
+    });
+    this.otherNodeNotes = others;
   }
 
   private syncFailed(message: string, details: string): void {
@@ -370,6 +391,8 @@ struct Index {
   // probe is in flight so its single result can still be read.
   private async stopWindow(): Promise<void> {
     await runtime.proxy.stop(); // Immediately fail closed, even before Web teardown.
+    // The tunnel plumbing is gone with it, so this channel may not be reused for a retry.
+    this.channelReady = false;
     await this.detach();
     await this.removeProxy();
     this.exitWaiter = undefined;
@@ -380,6 +403,7 @@ struct Index {
   private async releaseAll(): Promise<void> {
     this.generation++;
     this.probeWaitAborted = true;
+    this.channelReady = false;
     await this.stopWindow();
     await runtime.releaseSsh();
     runtime.incident = '';
@@ -575,63 +599,98 @@ struct Index {
         try { webview.ProxyController.applyProxyOverride(config, () => resolve()); }
         catch (_) { reject(new Error('此系统无法应用 ArkWeb 验证代理')); }
       }));
-      if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
-      this.browser = new webview.WebviewController();
-      this.webUrl = 'https://api.ipify.org';
-      this.screen = 'verify'; this.showWeb = true;
-      this.message = '正在核对手机与节点的共同出口';
-      let ip = await this.measureExit();
-      if (ip.length === 0) {
-        // One bounded retry before failing the whole flow: on a weak link the neutral
-        // page often needs a second attempt, and tearing the tunnel down for that is
-        // expensive for the operator.
-        this.message = '未能读取手机出口地址，正在重试';
-        ip = await this.measureExit();
-      }
-      if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
-      if (ip.length === 0) {
-        // The tunnel may be up while the node's own proxy is degraded, which is a real
-        // state (a throttled subscription serves placeholder nodes) and not a phone fault.
-        throw new Error('未能读取手机出口地址；可能是节点代理不可用，可重试或进入控制台检查该节点');
-      }
-      if (ip !== target.exit_ip) { throw new Error('手机出口与节点出口不一致，已关闭通道'); }
-      runtime.proxy.markReady();
-      this.verifiedExit = true;
-      this.message = '已确认共同出口，请在下方手动完成验证';
-      const targetUrl = target.url ? target.url : 'https://api.ipify.org';
-      hilog.info(0x3200, 'waygate_ui', 'showing target url=%{public}s', targetUrl);
-      this.browser.loadUrl(targetUrl);
+      // The channel is up. The rest only has to confirm the common exit and load the source
+      // page, and it is split out so a weak link that fails here can be retried without
+      // rebuilding the channel or touching the worker's task again.
+      this.channelReady = true;
+      await this.openWindow(target);
     } catch (err) {
-      // Hold at the failing step instead of tearing everything down and dumping the
-      // operator on the home screen. The worker's task stays paused exactly as prepare
-      // left it, nothing is ever resent, and the screen offers retry, abandon and the
-      // console so a transient network problem cannot lock the app for hours.
-      runtime.incident = '';
-      runtime.dispatching = false;
-      // The failed step must not leave a dead Web or a proxy override pointing at a
-      // torn-down tunnel behind it: that is what turned into a blank screen, and a live
-      // Web component also swallows the system back key.
+      await this.holdForRetry(descriptor, profile, err as Error);
+    }
+  }
+
+  // Shows the browser through the established tunnel, confirms the common exit, then hands
+  // the source page to the operator.
+  private async openWindow(target: DirectTarget): Promise<void> {
+    const generation = this.generation;
+    this.measuredOnce = false;
+    this.verifiedExit = false;
+    this.browser = new webview.WebviewController();
+    this.webUrl = 'https://api.ipify.org';
+    this.screen = 'verify'; this.showWeb = true;
+    this.message = '正在核对手机与节点的共同出口';
+    let ip = await this.measureExit();
+    if (ip.length === 0) {
+      // One bounded retry before failing the whole flow: on a weak link the neutral
+      // page often needs a second attempt, and tearing the tunnel down for that is
+      // expensive for the operator.
+      this.message = '未能读取手机出口地址，正在重试';
+      ip = await this.measureExit();
+    }
+    if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
+    if (ip.length === 0) {
+      // The tunnel may be up while the node's own proxy is degraded, which is a real
+      // state (a throttled subscription serves placeholder nodes) and not a phone fault.
+      throw new Error('未能读取手机出口地址；可能是节点代理不可用，可重试或进入控制台检查该节点');
+    }
+    if (ip !== target.exit_ip) { throw new Error('手机出口与节点出口不一致，已关闭通道'); }
+    runtime.proxy.markReady();
+    this.verifiedExit = true;
+    this.message = '已确认共同出口，请在下方手动完成验证';
+    const targetUrl = target.url ? target.url : 'https://api.ipify.org';
+    hilog.info(0x3200, 'waygate_ui', 'showing target url=%{public}s', targetUrl);
+    this.browser.loadUrl(targetUrl);
+  }
+
+  // Holds at the failing step instead of tearing everything down and dumping the operator on
+  // the home screen: the worker's task stays paused exactly as prepare left it, nothing is
+  // ever resent, and the screen offers retry, abandon and the console.
+  private async holdForRetry(descriptor: VerificationDescriptor, profile: NodeProfile, err: Error): Promise<void> {
+    runtime.incident = '';
+    runtime.dispatching = false;
+    if (this.channelReady) {
+      // The tunnel and the browser proxy are still good, so only the Web is taken down; a
+      // dead Web is what turned into a blank screen and swallowed the back key, and
+      // rebuilding the channel would make the worker run its steps again for nothing.
+      await bounded(this.detach());
+    } else {
+      // Nothing usable was established, so nothing may be left behind: a dead Web or a
+      // proxy override pointing at a torn-down tunnel is exactly the blank-screen state.
       await this.removeProxy();
       await this.stopWindow();
       this.showWeb = false;
       this.proxyApplied = false;
-      this.retryDescriptor = descriptor;
-      this.retryProfile = profile;
-      this.failure = readableError((err as Error).message || '验证未完成，请重试');
-      this.message = this.failure;
-      this.screen = 'retry';
     }
+    this.retryDescriptor = descriptor;
+    this.retryProfile = profile;
+    this.failure = readableError(err.message || '验证未完成，请重试');
+    this.message = this.failure;
+    this.screen = 'retry';
   }
 
+  // Retrying only the step that failed: when the channel is still up, the SSH session, the
+  // tunnel and the proxy are reused as is and only the browser stage is re-entered, so a
+  // weak link never pays for a second connect or a second worker prepare. Otherwise the
+  // whole flow starts over.
   private async retryStep(): Promise<void> {
-    if (!this.retryDescriptor || !this.retryProfile || this.busy) { return; }
+    const descriptor = this.retryDescriptor;
+    const profile = this.retryProfile;
+    if (!descriptor || !profile || this.busy) { return; }
     this.enterBusy();
     try {
+      const target = runtime.target;
+      if (this.channelReady && target) {
+        await bounded(this.detach());
+        await this.openWindow(target);
+        return;
+      }
       await this.removeProxy();
       await this.stopWindow();
       await runtime.releaseSsh();
-      await this.begin(this.retryDescriptor, this.retryProfile);
-    } catch (err) { this.error(err as Error); }
+      await this.begin(descriptor, profile);
+    } catch (err) {
+      await this.holdForRetry(descriptor, profile, err as Error);
+    }
     finally { this.leaveBusy(); }
   }
 
@@ -1070,6 +1129,16 @@ struct Index {
       this.header()
       if (this.message) {
         Text(this.message).fontSize(14).fontColor(INK).width('100%').padding({ left: 22, right: 22, bottom: 12 })
+      }
+      if (this.otherNodeNotes.length > 0) {
+        Text(this.showOtherNotes ? '收起其他节点消息' : '其他节点 · ' + this.otherNodeNotes.length + ' 条历史')
+          .fontSize(12).fontColor(MUTED).width('100%').padding({ left: 22, right: 22, bottom: 8 })
+          .onClick(() => { this.showOtherNotes = !this.showOtherNotes; })
+        if (this.showOtherNotes) {
+          ForEach(this.otherNodeNotes, (note: string) => {
+            Text(note).fontSize(12).fontColor(MUTED).width('100%').padding({ left: 22, right: 22, bottom: 6 })
+          }, (note: string, index: number): string => index.toString())
+        }
       }
       if (this.syncMessage) {
         Text(this.syncMessage).fontSize(14).fontColor(INK).width('100%').padding({ left: 22, right: 22, bottom: 12 })
