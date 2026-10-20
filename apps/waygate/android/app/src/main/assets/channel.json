@@ -1,76 +1,83 @@
 {
-    "nodes":  [
-                  {
-                      "id":  "36",
-                      "label":  "36 · 36.138.125.17",
-                      "host":  "36.138.125.17",
-                      "port":  22,
-                      "user":  "root",
-                      "authType":  "key",
-                      "hostKeys":  [
-                                       "ecdsa-sha2-nistp256 SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w",
-                                       "ssh-ed25519 SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk",
-                                       "ssh-rsa SHA256:tsnfhOBHxe02IHsRBdCv750q/wJkZo9v3Ymf98yrqiE"
-                                   ],
-                      "secretFile":  "channel/phone-ed25519.pem"
-                  },
-                  {
-                      "id":  "43-160",
-                      "label":  "43.160.196.129",
-                      "host":  "43.160.196.129",
-                      "port":  22,
-                      "user":  "root",
-                      "authType":  "key",
-                      "hostKeys":  [
-                                       "ssh-dss SHA256:GCF3ruwQIegwqSbFYbnV4t0QtX8KPpa0pvnV1m1Kc70",
-                                       "ecdsa-sha2-nistp256 SHA256:1+953wgooWmyQqRqMoaT4bP2k9dTWIOsM8iN5xglBBY",
-                                       "ssh-ed25519 SHA256:QJnUv91xE1qKvtQXlFdXcLtDmH5Ce9G2ha9rfamC4x0",
-                                       "ssh-rsa SHA256:ejo+MUgkmLUJhB7MlcNQKr+gWTRbmVP5sV7NzeVauwU"
-                                   ],
-                      "secretFile":  "channel/phone-ed25519.pem"
-                  },
-                  {
-                      "id":  "43-132",
-                      "label":  "43.132.206.172",
-                      "host":  "43.132.206.172",
-                      "port":  22,
-                      "user":  "root",
-                      "authType":  "key",
-                      "hostKeys":  [
-                                       "ssh-dss SHA256:7OSAqZyTNGO+VWweE2dASXleepBIB14kJTi0wolPx3M",
-                                       "ecdsa-sha2-nistp256 SHA256:H50ZG32IGzOI0O5wGJiAnyLxj6brqmtqyv55X66kF+I",
-                                       "ssh-ed25519 SHA256:yqWfUP0PqXA3y7A1uzLs2B031qOMSE4Sq2suKx+2Yuw",
-                                       "ssh-rsa SHA256:+t1TknZxgNJgkDxy5GI7uc+Ql8YoJ/uAxS3agPooVmU"
-                                   ],
-                      "secretFile":  "channel/phone-ed25519.pem"
-                  },
-                  {
-                      "id":  "251",
-                      "label":  "251 · 8.148.251.114（主控兼 worker）",
-                      "host":  "8.148.251.114",
-                      "port":  22,
-                      "user":  "root",
-                      "authType":  "key",
-                      "secretFile":  "channel/phone-ed25519.pem",
-                      "hostKeys":  [
-                                       "ssh-rsa SHA256:sIIUq1o9MYVQMyUcyDtmfCGzbDEOApMGu2yjvgmxRk8",
-                                       "ecdsa-sha2-nistp256 SHA256:ZEoQL7Y09TiO+ILTDJrrdiYoWFyA33T4hLQmFBRKW8o",
-                                       "ssh-ed25519 SHA256:dBI6KNT5jDMG4NgYiMKf+++D6iiyCQxfsQsV1HFBpZQ"
-                                   ]
-                  },
-                  {
-                      "id":  "252",
-                      "label":  "252 · 8.148.252.117",
-                      "host":  "8.148.252.117",
-                      "port":  22,
-                      "user":  "root",
-                      "authType":  "key",
-                      "secretFile":  "channel/phone-ed25519.pem",
-                      "hostKeys":  [
-                                       "ssh-rsa SHA256:sB8ad0Etjy/OWOp+hmPW1fAiv80SNKbj9XHOI0/FBf0",
-                                       "ecdsa-sha2-nistp256 SHA256:8ez3chbYLqN4bD2D/PC6TvdaKY5YG7ZjKfYAyCdaIdc",
-                                       "ssh-ed25519 SHA256:pwHxj/2XzXHgpmV/cxaTDipcULbIFd8lNaExPDTVKgU"
-                                   ]
-                  }
-              ]
+    "nodes": [
+        {
+            "id": "36",
+            "label": "36 · 36.138.125.17",
+            "host": "36.138.125.17",
+            "port": 22,
+            "user": "root",
+            "authType": "key",
+            "nodeIds": ["03"],
+            "hostKeys": [
+                "ecdsa-sha2-nistp256 SHA256:nTL9myPgp4MNIQkb1F+knWklgJdPKeYyuMgfv2v0R4w",
+                "ssh-ed25519 SHA256:zA3sA2m5587IgsOA07T0meZ3+TBANNLqWxl0nvIgePk",
+                "ssh-rsa SHA256:tsnfhOBHxe02IHsRBdCv750q/wJkZo9v3Ymf98yrqiE"
+            ],
+            "secretFile": "channel/phone-ed25519.pem"
+        },
+        {
+            "id": "43-160",
+            "label": "43.160.196.129",
+            "host": "43.160.196.129",
+            "port": 22,
+            "user": "root",
+            "authType": "key",
+            "nodeIds": ["sg"],
+            "hostKeys": [
+                "ssh-dss SHA256:GCF3ruwQIegwqSbFYbnV4t0QtX8KPpa0pvnV1m1Kc70",
+                "ecdsa-sha2-nistp256 SHA256:1+953wgooWmyQqRqMoaT4bP2k9dTWIOsM8iN5xglBBY",
+                "ssh-ed25519 SHA256:QJnUv91xE1qKvtQXlFdXcLtDmH5Ce9G2ha9rfamC4x0",
+                "ssh-rsa SHA256:ejo+MUgkmLUJhB7MlcNQKr+gWTRbmVP5sV7NzeVauwU"
+            ],
+            "secretFile": "channel/phone-ed25519.pem"
+        },
+        {
+            "id": "43-132",
+            "label": "43.132.206.172",
+            "host": "43.132.206.172",
+            "port": 22,
+            "user": "root",
+            "authType": "key",
+            "nodeIds": ["tokenSeller"],
+            "hostKeys": [
+                "ssh-dss SHA256:7OSAqZyTNGO+VWweE2dASXleepBIB14kJTi0wolPx3M",
+                "ecdsa-sha2-nistp256 SHA256:H50ZG32IGzOI0O5wGJiAnyLxj6brqmtqyv55X66kF+I",
+                "ssh-ed25519 SHA256:yqWfUP0PqXA3y7A1uzLs2B031qOMSE4Sq2suKx+2Yuw",
+                "ssh-rsa SHA256:+t1TknZxgNJgkDxy5GI7uc+Ql8YoJ/uAxS3agPooVmU"
+            ],
+            "secretFile": "channel/phone-ed25519.pem"
+        },
+        {
+            "id": "251",
+            "label": "251 · 8.148.251.114（主控兼 worker）",
+            "host": "8.148.251.114",
+            "port": 22,
+            "user": "root",
+            "authType": "key",
+            "secretFile": "channel/phone-ed25519.pem",
+            "nodeIds": ["local"],
+            "aliases": ["testapi.zuzurent.com.cn", "172.21.153.219"],
+            "hostKeys": [
+                "ssh-rsa SHA256:sIIUq1o9MYVQMyUcyDtmfCGzbDEOApMGu2yjvgmxRk8",
+                "ecdsa-sha2-nistp256 SHA256:ZEoQL7Y09TiO+ILTDJrrdiYoWFyA33T4hLQmFBRKW8o",
+                "ssh-ed25519 SHA256:dBI6KNT5jDMG4NgYiMKf+++D6iiyCQxfsQsV1HFBpZQ"
+            ]
+        },
+        {
+            "id": "252",
+            "label": "252 · 8.148.252.117",
+            "host": "8.148.252.117",
+            "port": 22,
+            "user": "root",
+            "authType": "key",
+            "secretFile": "channel/phone-ed25519.pem",
+            "nodeIds": ["02"],
+            "aliases": ["172.21.153.222"],
+            "hostKeys": [
+                "ssh-rsa SHA256:sB8ad0Etjy/OWOp+hmPW1fAiv80SNKbj9XHOI0/FBf0",
+                "ecdsa-sha2-nistp256 SHA256:8ez3chbYLqN4bD2D/PC6TvdaKY5YG7ZjKfYAyCdaIdc",
+                "ssh-ed25519 SHA256:pwHxj/2XzXHgpmV/cxaTDipcULbIFd8lNaExPDTVKgU"
+            ]
+        }
+    ]
 }

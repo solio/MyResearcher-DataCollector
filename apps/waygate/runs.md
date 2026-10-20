@@ -1824,3 +1824,59 @@ ArkWeb 渲染成空白页——这也是上一轮把它改成可读文本的原�
 首页 `刷新` 按钮未点过；Android 版仍未同步。（取证时读到的容器内 `console.token` 只在本机使用，
 未打印、未入库。）
 
+### 2026-10-20 / Windows + Mate 70 Pro+ / 第二十九轮：251/252 在 App 上无法处理的根因
+
+用户报：`8.148.251.114`、`8.148.252.117` 这两个节点**在 App 上还是不能处理**。
+
+**根因（全部为实测，非推断）：App 用「主控给出的 SSH 主机提示」去匹配内置通道，而这两台
+被主控提示成了手机根本拨不通的主机。**
+
+取的证据：
+
+1. **主控实时下发的描述**（`GET /v1/incidents/{id}/verification`，对当前 4 条 pending 各取一次）：
+
+   | incident 的 node_id | `ssh_host_hint` | 是否命中 App 内置通道 |
+   |---|---|---|
+   | `02` | `172.21.153.222` | ✗（App 里是 8.148.252.117） |
+   | `local` | `testapi.zuzurent.com.cn` | ✗（App 里是 8.148.251.114） |
+   | `03` | `36.138.125.17` | ✓ node 36 |
+   | `sg` | `43.160.196.129` | ✓ node 43-160 |
+
+2. **collector `/api/fleet` 的注册信息**（`base_url` 就是 hint 的来源，
+   [collector.py](hub/collector.py:19)）：`local`(local=True, base_url=None → 取
+   `config["public_url"]` 主机)、`02` = `http://172.21.153.222:8790`、
+   `03` = `http://36.138.125.17:8790`、`tokenSeller` = `http://43.132.206.172:8790`、
+   `sg` = `http://43.160.196.129:8790`。
+3. **机器身份**（`hostname; hostname -I`）：`251` = `fzz-002` = `172.21.153.219`；
+   `252` = `FZZ-003` = `172.21.153.222`。⇒ 主控节点 `local` = 251，主控节点 `02` = 252。
+4. **App 侧旧逻辑**按主机字符串**精确相等**选内置通道（[Index.ets](harmony/entry/src/main/ets/pages/Index.ets)
+   的 `bundledFor`）。于是：`local`/`02` 两条待办匹配不到任何内置节点 → 退化成
+   「请填写该节点的 SSH 登录凭据」表单；而 `172.21.153.222` 是内网地址，手机**根本拨不通**，
+   所以 252 上永远处理不了。三台旧节点能用，只是因为主控恰好提示了它们的公网 IP。
+
+**改了什么（App 侧，未动服务端）**
+
+1. [channel.json](harmony/entry/src/main/resources/rawfile/channel.json) 每个节点新增
+   `nodeIds` 与 `aliases`：`36→["03"]`、`43-160→["sg"]`、`43-132→["tokenSeller"]`、
+   `251→["local"] + aliases["testapi.zuzurent.com.cn","172.21.153.219"]`、
+   `252→["02"] + aliases["172.21.153.222"]`（Android assets 同步，逐字节一致）。
+2. App 改为**先按主控 `node_id` 匹配内置通道**，主机/别名仅在 node_id 匹配不到时兜底
+   （`node_id` 也正是本机保存节点凭据的键，最稳定）。连接目标始终使用 `host`
+   （251→8.148.251.114，252→8.148.252.117），即验证过的那两个公网地址。
+3. **内置通道对覆盖到的节点优先**：不再让一个旧的/拨不通的本机档案覆盖内置配置，
+   于是用户之前被引导填过一次的 251/252 凭据不会再卡住流程。
+
+**验证**：`check_android.py` → `channel.json nodes identical on both platforms (5 nodes)`、
+`Android project structure OK`；`BUILD SUCCESSFUL in 9 s 715 ms`；signed HAP 5,696,105 B
+（2026-10-20 09:48:38），`install bundle successfully`；临时签名配置用后已还原。
+
+**服务端根因（按既有约定：只记录，不改服务端）**：主控把这两台提示成手机不可用的主机——
+252 用内网 IP 注册 `base_url`，`local` 被映射成 `public_url` 主机名。**正解在服务端**：
+fleet 应对外报出节点**手机可拨通的公网 SSH 地址**（252→8.148.252.117、251→8.148.251.114），
+或 `direct_descriptor` 把不可拨通的提示解析成可用地址。本轮的 App 别名只是绕过，属权宜。
+
+**未验证（不声称完成）**：端到端「现在处理」到 `local`/`02` 两条待办**尚未在真机复验**——
+安装后尝试拉起 App 时手机正被其他应用占用（`aa start` 被拒），未强行操作。通道本身
+（内置凭据 + 固定指纹 → 251/252 SSH PASS）已在第二十五轮取证。Android 版仍未编译。
+
+

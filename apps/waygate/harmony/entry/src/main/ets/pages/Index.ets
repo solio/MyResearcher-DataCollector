@@ -456,12 +456,14 @@ struct Index {
         '/v1/incidents/' + item.id + '/verification', http.RequestMethod.GET, '', 3);
       this.descriptor = descriptor;
       this.loadBundled();
-      let profile = await this.ssh.load(descriptor.node_id);
-      // A packaged channel also covers the normal flow: when the node hint is the
-      // bundled host, the credential ships with the app and nothing is typed.
       const hint = descriptor.ssh_host_hint ? descriptor.ssh_host_hint : '';
-      if (!profile && this.bundledMatches(hint)) {
-        profile = await this.bundledProfileFor(descriptor.node_id, hint);
+      const bundled = this.bundledFor(descriptor.node_id, hint);
+      let profile = await this.ssh.load(descriptor.node_id);
+      // A packaged channel is authoritative for a node it covers: it ships both the
+      // credential and the pinned host keys, so neither a stale stored profile nor a host
+      // hint the phone cannot dial may win. Nothing has to be typed for a bundled node.
+      if (bundled) {
+        profile = await this.bundledProfileFor(descriptor.node_id, bundled);
         await this.ssh.save(profile);
       }
       if (!profile) {
@@ -759,24 +761,33 @@ struct Index {
     return stored ? stored : '';
   }
 
-  // Matches the packaged node by host, which is how a descriptor hint or a typed
-  // address selects its credential.
-  private bundledFor(host: string): BuiltinNode | undefined {
-    for (const node of this.bundledNodes) {
-      if (node.host === host && this.secretFor(node).length > 0) { return node; }
-    }
-    return undefined;
+  // A packaged channel is found by the hub's node_id first: it is stable, and it is the
+  // same key a stored profile uses. The host hint is only a fallback, because the hub can
+  // advertise a host the phone cannot dial (its own domain, or the node's LAN address).
+  private bundledFor(nodeId: string, hint: string): BuiltinNode | undefined {
+    const usable = this.bundledNodes.filter((node: BuiltinNode): boolean => this.secretFor(node).length > 0);
+    const byId = usable.find((node: BuiltinNode): boolean =>
+      node.nodeIds !== undefined && node.nodeIds.indexOf(nodeId) >= 0);
+    if (byId) { return byId; }
+    if (hint.length === 0) { return undefined; }
+    return usable.find((node: BuiltinNode): boolean =>
+      node.host === hint || (node.aliases !== undefined && node.aliases.indexOf(hint) >= 0));
   }
 
+  // The channel screen only has a typed host, so it matches on host/alias alone.
   private bundledMatches(host: string): boolean {
-    return this.bundledFor(host) !== undefined;
+    return this.bundledByHost(host) !== undefined;
+  }
+
+  private bundledByHost(host: string): BuiltinNode | undefined {
+    return this.bundledNodes.find((node: BuiltinNode): boolean => this.secretFor(node).length > 0 &&
+      (node.host === host || (node.aliases !== undefined && node.aliases.indexOf(host) >= 0)));
   }
 
   // Probes first so the pinned host keys from the packaged config are verified
   // before any bundled credential is used.
-  private async bundledProfileFor(nodeId: string, host: string): Promise<NodeProfile> {
-    const node = this.bundledFor(host);
-    if (!node) { throw new Error('没有内置该节点的通道配置：' + host); }
+  private async bundledProfileFor(nodeId: string, node: BuiltinNode): Promise<NodeProfile> {
+    const host = node.host;
     const key = await probeHostKey({ host: host, port: node.port });
     const fingerprint = key.type + ' ' + key.fingerprint;
     const accepted = node.hostKeys;
@@ -869,7 +880,8 @@ struct Index {
     if (!/^[A-Za-z0-9_]+$/.test(user)) { this.message = 'SSH 用户名不合法'; return; }
     // Packaged channel: nothing is typed on the phone; the pinned host key from
     // the bundled config is verified inside bundledProfileFor.
-    const bundled = this.bundledMatches(host);
+    const bundledNode = this.bundledByHost(host);
+    const bundled = bundledNode !== undefined;
     const secret = this.nodeAuth === 'password' ? this.nodeSecret : this.nodeKey.trim();
     if (!bundled && secret.length < 8) {
       this.message = this.nodeAuth === 'password' ? '请填写该节点的登录密码' : '请粘贴该节点的私钥内容';
@@ -879,9 +891,9 @@ struct Index {
     this.message = bundled ? '正在核对内置通道的主机指纹' : (this.nodeConfirmed ? '正在连接节点并建立通道' : '正在读取节点主机指纹…');
     try {
       let profile: NodeProfile;
-      if (bundled) {
+      if (bundledNode) {
         const nodeId = this.channelMode ? 'channel-test' : (descriptor ? descriptor.node_id : '');
-        profile = await this.bundledProfileFor(nodeId, host);
+        profile = await this.bundledProfileFor(nodeId, bundledNode);
         this.nodeFingerprint = profile.fingerprint;
       } else {
         const key = await probeHostKey({ host: host, port: port });

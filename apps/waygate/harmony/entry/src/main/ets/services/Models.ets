@@ -116,5 +116,12 @@ export interface BuiltinNode {
   // depends on libssh2's algorithm order, so all of them are pinned.
   hostKeys: string[];
   secretFile: string;
+  // The hub identifies a node by node_id, which is also the key a stored profile is
+  // saved under, so it is the most stable link between a packaged channel and a待办.
+  nodeIds?: string[];
+  // Other host strings the hub may advertise for the same machine (its own domain, or a
+  // LAN address the phone cannot dial). Any of them selects this packaged channel; the
+  // connection itself still always uses host.
+  aliases?: string[];
 }
 export interface BuiltinConfig { nodes: BuiltinNode[]; }
