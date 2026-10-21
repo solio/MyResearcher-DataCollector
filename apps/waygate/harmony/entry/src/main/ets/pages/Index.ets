@@ -254,6 +254,17 @@ struct Index {
             : '上次未收到探测编号，结果未知';
           this.screen = 'result';
           this.message = this.claimCanResume ? '点击“继续核对探测结果”只读取结果，不会重发请求' : '请到控制台核对该任务状态';
+        } else if (runtime.incident && runtime.descriptor && runtime.profile) {
+          // The system recreated this page while a verification was open. The session that
+          // lived in memory is gone, so the flow cannot silently continue; say so and let the
+          // same step be rebuilt without asking for credentials again.
+          this.descriptor = runtime.descriptor;
+          this.retryDescriptor = runtime.descriptor;
+          this.retryProfile = runtime.profile;
+          this.incidentId = runtime.incident;
+          this.failure = '页面被系统重建，节点通道需要重新建立；任务保持暂停，不会重发探测';
+          this.message = this.failure;
+          this.screen = 'retry';
         }
         await this.refresh();
         if (this.credentials.push) { this.enablePush(false); }
@@ -415,14 +426,15 @@ struct Index {
     this.proxyApplied = false;
   }
 
-  // Closes the temporary browser channel only. The SSH exec session is kept when a
-  // probe is in flight so its single result can still be read.
+  // One teardown order for every release path, because a stale proxy override pointing at a
+  // closed listener is what produced both the blank page and ERR_PROXY_CONNECTION_FAILED:
+  //   1. stop the page from using the proxy, 2. drop the override that names it,
+  //   3. only then close the listener, 4. release the SSH resources.
   private async stopWindow(): Promise<void> {
-    await runtime.proxy.stop(); // Immediately fail closed, even before Web teardown.
-    // The tunnel plumbing is gone with it, so this channel may not be reused for a retry.
     this.channelReady = false;
     await this.detach();
     await this.removeProxy();
+    await runtime.proxy.stop();
     this.exitWaiter = undefined;
     this.verifiedExit = false;
   }
@@ -437,6 +449,8 @@ struct Index {
     this.activeProfile = undefined;
     runtime.incident = '';
     runtime.target = undefined;
+    runtime.descriptor = undefined;
+    runtime.profile = undefined;
   }
 
   private async goHome(): Promise<void> {
@@ -588,6 +602,8 @@ struct Index {
   private async begin(descriptor: VerificationDescriptor, profile: NodeProfile): Promise<void> {
     runtime.incident = this.incidentId;
     runtime.nodeId = descriptor.node_id;
+    runtime.descriptor = descriptor;
+    runtime.profile = profile;
     this.activeProfile = profile;
     this.screen = 'transition';
     this.message = '正在连接节点并核对任务';
@@ -781,6 +797,8 @@ struct Index {
     runtime.dispatching = false;
     runtime.incident = '';
     runtime.target = undefined;
+    runtime.descriptor = undefined;
+    runtime.profile = undefined;
     this.claim = undefined;
     this.claimCanResume = false;
     this.claimMessage = '';

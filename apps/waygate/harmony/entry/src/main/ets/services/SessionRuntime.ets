@@ -1,6 +1,6 @@
 import { LocalProxy } from './LocalProxy';
 import { Api } from './Api';
-import { DirectTarget } from './Models';
+import { DirectTarget, NodeProfile, VerificationDescriptor } from './Models';
 import { close, stopForward } from 'libwaygate_ssh.so';
 
 class SessionRuntime {
@@ -15,6 +15,11 @@ class SessionRuntime {
   forwardId: number = -1;
   nodeId: string = '';
   target: DirectTarget | undefined = undefined;
+  // What the running verification was started with. It lives here rather than only in the
+  // page so a page recreated by the system can offer to rebuild the same step instead of
+  // silently dropping the operator back to the inbox with no explanation.
+  descriptor: VerificationDescriptor | undefined = undefined;
+  profile: NodeProfile | undefined = undefined;
 
   async stopForwarding(): Promise<void> {
     if (this.forwardId >= 0) {
@@ -33,14 +38,16 @@ class SessionRuntime {
     }
   }
 
-  // Called by UIAbility when backgrounded, even if ArkUI stops rendering. Only
-  // resources this phone created are released; the hub is never told to cancel,
-  // and a submitted probe claim is left intact.
+  // Called only when the ability is really destroyed. Backgrounding the app must never come
+  // here: closing this proxy while the app-level proxy override still names it is exactly
+  // what makes a returning page fail with ERR_PROXY_CONNECTION_FAILED.
   async background(): Promise<void> {
     await this.proxy.stop();
     await this.releaseSsh();
     this.incident = '';
     this.target = undefined;
+    this.descriptor = undefined;
+    this.profile = undefined;
   }
 }
 export const runtime = new SessionRuntime();
