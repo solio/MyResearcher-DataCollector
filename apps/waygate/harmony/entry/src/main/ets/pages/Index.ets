@@ -29,6 +29,10 @@ const POLL_IDLE_ROUNDS = 3;
 // therefore raced against a timeout, and a stuck busy flag is force-released.
 const CALLBACK_WAIT_MS = 2500;
 const BUSY_WATCHDOG_MS = 300000;
+// An unconfirmed probe is a claim, not a lock. After this long its outcome can no longer be
+// read by request id, so the operator is given an explicit way to close it instead of the
+// app sitting on "结果尚未确认" forever.
+const CLAIM_TTL_MS = 15 * 60 * 1000;
 
 function bounded(work: Promise<void>, ms: number = CALLBACK_WAIT_MS): Promise<void> {
   // A rejection that arrives after the race settled has nobody left to observe it, so it
@@ -61,6 +65,8 @@ struct Index {
   @State stockTitle: string = '';
   @State claimMessage: string = '';
   @State claimCanResume: boolean = false;
+  @State claimAge: string = '';
+  @State claimExpired: boolean = false;
   @State nodeHint: string = '';
   @State nodeHost: string = '';
   @State nodePort: string = '22';
@@ -249,11 +255,15 @@ struct Index {
           this.claim = claim;
           runtime.dispatching = true;
           this.claimCanResume = claim.before_request_id > 0;
+          this.claimAge = this.ageText(claim.at);
+          this.claimExpired = Date.now() - claim.at > CLAIM_TTL_MS;
           this.claimMessage = this.claimCanResume
-            ? '上次探测已提交，结果尚未确认'
-            : '上次未收到探测编号，结果未知';
+            ? '上次探测已提交，结果尚未确认（' + this.claimAge + '）'
+            : '上次未收到探测编号，结果未知（' + this.claimAge + '）';
           this.screen = 'result';
-          this.message = this.claimCanResume ? '点击“继续核对探测结果”只读取结果，不会重发请求' : '请到控制台核对该任务状态';
+          this.message = this.claimCanResume
+            ? '点“继续核对探测结果”只读取结果，不会重发请求；也可以结束核对'
+            : '可用“按节点当前状态判定”核对；也可以直接结束核对';
         } else if (runtime.incident && runtime.descriptor && runtime.profile) {
           // The system recreated this page while a verification was open. The session that
           // lived in memory is gone, so the flow cannot silently continue; say so and let the
@@ -553,8 +563,9 @@ struct Index {
     }
     // A pending claim on another incident must not lock the app; only a verification
     // that is actually running does.
-    if (!this.api || this.busy || (runtime.incident && !runtime.dispatching)) {
-      if (runtime.incident && !runtime.dispatching) { this.message = '另一个待办正在验证中，请稍候'; }
+    const blocked = this.startBlocked(item);
+    if (!this.api || blocked.length > 0) {
+      if (blocked.length > 0) { this.message = blocked; }
       return;
     }
     this.enterBusy(); this.message = '正在读取该节点的验证信息';
@@ -793,6 +804,78 @@ struct Index {
     throw new Error('探测结果尚未确认；没有再次请求，请在控制台核对');
   }
 
+  private ageText(at: number): string {
+    if (!at) { return '时间未知'; }
+    const minutes = Math.floor((Date.now() - at) / 60000);
+    if (minutes < 1) { return '刚刚'; }
+    if (minutes < 60) { return minutes.toString() + ' 分钟前'; }
+    const hours = Math.floor(minutes / 60);
+    return hours.toString() + ' 小时前';
+  }
+
+  // A claim is a record of one probe, not a lock on the app. Every way out of it goes through
+  // here: the operator can close it without resending anything, and no other incident stays
+  // disabled while it waits.
+  private async endClaim(message: string): Promise<void> {
+    this.claim = undefined;
+    this.claimCanResume = false;
+    this.claimMessage = '';
+    this.claimAge = '';
+    this.claimExpired = false;
+    runtime.dispatching = false;
+    this.message = message;
+    await this.vault.claim('');
+    await runtime.releaseSsh();
+  }
+
+  // When the probe's request id was never recorded, the node's own live view still answers the
+  // question: a halt that is no longer reported for the same job and stock means the probe took
+  // effect, while one that is still reported means it did not. Either way the claim is closed,
+  // so the state cannot stay "unknown" forever.
+  private async resolveClaimByState(): Promise<void> {
+    if (!this.api || !this.claim || this.busy) { return; }
+    const claim = this.claim;
+    const target = JSON.parse(claim.target) as DirectTarget;
+    this.enterBusy();
+    this.message = '正在按节点当前状态判定这次探测';
+    try {
+      let profile = runtime.profile;
+      if (!profile) { profile = await this.ssh.load(claim.node); }
+      if (!profile) { throw new Error('该节点凭据已被删除；请到控制台核对'); }
+      const options: SshConnectOptions = { host: profile.host, port: profile.port, user: profile.user,
+        knownHostBase64: profile.knownHostBase64 };
+      if (profile.authType === 'password') { options.password = profile.secret; } else { options.privateKey = profile.secret; }
+      if (profile.passphrase) { options.passphrase = profile.passphrase; }
+      const session = await connect(options);
+      runtime.sshId = session.id;
+      const view = await runAction<AuditView>(session.id, claim.worker_command, '{"action":"audit"}');
+      const sameTask = view.targets.find((row: DirectTarget): boolean =>
+        this.same(row.job, target.job) && this.same(row.stock, target.stock) && this.same(row.task, target.task));
+      if (sameTask) {
+        await this.endClaim('节点仍报告同一阻断：这次探测没有生效；任务保持暂停，可从待办重新处理');
+      } else {
+        await this.endClaim('节点已不再报告该阻断：探测已生效或任务已在别处继续；无需再核对');
+      }
+      await this.refresh();
+    } catch (err) {
+      this.claimMessage = '按节点状态判定失败：' + (err as Error).message;
+      this.message = '没有重发请求；可重试，或结束核对后到控制台查看';
+      await runtime.releaseSsh();
+    } finally { this.leaveBusy(); }
+  }
+
+  // Which incidents may be started right now. A claim only holds its own incident, so an
+  // unconfirmed probe never disables the rest of the inbox.
+  private startBlocked(item: Incident): string {
+    if (this.busy) { return '正在处理上一步'; }
+    if (item.kind === 'challenge' && !item.can_verify) { return '节点离线或状态过期'; }
+    if (runtime.incident === item.id && !runtime.dispatching) { return '该待办正在验证中'; }
+    if (this.claim && this.claim.incident === item.id && !runtime.dispatching) {
+      return '该待办已有一次探测结果待核对';
+    }
+    return '';
+  }
+
   private async settleClaim(message: string): Promise<void> {
     runtime.dispatching = false;
     runtime.incident = '';
@@ -865,7 +948,13 @@ struct Index {
     if (!this.api || this.busy) { return; }
     const claim = this.claim;
     if (!claim) { return; }
-    if (claim.before_request_id <= 0) { this.message = '上次未收到探测编号，无法核对；请到控制台核对'; return; }
+    if (claim.before_request_id <= 0) {
+      this.claimAge = this.ageText(claim.at);
+      this.message = '上次未收到探测编号，无法按编号读取；请点“按节点当前状态判定”，或结束核对';
+      return;
+    }
+    this.claimAge = this.ageText(claim.at);
+    this.claimExpired = Date.now() - claim.at > CLAIM_TTL_MS;
     const target = JSON.parse(claim.target) as DirectTarget;
     this.enterBusy();
     this.message = '正在连接节点核对探测结果';
@@ -1152,7 +1241,7 @@ struct Index {
             Row({ space: 10 }) {
               Button(item.kind === 'challenge' ? '现在处理' : '查看控制台')
                 .backgroundColor(INK).fontColor(Color.White).layoutWeight(1)
-                .enabled(!this.busy && !runtime.incident && !runtime.dispatching && (item.kind !== 'challenge' || item.can_verify))
+                .enabled(this.startBlocked(item).length === 0)
                 .onClick(() => { if (item.kind === 'challenge') { this.verify(item); } else { this.openConsole(); } })
               Button('稍后提醒').backgroundColor(BG).fontColor(INK).onClick(() => this.snooze(item))
             }
@@ -1320,6 +1409,15 @@ struct Index {
           if (this.screen === 'result' && runtime.dispatching && this.claimCanResume) {
             Button(this.busy ? '正在核对…' : '继续核对探测结果').backgroundColor(INK)
               .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.resumeClaim())
+          }
+          if (this.screen === 'result' && runtime.dispatching) {
+            // The claim is never a dead end: it can be decided from the node's live view, or
+            // closed outright. Neither path resends the probe.
+            Button(this.busy ? '正在判定…' : '按节点当前状态判定').backgroundColor('#DDECE4').fontColor(INK)
+              .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.resolveClaimByState())
+            Button('结束核对（任务保持暂停）').backgroundColor('#EAEFEC').fontColor(INK)
+              .enabled(!this.busy)
+              .onClick(() => this.endClaim('已结束本次核对；任务保持暂停，可从待办重新处理或到控制台查看'))
           }
           if (this.screen === 'result') {
             Button('返回待办').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.leaveResult())

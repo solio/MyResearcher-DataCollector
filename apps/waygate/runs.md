@@ -2132,6 +2132,52 @@ Android 版仍未同步。
 **未验证（不声称完成）**：以上四条承诺**都还没在真机上逐条验证**；
 短锁/长锁/切后台/杀进程四种转换需要分别实测一次，而不是等用户撞到。Android 版仍未同步。
 
+### 2026-10-21 / Windows + Mate 70 Pro+ / 第三十六轮：把 claim 做成完整状态机（未确认不再是死路）
+
+用户报：hk 节点「探测结果未知」后**再也无法继续处理**；已经过去很久，探测总该有结果，
+**查不到也不重置状态**。批评仍然成立：上一轮只把「锁屏」这类入口收口了，**claim 的生命周期**没画进表里。
+
+**先补进生命周期表的第七行（claim/探测）**
+
+| claim 状态 | 进入方式 | 终态 / 出口 |
+|---|---|---|
+| 无 | 未探测 | — |
+| 已提交·有请求号 | `probe` 返回了 `before_request_id` | 读 `result` 确认成功/失败；或**结束核对** |
+| 已提交·无请求号 | `probe` 返回前就断了 | **按节点当前状态判定**；或**结束核对** |
+| 已结算 | `settleClaim()` | 清 claim 与 `runtime` 档案 |
+| 待办已消失 | `settleIfResolved()` | 自动清 claim |
+
+**查出的真实缺陷**
+
+1. **无请求号 = 死路**：`resumeClaim()` 只打印「无法核对；请到控制台核对」，**不结束 claim**，
+   `runtime.dispatching` 永远为真。
+2. **claim 被当成全局闸门**：首页「现在处理」的 `enabled` 里有 `!runtime.dispatching`，
+   于是一条未知结果的 claim **把其他所有待办一起锁住**。
+3. **没有时间维度**：`claim.at` 写进去了却从没用过，不存在「过了很久」这个概念。
+
+**改法**
+
+1. 新增 `CLAIM_TTL_MS`（15 分钟）与 `ageText()`；结果屏显示「（N 分钟前）」。
+2. 新增 **`resolveClaimByState()`**：没有请求号时，用节点自己的 `audit` 视图判定——
+   同一 `job+stock+task` 的阻断还在 ⇒ 探测未生效；不在了 ⇒ 探测已生效或已在别处继续。
+   **两种情况都调用 `endClaim()` 把 claim 收掉**，不再无限挂起。
+3. 新增 **`endClaim()`**：清 claim、清 `runtime.dispatching`、撤持久化 claim、释放 SSH。
+   结果屏新增两个始终可用的按钮：**「按节点当前状态判定」** 与 **「结束核对（任务保持暂停）」**。
+4. 新增 `startBlocked(item)` 取代 UI 的散装判断：**claim 只锁它自己那条待办**，
+   其他待办与「现在处理」不再受 `runtime.dispatching` 影响。
+5. `initialize()` 读到 claim 时立刻算出 `claimAge`/`claimExpired` 并显示；
+   文案明确告诉操作者「可以结束核对」，而不是只指向控制台。
+
+**语义不变**：任何上述路径**都不重发探测**；结束核对只清本地记录，节点任务保持暂停。
+
+**构建/安装**：`BUILD SUCCESSFUL in 8 s 650 ms`，`install bundle successfully`；签名配置用后已还原。
+
+**未验证（不声称完成）**：新按钮与两条判定分支**都还没在真机上点过**——装上后设备处于锁屏，
+`aa start` 被系统拒绝（"Check in the settings whether the current device is in developer mode"）。
+hk 那条历史 claim 需要在真机上用「按节点当前状态判定」实际收一次，才能确认它真的解除了阻塞。
+Android 版仍未同步。
+
+
 
 
 
