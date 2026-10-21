@@ -2004,6 +2004,59 @@ fleet 应对外报出节点**手机可拨通的公网 SSH 地址**（252→8.148
   首页「刷新」、卡死自愈 —— 依旧待设备真正空出来。
 - Android 版仍未同步这些（含本轮的弱网改动）。
 
+### 2026-10-21 / Windows + Mate 70 Pro+ / 第三十三轮：锁屏不再重置状态；控制台不再有任何入口限制
+
+用户报两件事（原话）：「手机一旦锁屏，整个 app 状态重置，验证码的操作又要来一遍」、
+「现在还是会有禁用控制台入口的情况」。两条都是**代码里可证的行为**，不是操作问题。
+
+**一、锁屏重置（根因在 `visibilityChanged()`）**
+
+原实现里，`foreground` 变 false 时，只要存在 `showWeb` / `proxyApplied` / `runtime.incident`
+中任一项，就调用 `releaseAll()`：它会停转发的代理、拆 Web、`runtime.releaseSsh()`、
+`generation++`、`probeWaitAborted = true`，再把屏幕设回 `home`/`result`。
+⇒ **锁屏 = 把隧道和验证页面整个拆掉**，解锁后必须重新连节点、重新走 prepare、重新加载验证码
+页面，之前解过的码自然全废。在本来就慢的网络下这是最昂贵的做法。
+
+不改的理由：锁屏时应用根本不在发请求，保留隧道/代理覆盖/Web 没有任何副作用；
+真正该释放的时机是**用户主动取消、交给控制台、或验证完成**。
+
+**改法**：
+
+1. `visibilityChanged()` 在切后台时**只 `stopRefresh()`**，不再 `releaseAll()`、不再改屏幕、
+   不再 `generation++`；回前台只 `scheduleRefresh(true)`。SSH 会话、隧道、代理覆盖、Web 页面
+   全部原样保留，解锁后回到原来的验证页。
+2. `begin()` / `openWindow()` 里的「取消」判据去掉 `!this.foreground` ——
+   原来切后台会被当成用户取消（`验证已取消`），现在只有真的 `generation` 变化才取消。
+   `waitProbeResult` 仍保留 `!this.foreground` 中止等待（避免后台空转）；它抛出的文案本身
+   就是「没有再次请求，可在结果页重新核对」，claim 不丢、也不会重发探测。
+
+**二、控制台入口仍被禁用**
+
+两处硬限制：
+
+- `openConsole()` 第一行 `if (!this.api || this.busy) { return; }` —— `busy` 一挂住（哪怕
+  watchdog 还没到 5 分钟），控制台就直接点了没反应；
+- 首页「打开采集控制台」按钮 `.enabled(!this.busy && !runtime.dispatching)` ——
+  提交探测后 `runtime.dispatching` 一直为真到结算，这段时间按钮是灰的。
+
+**改法**：
+
+- `openConsole()` 去掉 `busy` 限制，只在没有主控凭据时返回；带 `busy` 进入时提示
+  「已中断上一步并进入控制台（该任务保持暂停）」。
+- 控制台按钮改为**始终可点**，不再看 `busy` / `runtime.dispatching`。
+- 补一个竞态收口：从验证中途进控制台会让在跑的 `begin()` 抛取消，原来的 `catch`/`holdForRetry`
+  会把屏幕改回 `home`/`retry`，**等于刚打开的控制台又被顶掉**。现在两处 catch 都先判
+  `screen === 'console'` 就直接返回，控制台不会再被覆盖。
+
+**构建/安装**：`BUILD SUCCESSFUL in 12 s 188 ms`；signed HAP 5,714,584 B（2026-10-21 09:13:37），
+`install bundle successfully`；签名配置用后已还原。
+
+**未验证（不声称完成）**：锁屏→解锁是否真的保住了验证页、控制台在 `busy` 状态下是否真的能进，
+**都还没在真机上验过**（装上后设备随即不可达）。另外锁屏保住的是**本进程内**的状态：
+若系统在后台把进程杀掉，仍会从头开始（那需要把验证会话落到本机存储，属另一项工作）。
+Android 版仍未同步。
+
+
 
 
 

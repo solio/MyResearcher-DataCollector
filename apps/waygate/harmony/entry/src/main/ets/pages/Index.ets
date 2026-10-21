@@ -347,18 +347,17 @@ struct Index {
     this.prioritizeLink();
   }
 
+  // Locking the screen or switching apps must pause the app, not reset it. Tearing down the
+  // tunnel and the browser here used to throw away a captcha the operator had already
+  // solved and force the whole flow from the start on a link that is slow to begin with.
+  // Everything is therefore kept: the SSH session, the tunnel, the proxy override and the
+  // page itself. Only the poll stops, because nothing can be seen while hidden.
   private visibilityChanged(): void {
     if (!this.foreground) {
-      const open = this.showWeb || this.proxyApplied || runtime.incident.length > 0;
-      if (open) {
-        this.releaseAll().then(() => { this.screen = runtime.dispatching ? 'result' : 'home'; });
-      } else { this.generation++; }
-      // Nothing can be seen or acted on while hidden, so stop asking entirely instead of
-      // waking up to discard work; coming back to the foreground refreshes at once.
       this.stopRefresh();
-    } else {
-      this.scheduleRefresh(true);
+      return;
     }
+    this.scheduleRefresh(true);
   }
 
   private async detach(): Promise<void> {
@@ -433,12 +432,15 @@ struct Index {
   }
 
   private async openConsole(): Promise<void> {
-    // A pending probe result must not stop the operator from using the console: only a
-    // verification that is actually running occupies the phone's one channel.
-    // The console is never blocked by a verification: reaching it ends the phone-side
-    // verification (the worker's task stays paused) and no request is ever resent.
-    if (!this.api || this.busy) { return; }
-    if (runtime.incident) { this.message = '已结束本次验证并进入控制台（该任务保持暂停）'; }
+    // The console is never blocked, by anything: not a running verification, not a pending
+    // probe result, and not a busy flag that some earlier step has not cleared yet. Reaching
+    // it ends the phone-side verification (the worker's task stays paused) and resends
+    // nothing, so there is no correctness reason to refuse it.
+    if (!this.api) { return; }
+    if (runtime.incident || this.busy) {
+      this.message = this.busy ? '已中断上一步并进入控制台（该任务保持暂停）'
+        : '已结束本次验证并进入控制台（该任务保持暂停）';
+    }
     this.enterBusy();
     try {
       await this.releaseAll();
@@ -544,6 +546,9 @@ struct Index {
       }
       await this.begin(descriptor, profile);
     } catch (err) {
+      // The operator may have taken the console instead, which deliberately ends this
+      // flow; that screen must not be knocked back to the home screen.
+      if (this.screen === 'console') { return; }
       await this.releaseAll();
       this.screen = 'home';
       this.error(err as Error);
@@ -564,14 +569,14 @@ struct Index {
       if (profile.passphrase) { options.passphrase = profile.passphrase; }
       const session = await connect(options);
       runtime.sshId = session.id;
-      if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
+      if (generation !== this.generation) { throw new Error('验证已取消'); }
       const view = await runAction<AuditView>(session.id, descriptor.worker_command, '{"action":"audit"}');
       const target = this.matchTarget(view, descriptor.target);
       runtime.target = target;
-      if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
+      if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在暂停该任务的后续采集';
       await runAction<PrepareValue>(session.id, descriptor.worker_command, JSON.stringify({ action: 'prepare', target: target }));
-      if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
+      if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在核对节点出口';
       const exitInfo = await runAction<ExitValue>(session.id, descriptor.worker_command,
         JSON.stringify({ action: 'exit', stock: target.stock, job: target.job }));
@@ -580,7 +585,7 @@ struct Index {
       }
       target.exit_ip = exitInfo.exit_ip;
       runtime.target = target;
-      if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
+      if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在建立应用内 SSH 通道';
       const forwarding: SshForwardOptions = { host: profile.host, port: profile.port, user: profile.user,
         knownHostBase64: profile.knownHostBase64, remoteHost: target.route.host, remotePort: target.route.port };
@@ -627,7 +632,7 @@ struct Index {
       this.message = '未能读取手机出口地址，正在重试';
       ip = await this.measureExit();
     }
-    if (generation !== this.generation || !this.foreground) { throw new Error('验证已取消'); }
+    if (generation !== this.generation) { throw new Error('验证已取消'); }
     if (ip.length === 0) {
       // The tunnel may be up while the node's own proxy is degraded, which is a real
       // state (a throttled subscription serves placeholder nodes) and not a phone fault.
@@ -646,6 +651,9 @@ struct Index {
   // the home screen: the worker's task stays paused exactly as prepare left it, nothing is
   // ever resent, and the screen offers retry, abandon and the console.
   private async holdForRetry(descriptor: VerificationDescriptor, profile: NodeProfile, err: Error): Promise<void> {
+    // Taking the console ends this flow on purpose, so its screen must not be replaced by a
+    // retry screen that the operator never asked for.
+    if (this.screen === 'console') { return; }
     runtime.incident = '';
     runtime.dispatching = false;
     if (this.channelReady) {
@@ -1102,7 +1110,7 @@ struct Index {
           }.padding(20).width('100%').backgroundColor(Color.White).borderRadius(18)
         }, (item: Incident) => item.id)
         Button('打开采集控制台').width('100%').height(50).fontColor(INK).backgroundColor('#DDECE4')
-          .enabled(!this.busy && !runtime.dispatching).onClick(() => this.openConsole())
+          .onClick(() => this.openConsole())
         Text('任务进度').width('100%').fontSize(20).fontWeight(FontWeight.Bold).fontColor(INK)
         ForEach(this.nodes, (node: NodeState) => {
           Column({ space: 10 }) {
