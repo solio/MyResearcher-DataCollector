@@ -25,9 +25,9 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(stage: window.WindowStage): void { stage.loadContent('pages/Index'); }
   onForeground(): void { AppStorage.setOrCreate('foreground', true); }
-  onBackground(): void {
-    AppStorage.setOrCreate('foreground', false);
-    runtime.background();
-  }
+  // Locking the screen or switching apps must not tear the verification down: the tunnel,
+  // the app-local proxy and the page are kept so an already-solved captcha survives. Only
+  // the real end of the ability releases them.
+  onBackground(): void { AppStorage.setOrCreate('foreground', false); }
   onDestroy(): void { runtime.background(); }
 }

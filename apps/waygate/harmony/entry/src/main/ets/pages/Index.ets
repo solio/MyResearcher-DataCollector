@@ -114,9 +114,14 @@ struct Index {
   // The step that failed keeps everything it needs to be retried in place.
   private retryDescriptor: VerificationDescriptor | undefined = undefined;
   private retryProfile: NodeProfile | undefined = undefined;
+  // Profile of the flow currently running, so a channel that died while the app was hidden
+  // can be rebuilt without asking the operator for anything.
+  private activeProfile: NodeProfile | undefined = undefined;
 
   aboutToAppear(): void { this.initialize(); this.watchNetwork(); }
-  aboutToDisappear(): void { this.disposed = true; this.stopRefresh(); this.stopBusyTimer(); runtime.background(); }
+  // The page going away is not a reason to tear the connection down either; the ability's
+  // onDestroy releases everything when the app really ends.
+  aboutToDisappear(): void { this.disposed = true; this.stopRefresh(); this.stopBusyTimer(); }
 
   // A real detection mechanism instead of waiting for a timeout to declare failure:
   // the system tells the app when the link disappears and when it comes back, so the
@@ -358,6 +363,30 @@ struct Index {
       return;
     }
     this.scheduleRefresh(true);
+    this.resumeChannel();
+  }
+
+  // The page itself survives a lock, but the operating system may still drop the underlying
+  // connection. A read-only audit tells us which happened: alive means the operator keeps the
+  // page exactly as it was, dead means the channel is honestly rebuilt instead of leaving a
+  // browser stuck on ERR_PROXY_CONNECTION_FAILED.
+  private async resumeChannel(): Promise<void> {
+    if (!this.channelReady || !this.descriptor || runtime.sshId < 0 || this.busy) { return; }
+    let alive = false;
+    const descriptor = this.descriptor;
+    const check = runAction<AuditView>(runtime.sshId, descriptor.worker_command, '{"action":"audit"}')
+      .then(() => { alive = true; })
+      .catch(() => { alive = false; });
+    await bounded(check, 8000);
+    if (alive) { return; }
+    this.channelReady = false;
+    this.retryDescriptor = descriptor;
+    this.retryProfile = this.activeProfile;
+    this.failure = '从后台回来时节点通道已断开；点“重试本步”重建，任务保持暂停，不会重发探测';
+    this.message = this.failure;
+    await this.removeProxy();
+    await bounded(this.detach());
+    this.screen = 'retry';
   }
 
   private async detach(): Promise<void> {
@@ -405,6 +434,7 @@ struct Index {
     this.channelReady = false;
     await this.stopWindow();
     await runtime.releaseSsh();
+    this.activeProfile = undefined;
     runtime.incident = '';
     runtime.target = undefined;
   }
@@ -558,6 +588,7 @@ struct Index {
   private async begin(descriptor: VerificationDescriptor, profile: NodeProfile): Promise<void> {
     runtime.incident = this.incidentId;
     runtime.nodeId = descriptor.node_id;
+    this.activeProfile = profile;
     this.screen = 'transition';
     this.message = '正在连接节点并核对任务';
     const generation = ++this.generation;

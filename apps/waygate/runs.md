@@ -2056,6 +2056,40 @@ fleet 应对外报出节点**手机可拨通的公网 SSH 地址**（252→8.148
 若系统在后台把进程杀掉，仍会从头开始（那需要把验证会话落到本机存储，属另一项工作）。
 Android 版仍未同步。
 
+### 2026-10-21 / Windows + Mate 70 Pro+ / 第三十四轮：`ERR_PROXY_CONNECTION_FAILED` 的真正来源
+
+用户真机反馈：按第三十三轮装上后，**锁屏再回来报「页面未加载，ERR_PROXY_CONNECTION_FAILED」**。
+
+**根因：第三十三轮只改了 `Index.visibilityChanged()`，但真正拆隧道的是 `EntryAbility.onBackground()`。**
+它在 `onBackground` 里调用 `runtime.background()`，而 [SessionRuntime.ets](harmony/entry/src/main/ets/services/SessionRuntime.ets) 的
+`background()` 会 `proxy.stop()` + `releaseSsh()` + 清 `incident/target`。
+⇒ 锁屏时：**本地代理监听端口被关掉、SSH 会话被关掉**，但 UI 状态和 ArkWeb 的**应用级代理覆盖**
+还在（代理覆盖不会因为 `proxy.stop()` 自动撤销）。解锁后 Web 恢复并发请求，命中一个已经不存在的
+本地端口 → Chrome 内核报 `ERR_PROXY_CONNECTION_FAILED`。所以第三十三轮「不释放」的改动被这个
+入口完整抵消了。
+
+**改法**
+
+1. `EntryAbility.onBackground()` **只设 `foreground=false`**，不再调 `runtime.background()`；
+   真正的释放只保留在 `onDestroy()`（应用真的结束）。
+2. `Index.aboutToDisappear()` 同理去掉 `runtime.background()`（页面消失不等于应用结束）。
+3. 新增 `resumeChannel()`（由 `visibilityChanged()` 回前台时调用）：
+   通道还在（`channelReady` + `sshId>=0`）时跑一次**只读 `audit`**（8 s 有界）判断会话死活；
+   - 活着 → 什么都不动，验证码页原样保留；
+   - 死了 → 撤销代理覆盖、收掉 Web、`channelReady=false`，落到 `retry` 屏并提示
+     「从后台回来时节点通道已断开；点“重试本步”重建，任务保持暂停，不会重发探测」。
+   这样**不再把浏览器扔在一个必然失败的代理错误页上**，且重试走的是已有通路。
+4. 新增 `activeProfile` 记录本轮用的节点档案，`releaseAll()` 时清空；
+   `resumeChannel()` 失败时把它填进 `retryProfile`，重试不需要再问凭据。
+
+**构建/安装**：`BUILD SUCCESSFUL in 8 s 450 ms`；signed HAP 5,716,990 B（2026-10-21 09:34:02），
+`install bundle successfully`；签名配置用后已还原。
+
+**未验证（不声称完成）**：锁屏→解锁是否不再出现 `ERR_PROXY_CONNECTION_FAILED`、以及
+`resumeChannel()` 的两条分支（会话活/死），**都没在真机上验过**。
+另外仍有边界：若系统在后台**直接杀掉进程**，内存里的会话都没了，仍会从头开始；
+那需要把验证会话持久化，是另一项工作。Android 版仍未同步。
+
 
 
 
