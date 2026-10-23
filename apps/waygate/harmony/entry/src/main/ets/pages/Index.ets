@@ -462,16 +462,26 @@ struct Index {
     runtime.profile = undefined;
   }
 
-  // Navigation never waits for resource teardown: the screen changes first, so the back key and
-  // the on-screen buttons always respond immediately. Teardown is bounded, because a native
-  // close that never returns must not freeze the operator on the page they just left.
+  // Going "back" always means the inbox; an unsettled claim is a durable record, not a reason
+  // to keep the operator on the result screen. This used to branch on runtime.dispatching,
+  // which made the header's 返回 button a no-op while a claim existed.
   private async goHome(): Promise<void> {
-    this.screen = runtime.dispatching ? 'result' : 'home';
-    if (!runtime.dispatching) { this.message = ''; }
+    this.screen = 'home';
+    this.message = '';
     try {
       await bounded(this.releaseAll());
       await this.refresh();
     } catch (err) { this.error(err as Error); }
+  }
+
+  // The one routing table for the system back key and the on-screen 返回 button, so the two
+  // can never disagree again.
+  private navigateBack(): boolean {
+    if (this.screen === 'retry') { this.abandonRetry(); return true; }
+    if (this.screen === 'result') { this.leaveResult(); return true; }
+    if (this.screen === 'diagnostics') { this.screen = 'home'; return true; }
+    if (this.screen !== 'home' && this.screen !== 'settings') { this.goHome(); return true; }
+    return false;
   }
 
   // Leaving the result screen must not lock the app: the claim stays durable and the
@@ -1216,11 +1226,11 @@ struct Index {
   // invalidates the running flow at its next checkpoint while the worker's task stays
   // paused and the phone-side resources are released.
   onBackPress(): boolean {
-    if (this.screen === 'retry') { this.abandonRetry(); return true; }
-    if (this.screen === 'result') { this.leaveResult(); return true; }
-    if (this.screen === 'diagnostics') { this.screen = 'home'; return true; }
-    if (this.screen !== 'home' && this.screen !== 'settings') { this.goHome(); return true; }
-    return false;
+    // Evidence first: if this line never appears for a real back gesture, the key never
+    // reaches the page, and the fix has to be at the Web/ability layer, not here.
+    hilog.info(0x3200, 'waygate_ui', 'backPressed screen=%{public}s web=%{public}s busy=%{public}s',
+      this.screen, this.showWeb ? 'yes' : 'no', this.busy ? 'yes' : 'no');
+    return this.navigateBack();
   }
 
   @Builder
@@ -1236,7 +1246,8 @@ struct Index {
         Button('设置').backgroundColor(Color.Transparent).fontColor(MUTED)
           .onClick(() => { this.screen = 'settings'; })
       } else if (this.api) {
-        Button('返回').backgroundColor(Color.Transparent).fontColor(INK).onClick(() => this.goHome())
+        Button('返回').backgroundColor(Color.Transparent).fontColor(INK)
+          .onClick(() => { this.navigateBack(); })
       }
     }.width('100%').padding({ left: 22, right: 12, top: 14, bottom: 12 })
   }

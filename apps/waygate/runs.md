@@ -2243,6 +2243,38 @@ hk 那条历史 claim 仍待在设备上用「按节点当前状态判定」实�
 吞掉（网页历史回退），本轮没有独立证据；那类情况需要用页面级拦截或显式返回按钮兜底，
 不能凭猜测说已修。Android 版仍未同步。
 
+### 2026-10-23 / Windows + Mate 70 Pro+ / 第三十九轮：屏上「返回」按钮为什么点了没反应
+
+用户澄清：**不是系统返回键，是页面顶部的「返回」按钮**点击无反应。
+
+**根因（代码可证，不需要再猜）**
+
+1. 顶部「返回」按钮调用 `goHome()`。
+2. `goHome()` 当时的第一行是 `this.screen = runtime.dispatching ? 'result' : 'home'`。
+3. 用户停在 **claim 结果屏**，`runtime.dispatching` 为真 ⇒ `goHome()` 把屏幕**又设回 `'result'`**，
+   等于什么都没变，按钮看起来就是死的。
+4. 系统返回键走的是 `onBackPress()` → `leaveResult()`（直接 `'home'`），所以两条返回路径
+   **调用了不同函数、行为不一致**——这也是为什么 hdc 模拟返回键有效，而用户的按钮无效。
+
+**改法（把返回收敛成一条路径）**
+
+1. `goHome()` **无条件回首页**，不再根据 `runtime.dispatching` 决定目标屏。
+   claim 是持久记录，离开结果屏不需要把人关在结果屏。
+2. 新增 **`navigateBack()`**：`retry → 放弃并返回待办`、`result → leaveResult`、
+   `diagnostics → 首页`、其余非 `home/settings` → `goHome`。
+3. **顶部「返回」按钮与系统返回键都只调用 `navigateBack()`**，两条路径从此不可能再分叉。
+4. `onBackPress()` 增加一行 hilog（`backPressed screen=… web=… busy=…`），
+   以后若返回键真的没进来，日志能直接分辨是"没到页面"还是"到了没处理"。
+5. 顺带修正上一轮遗留：删掉替换时多出来的一个 `}`（编译前已发现）。
+
+**构建/安装**：`BUILD SUCCESSFUL in 9 s 38 ms`，`install bundle successfully`；签名配置用后已还原。
+
+**未验证（不声称完成）**：没能点着验证——安装后应用回到了**首页**（说明那条历史 claim 已被
+`settleIfResolved` 正常清掉），我点「诊断」时设备前台被别的应用（会议信息）抢走。
+因此「结果屏顶部返回按钮」这一次的真实点击**仍未取证**；需要在下一次有 claim 的结果屏上点一次。
+Android 版仍未同步。
+
+
 
 
 
