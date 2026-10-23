@@ -462,24 +462,26 @@ struct Index {
     runtime.profile = undefined;
   }
 
+  // Navigation never waits for resource teardown: the screen changes first, so the back key and
+  // the on-screen buttons always respond immediately. Teardown is bounded, because a native
+  // close that never returns must not freeze the operator on the page they just left.
   private async goHome(): Promise<void> {
+    this.screen = runtime.dispatching ? 'result' : 'home';
+    if (!runtime.dispatching) { this.message = ''; }
     try {
-      await this.releaseAll();
-      this.screen = runtime.dispatching ? 'result' : 'home';
-      if (!runtime.dispatching) { this.message = ''; }
+      await bounded(this.releaseAll());
       await this.refresh();
     } catch (err) { this.error(err as Error); }
   }
 
   // Leaving the result screen must not lock the app: the claim stays durable and the
   // same incident routes back here, while every other incident and the console become
-  // usable again.
+  // usable again. The claim itself is not cleared just because the screen was left.
   private async leaveResult(): Promise<void> {
+    this.screen = 'home';
+    this.message = '';
     try {
-      await this.releaseAll();
-      runtime.dispatching = false;
-      this.screen = 'home';
-      this.message = '';
+      await bounded(this.releaseAll());
       await this.refresh();
     } catch (err) { this.error(err as Error); }
   }
@@ -496,7 +498,7 @@ struct Index {
     }
     this.enterBusy();
     try {
-      await this.releaseAll();
+      await bounded(this.releaseAll());
       runtime.dispatching = false;
       runtime.incident = '';
       const link = await this.api.post<Link>('/v1/console-ticket');
@@ -763,13 +765,14 @@ struct Index {
   private async abandonRetry(): Promise<void> {
     this.retryDescriptor = undefined;
     this.retryProfile = undefined;
-    await this.releaseAll();
-    runtime.dispatching = false;
-    runtime.incident = '';
+    // Leave the screen first; cleaning up afterwards must never delay navigation.
     this.showWeb = false;
     this.proxyApplied = false;
     this.screen = 'home';
     this.message = this.failure.length > 0 ? this.failure + '；已返回，任务保持暂停' : '';
+    await bounded(this.releaseAll());
+    runtime.dispatching = false;
+    runtime.incident = '';
     await this.refresh();
   }
 

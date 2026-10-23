@@ -2214,6 +2214,36 @@ Android 版仍未同步。
 **未验证（不声称完成）**：上述四种状态的屏幕文案与按钮**未在真机上逐一看过**；
 hk 那条历史 claim 仍待在设备上用「按节点当前状态判定」实际收一次。Android 版仍未同步。
 
+### 2026-10-23 / Windows + Mate 70 Pro+ / 第三十八轮：返回键「没反应」的时序问题
+
+用户报「当前页面返回键没用了」。**先取证再改**：
+
+- 用 `uitest dumpLayout` 抓到当时停在 claim 结果屏（文案为「上次核对没有成功…」，
+  按钮为核对探测结果 / 按节点当前状态判定 / 结束核对 / 进入控制台）。
+- 用 `uitest uiInput keyEvent Back` 模拟系统返回键 → **页面确实回到了首页**。
+  ⇒ 说明 `onBackPress` 的分支是通的，问题不是「没注册」，而是**按下后要等清理完成才换屏**：
+  原来的 `leaveResult()`/`goHome()` 都是先 `await releaseAll()`，再设置 `screen`。
+  一旦 `releaseAll()`（含原生 `close()`/代理收尾）慢住，屏幕上就完全没有反应，
+  操作者看到的就是「返回键没用」。
+
+**改法（与第三十五轮的生命周期表一致的一条原则：导航不等清理）**
+
+1. `goHome()` / `leaveResult()` / `abandonRetry()` 改为**先换屏，再清理**；
+   清理一律经过 `bounded(...)`，原生收尾再慢也不会挡住返回。
+2. `leaveResult()` **不再顺手把 `runtime.dispatching` 置假**：claim 是持久记录，
+   离开结果屏只是释放通道；否则回到待办后再点该条，会出现「有 claim 但 UI 认为没有」的状态。
+3. `openConsole()` 里的 `releaseAll()` 同样加 `bounded`，避免「控制台点了没反应」。
+4. `onBackPress` 保持按屏路由：`retry → 放弃并返回待办`、`result → 回待办`、
+   `diagnostics → 首页`，其余非首页屏 → `goHome`；现在这些调用都是**同步换屏**。
+
+**构建/安装**：`BUILD SUCCESSFUL in 13 s 799 ms`，`install bundle successfully`；签名配置用后已还原。
+
+**未验证（不声称完成）**：改后**没能在真机上再按一次返回**——设备前台被抖音（`com.ss.hm.ugc.aweme`）
+占着，`aa start` 报成功但 Waygate 没有回到前台。另：`console`/`verify` 屏如果返回键被 ArkWeb
+吞掉（网页历史回退），本轮没有独立证据；那类情况需要用页面级拦截或显式返回按钮兜底，
+不能凭猜测说已修。Android 版仍未同步。
+
+
 
 
 
