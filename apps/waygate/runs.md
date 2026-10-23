@@ -2274,6 +2274,38 @@ hk 那条历史 claim 仍待在设备上用「按节点当前状态判定」实�
 因此「结果屏顶部返回按钮」这一次的真实点击**仍未取证**；需要在下一次有 claim 的结果屏上点一次。
 Android 版仍未同步。
 
+### 2026-10-23 / Windows + Mate 70 Pro+ / 第四十轮：代理超时时返回失灵 = 一个永不 resolve 的 Promise
+
+用户给出决定性现象：**同一个页面**，远端节点代理请求超时 → 返回点不动；请求通过 → 返回正常。
+
+**根因（不是 Web 吞键，是整条调用链没有解开）**
+
+1. 验证页的出口测量 `measureExit()` 用 `this.exitWaiter` 等一个 Promise：
+   `pageEnded()` 或 45 s guard 才会 resolve。
+2. 用户在这期间点返回 → `goHome()` → `releaseAll()` → `stopWindow()`，
+   而 `stopWindow()` 里写的是 **`this.exitWaiter = undefined`**：
+   **只丢掉引用，没有 resolve**。
+3. 于是 `measureExit()` 的 Promise **永远 pending** → `openWindow()` → `begin()` →
+   `verify()` 整条 await 链永不返回 → `verify()` 的 `finally { leaveBusy() }` 永远执行不到
+   → `busy` 永远为 true，界面表现为"点什么都没反应"。
+4. 代理请求正常返回时 `pageEnded()` 会 resolve 这个 Promise，链条能解开，所以"通过了就正常"。
+
+**改法**
+
+1. `stopWindow()` 释放 waiter 时**先把 Promise resolve 成空串**，再清引用：
+   `measureExit()` 立刻返回 → `openWindow()` 在下一处 generation 检查抛"验证已取消"
+   → 链条正常解开、`busy` 被 `finally` 清掉。
+2. `holdForRetry()` 增加 `screen === 'home'` 的守卫，避免用户已经离开后又被迟到的取消
+   拽回 `retry` 屏（与 `console` 守卫同一条原则）。
+3. `detach()` 去掉同步的 `this.browser.stop()`：页面正在等一个卡死的代理请求时，
+   这个同步控制器调用可能阻塞 UI 线程；**卸载组件（`showWeb=false`）本身就是取消**，
+   仍由 `onDisAppear` + `bounded` 兜底。
+
+**构建/安装**：`BUILD SUCCESSFUL in 10 s 406 ms`，`install bundle successfully`；签名配置用后已还原。
+
+**未验证（不声称完成）**：需要在**代理真实超时**的验证页上点一次返回才能确认；
+这种失败不是随时能造出来的，本轮没有在真机上复现该条件。Android 版仍未同步。
+
 
 
 

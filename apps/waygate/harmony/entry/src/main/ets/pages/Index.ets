@@ -412,7 +412,9 @@ struct Index {
   private async detach(): Promise<void> {
     if (this.detachPending) { return this.detachPending; }
     if (!this.showWeb) { return; }
-    this.browser.stop();
+    // Unmounting the component is the cancellation. A synchronous controller call here could
+    // block the UI thread while the page is still waiting on a stuck proxy request, which is
+    // exactly when the operator presses back.
     this.detachPending = new Promise<void>((resolve) => {
       this.destroyWeb = resolve;
       this.showWeb = false;
@@ -444,7 +446,12 @@ struct Index {
     await this.detach();
     await this.removeProxy();
     await runtime.proxy.stop();
+    // Releasing the waiter must also settle it. Dropping the reference alone left
+    // measureExit() pending forever, so the whole verification chain never unwound, busy
+    // stayed true and every control felt dead until the request happened to finish.
+    const waiter = this.exitWaiter;
     this.exitWaiter = undefined;
+    if (waiter) { waiter(''); }
     this.verifiedExit = false;
   }
 
@@ -721,9 +728,9 @@ struct Index {
   // the home screen: the worker's task stays paused exactly as prepare left it, nothing is
   // ever resent, and the screen offers retry, abandon and the console.
   private async holdForRetry(descriptor: VerificationDescriptor, profile: NodeProfile, err: Error): Promise<void> {
-    // Taking the console ends this flow on purpose, so its screen must not be replaced by a
-    // retry screen that the operator never asked for.
-    if (this.screen === 'console') { return; }
+    // Taking the console or leaving for the inbox ends this flow on purpose, so a late
+    // cancellation must not put the operator back on a retry screen.
+    if (this.screen === 'console' || this.screen === 'home') { return; }
     runtime.incident = '';
     runtime.dispatching = false;
     if (this.channelReady) {
