@@ -63,7 +63,10 @@ struct Index {
   @State webUrl: string = 'about:blank';
   @State verifiedExit: boolean = false;
   @State stockTitle: string = '';
-  @State claimMessage: string = '';
+  // One guidance line for the probe, derived from its state. The screen used to show a
+  // "continue checking" button next to a "go to the console" sentence, which pointed the
+  // operator in two directions at once; there is now exactly one instruction per state.
+  @State claimFailure: string = '';
   @State claimCanResume: boolean = false;
   @State claimAge: string = '';
   @State claimExpired: boolean = false;
@@ -257,13 +260,9 @@ struct Index {
           this.claimCanResume = claim.before_request_id > 0;
           this.claimAge = this.ageText(claim.at);
           this.claimExpired = Date.now() - claim.at > CLAIM_TTL_MS;
-          this.claimMessage = this.claimCanResume
-            ? '上次探测已提交，结果尚未确认（' + this.claimAge + '）'
-            : '上次未收到探测编号，结果未知（' + this.claimAge + '）';
+          this.claimFailure = '';
+          this.message = '';
           this.screen = 'result';
-          this.message = this.claimCanResume
-            ? '点“继续核对探测结果”只读取结果，不会重发请求；也可以结束核对'
-            : '可用“按节点当前状态判定”核对；也可以直接结束核对';
         } else if (runtime.incident && runtime.descriptor && runtime.profile) {
           // The system recreated this page while a verification was open. The session that
           // lived in memory is gone, so the flow cannot silently continue; say so and let the
@@ -355,7 +354,7 @@ struct Index {
     this.claim = undefined;
     runtime.dispatching = false;
     this.claimCanResume = false;
-    this.claimMessage = '';
+    this.claimFailure = '';
     this.message = '上次的验证已在主控或控制台结束，无需再核对';
     await this.vault.claim('');
   }
@@ -556,8 +555,9 @@ struct Index {
     // One probe per incident, never a second one: an incident that already has an
     // unconfirmed claim goes back to the result screen instead of verifying again.
     if (this.claim && this.claim.incident === item.id) {
-      this.claimMessage = '该待办已有一次探测结果待核对（没有重发任何请求）';
-      this.message = '正在核对上次的探测结果';
+      // Only the guidance line speaks here; a second instruction would compete with it.
+      this.claimFailure = '';
+      this.message = '';
       this.screen = 'result';
       return;
     }
@@ -801,7 +801,7 @@ struct Index {
       if (result.done && result.request) { return result.request.outcome; }
       await new Promise<void>((resolve) => setTimeout(resolve, 2000));
     }
-    throw new Error('探测结果尚未确认；没有再次请求，请在控制台核对');
+    throw new Error('等待时限内没有读到这次探测的结果');
   }
 
   private ageText(at: number): string {
@@ -813,13 +813,29 @@ struct Index {
     return hours.toString() + ' 小时前';
   }
 
+  // The single source of truth for what the result screen tells the operator and which action
+  // it offers. Nothing else may write probe guidance into the message bar.
+  private claimGuidance(): string {
+    const claim = this.claim;
+    if (!claim || !runtime.dispatching) { return ''; }
+    if (this.busy) { return '正在读取这次探测的结果，请稍候。没有重发请求。'; }
+    if (this.claimFailure.length > 0) {
+      return '上次核对没有成功：' + this.claimFailure + '。没有重发请求；可以再试一次，或结束核对。';
+    }
+    const age = this.ageText(claim.at);
+    if (claim.before_request_id > 0) {
+      return '这次探测已提交（' + age + '），结果尚未确认。没有重发请求；点“继续核对探测结果”只读取结果。';
+    }
+    return '这次探测没有记录到请求编号（' + age + '）。没有重发请求；点“按节点当前状态判定”从节点当前状态判断。';
+  }
+
   // A claim is a record of one probe, not a lock on the app. Every way out of it goes through
   // here: the operator can close it without resending anything, and no other incident stays
   // disabled while it waits.
   private async endClaim(message: string): Promise<void> {
     this.claim = undefined;
     this.claimCanResume = false;
-    this.claimMessage = '';
+    this.claimFailure = '';
     this.claimAge = '';
     this.claimExpired = false;
     runtime.dispatching = false;
@@ -858,8 +874,8 @@ struct Index {
       }
       await this.refresh();
     } catch (err) {
-      this.claimMessage = '按节点状态判定失败：' + (err as Error).message;
-      this.message = '没有重发请求；可重试，或结束核对后到控制台查看';
+      this.claimFailure = '按节点状态判定失败：' + (err as Error).message;
+      this.message = '';
       await runtime.releaseSsh();
     } finally { this.leaveBusy(); }
   }
@@ -884,7 +900,7 @@ struct Index {
     runtime.profile = undefined;
     this.claim = undefined;
     this.claimCanResume = false;
-    this.claimMessage = '';
+    this.claimFailure = '';
     await this.vault.claim('');
     await runtime.releaseSsh();
     this.message = message;
@@ -906,11 +922,11 @@ struct Index {
       this.claim = claim;
       runtime.dispatching = true;
       this.claimCanResume = false;
-      this.claimMessage = '已提交一次探测，正在等待结果';
+      this.claimFailure = '';
       this.screen = 'result';
       await this.stopWindow();
       await runtime.stopForwarding();
-      this.message = '正在单次探测，通过后继续本股';
+      this.message = '';
       const queued = await runAction<ProbeValue>(runtime.sshId, descriptor.worker_command,
         JSON.stringify({ action: 'probe', target: target }));
       claim.before_request_id = queued.before_request_id;
@@ -929,8 +945,8 @@ struct Index {
     } catch (err) {
       if (runtime.dispatching) {
         this.screen = 'result';
-        this.claimMessage = '探测结果尚未确认：' + (err as Error).message;
-        this.message = '没有重发请求；可点“继续核对探测结果”或到控制台核对';
+        this.claimFailure = (err as Error).message;
+        this.message = '';
         await this.stopWindow();
         await runtime.stopForwarding();
         await runtime.releaseSsh();
@@ -949,8 +965,8 @@ struct Index {
     const claim = this.claim;
     if (!claim) { return; }
     if (claim.before_request_id <= 0) {
-      this.claimAge = this.ageText(claim.at);
-      this.message = '上次未收到探测编号，无法按编号读取；请点“按节点当前状态判定”，或结束核对';
+      // claimGuidance() already names the one available check for this state.
+      this.message = '';
       return;
     }
     this.claimAge = this.ageText(claim.at);
@@ -977,8 +993,8 @@ struct Index {
       await this.settleClaim('验证通过，已继续 ' + target.stock);
       await this.refresh();
     } catch (err) {
-      this.claimMessage = '探测结果尚未确认：' + (err as Error).message;
-      this.message = '没有重发请求；请到控制台核对';
+      this.claimFailure = (err as Error).message;
+      this.message = '';
       await runtime.releaseSsh();
     } finally { this.leaveBusy(); }
   }
@@ -1389,7 +1405,7 @@ struct Index {
         if (this.screen === 'verify') { Text(this.stockTitle).fontColor(INK).padding(8) }
       } else {
         Column({ space: 20 }) {
-          if ((this.screen !== 'result' && this.screen !== 'retry') || runtime.dispatching) {
+          if ((this.screen !== 'result' && this.screen !== 'retry') || this.busy) {
             LoadingProgress().width(44).height(44).color(INK)
           }
           if (this.screen === 'retry') {
@@ -1402,12 +1418,12 @@ struct Index {
             Button('放弃并返回待办').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.abandonRetry())
             Button('进入控制台').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.openConsole())
           }
-          if (this.claimMessage) {
-            Text(this.claimMessage).fontSize(14).fontColor(INK).width('100%')
+          if (this.screen === 'result' && this.claimGuidance().length > 0) {
+            Text(this.claimGuidance()).fontSize(14).fontColor(INK).width('100%')
               .padding({ left: 30, right: 30 }).textAlign(TextAlign.Center)
           }
           if (this.screen === 'result' && runtime.dispatching && this.claimCanResume) {
-            Button(this.busy ? '正在核对…' : '继续核对探测结果').backgroundColor(INK)
+            Button(this.busy ? '正在核对…' : '核对探测结果').backgroundColor(INK)
               .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.resumeClaim())
           }
           if (this.screen === 'result' && runtime.dispatching) {
@@ -1419,8 +1435,10 @@ struct Index {
               .enabled(!this.busy)
               .onClick(() => this.endClaim('已结束本次核对；任务保持暂停，可从待办重新处理或到控制台查看'))
           }
-          if (this.screen === 'result') {
+          if (this.screen === 'result' && !runtime.dispatching) {
             Button('返回待办').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.leaveResult())
+          }
+          if (this.screen === 'result') {
             Button('进入控制台').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.openConsole())
           }
         }.layoutWeight(1).justifyContent(FlexAlign.Center)
