@@ -2380,3 +2380,44 @@ Android 版仍未同步。
 
 **下一步**：在 DevEco 机器上构建签名 HAP、装机，按上面 4 条取证；Android 端仍未编译，
 其常亮改动只做了静态一致性核对。
+
+### 2026-10-26 / Windows + Mate 70 Pro+ / 第四十二轮：删掉「节点暂时离线 · 阻断待核对」这句自造状态
+
+用户问这句是什么意思，并质疑「又在加戏」。
+
+**它到底是什么**
+
+- 文案在 [Index.ets](harmony/entry/src/main/ets/pages/Index.ets) 的首页待办卡片：
+  `item.online ? item.title : '节点暂时离线 · 阻断待核对'`。
+- `online` 来自 hub 的 `fresh()`（[store.py](hub/store.py:32)）：`connection == "online"`、有 status、
+  且 `last_seen_at` 距今在 (-10s, 45s) 内，三者同时成立才算在线。
+- 所以真实含义只有一句：**主控手里这个节点的状态超过 45 秒没更新（或上一次连接不是 online），
+  这条待办暂时开不了**。「阻断待核对」不是任何真实状态，只是「这条还挂着」的意思。
+
+**为什么这是加戏（用户的批评成立）**
+
+1. 它把待办原本的类型（「需要人工验证」）盖掉了，操作者反而看不到要处理什么；
+2. 它把「hub 没拿到最新状态」说成「节点离线」——hub→collector 同步失败时所有待办都会变成这句，
+   而节点其实是好的（首页顶部另有「主控同步失败」）；
+3. 它用一个 45 秒的缓存布尔量**禁用**了唯一动作，而点「现在处理」本来就会调描述接口，
+   hub 会当场重新拉 fleet 并给出确切原因（409）。用可能过期的缓存拦住更准的下一步，是倒置。
+
+**改法**
+
+- 标题永远显示真实类型 `item.title`；
+- 仅当 `!item.online` 时加一行小字：「该节点状态未及时更新，点“现在处理”会重新确认」；
+- `startBlocked()` 去掉 `!item.can_verify` 一条：按钮不再因缓存状态变灰，点下去由服务端判定，
+  真不可用时 409 的具体原因直接显示；busy / 正在验证 / 待核对 claim 三条限制保留。
+- Android 仍是旧口径（`canVerify` 直接 `isEnabled=false`，且没有控制台入口），本轮未动，属已知分歧。
+
+**精确命令与结果**
+
+- `python apps/waygate/tools/check_project.py` → OK
+- `pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py` → `48 passed, 2 skipped`
+- `hvigorw assembleHap` → `BUILD SUCCESSFUL`，signed HAP 5,742,888 B；`hdc install -r` → `install bundle successfully`
+
+**未验证（不声称完成）**：装机后设备锁屏，`aa start` 返回 `10106102`（The device screen is locked
+during the application launch），新文案与按钮状态**没有在屏幕上确认**。解锁后应看到：标题为
+「需要人工验证」，下面一行灰字提示状态未更新，按钮可点；点下去离线时应显示 409 的具体原因。
+
+**下一步**：解锁后点一条待办复看；若 409 文案仍不够直白，再改服务端那句话，而不是在 App 里另造状态。

@@ -917,9 +917,13 @@ struct Index {
 
   // Which incidents may be started right now. A claim only holds its own incident, so an
   // unconfirmed probe never disables the rest of the inbox.
+  //
+  // A stale `can_verify` deliberately does NOT gate the button: it only reflects the hub's
+  // cached fleet snapshot, while the descriptor call re-polls the collector and answers
+  // authoritatively (409 with a concrete reason). Greying out the only action on a 45-second
+  // cache made a recoverable node look like a dead end.
   private startBlocked(item: Incident): string {
     if (this.busy) { return '正在处理上一步'; }
-    if (item.kind === 'challenge' && !item.can_verify) { return '节点离线或状态过期'; }
     if (runtime.incident === item.id && !runtime.dispatching) { return '该待办正在验证中'; }
     if (this.claim && this.claim.incident === item.id && !runtime.dispatching) {
       return '该待办已有一次探测结果待核对';
@@ -1288,7 +1292,13 @@ struct Index {
         ForEach(this.items, (item: Incident) => {
           Column({ space: 12 }) {
             Text(item.name + ' · ' + item.stock).width('100%').fontSize(19).fontWeight(FontWeight.Bold).fontColor(INK)
-            Text(item.online ? item.title : '节点暂时离线 · 阻断待核对').width('100%').fontColor(MUTED)
+            Text(item.title).width('100%').fontColor(MUTED)
+            // `online` is the hub's own freshness flag (connection, status present, last_seen
+            // within 45 s), not a verdict about the block. Say exactly that instead of
+            // inventing a status name, and let the tap re-check with the server.
+            if (!item.online) {
+              Text('该节点状态未及时更新，点“现在处理”会重新确认').width('100%').fontSize(12).fontColor(MUTED)
+            }
             if (item.snoozed > Date.now() / 1000) { Text('已设稍后提醒').width('100%').fontSize(12).fontColor(MUTED) }
             Row({ space: 10 }) {
               Button(item.kind === 'challenge' ? '现在处理' : '查看控制台')
