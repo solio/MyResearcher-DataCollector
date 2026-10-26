@@ -380,6 +380,9 @@ struct Index {
   // page itself. Only the poll stops, because nothing can be seen while hidden.
   private visibilityChanged(): void {
     if (!this.foreground) {
+      // The platform already dropped the hold; forgetting it here is what lets the next
+      // foreground pass apply it again.
+      screenOn.suspend();
       this.stopRefresh();
       return;
     }

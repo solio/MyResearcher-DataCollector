@@ -2356,7 +2356,20 @@ Android 版仍未同步。
 - `python apps/waygate/tools/check_project.py` → `Project metadata/import paths OK.`
 - `python apps/waygate/tools/check_android.py` → `channel.json nodes identical on both platforms (5 nodes)` / `Android project structure OK`
 - `pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py` → `48 passed, 2 skipped, 7 subtests passed`
-- **本机没有 DevEco Studio / Android SDK**：未编译 HAP、未编译 APK、未装机。
+- **订正（同日 11:03 补记）**：上一版写「本机没有 DevEco Studio」只查了 `C:/Program Files`，
+  是错的。DevEco 26 实际装在 `D:/kits/DevEco Studio`（hdc 3.2.0f / hvigor / node / sdk 齐全），
+  设备无线调试 `192.168.3.156:40525` 可达，因此本轮已真实构建、装机、启动：
+  `hvigorw assembleHap` → `BUILD SUCCESSFUL`，signed HAP 5,743,893 B；
+  `hdc install -r` → `install bundle successfully`；`aa start` → `start ability successfully`（pid 15046）。
+  签名配置是把 `.hvigor/outputs/sync/output.json` 里 IDE 已加密的 material 临时注入
+  `build-profile.json5`，构建后已 `git checkout --` 还原，仓库里仍是不含签名的公开 profile。
+- Android 仍未编译（本机没有 Android SDK/Gradle），其常亮改动只做静态核对。
+
+**装机后又收口两处（同一提交内）**
+
+1. `visibilityChanged()` 退后台时调 `screenOn.suspend()`：系统会随窗口退后台丢掉常亮，
+   本地 `held` 若不置回 false，回前台那次 `hold(true)` 会被当成重复调用而跳过——那是"假重持"。
+2. 常亮加上界 `MAX_HOLD_MS = 10 分钟`（对齐 hub 会话 TTL），操作者离开验证页后屏幕能正常休眠。
 
 **真机待验（不声称完成）**
 
