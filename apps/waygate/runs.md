@@ -2316,3 +2316,54 @@ Android 版仍未同步。
 
 
 
+
+### 2026-10-26 / Windows（无 DevEco，仅源码） / 第四十一轮：验证页自己持有常亮，不再把「注视不息屏」当兜底
+
+用户报：用本 App 时华为手机的「注视屏幕不熄屏」像是失效了，盯着屏幕也会按休眠时间锁屏。
+
+**先取证（代码可证，不是推断）**
+
+- `harmony/` 与 `android/` 全目录没有 `setWindowKeepScreenOn`、`FLAG_KEEP_SCREEN_ON`、电源锁或
+  摄像头调用；`git log -S setWindowKeepScreenOn -- apps/waygate` 为空。
+  ⇒ App **不可能关掉系统功能**，它只是从未申请过常亮，把「屏幕别熄」完全交给系统。
+- 「注视不息屏」是系统启发式（前置摄像头判脸），华为官方口径：暗光、角度偏、遮挡时会失效；
+  另有社区口径：视频/游戏类场景由应用自己持锁，本就不靠这个功能。
+
+**为什么本 App 特别容易撞上**
+
+1. 验证页要求「盯着验证码、长时间不触摸」，正是启发式最容易判错、最需要兜底的场景；
+2. 页面是 ArkWeb 加载的股吧页，常带自动播放媒体，系统按媒体场景处理时更不会替我们保活，
+   而 ArkWeb 也不会长期替应用持锁；
+3. 省电模式/低亮度会进一步压低识别率——系统侧因素，App 改不了。
+
+结论：不是「被 App 禁用」，是「App 没有兜底」。
+
+**改法（只改 App，按必要场景持有）**
+
+- 新增 [services/ScreenOn.ets](harmony/entry/src/main/ets/services/ScreenOn.ets)：`attach(win)` 注入窗口，
+  `hold(on)` 幂等；失败只记 warn，绝不影响验证主流程。
+- [EntryAbility.ets](harmony/entry/src/main/ets/entryability/EntryAbility.ets)：`onWindowStageCreate`
+  取 `getMainWindow()` 注入；`onDestroy` 释放。
+- [Index.ets](harmony/entry/src/main/ets/pages/Index.ets)：`openWindow()` 进入验证页即 `hold(true)`；
+  `detach()` 卸载 Web 即 `hold(false)`；`stopWindow()` 再兜底释放一次（覆盖「Web 还没出现就失败」）；
+  回前台且 `showWeb` 仍为真时重新持有（系统会随窗口退后台丢掉常亮）。
+- Android 端口同步：`show("verify")` 加 `FLAG_KEEP_SCREEN_ON`，其余屏清除。
+- 边界：首页/控制台/**结果屏**都不持有；不改用户休眠设置；避免平台对滥用常亮的回收。
+  结果屏等探测（上限 125 s）不常亮是有意的：claim 已持久化，锁屏不影响结果读取。
+
+**精确命令与结果**
+
+- `python apps/waygate/tools/check_project.py` → `Project metadata/import paths OK.`
+- `python apps/waygate/tools/check_android.py` → `channel.json nodes identical on both platforms (5 nodes)` / `Android project structure OK`
+- `pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py` → `48 passed, 2 skipped, 7 subtests passed`
+- **本机没有 DevEco Studio / Android SDK**：未编译 HAP、未编译 APK、未装机。
+
+**真机待验（不声称完成）**
+
+1. 休眠 15 s、开启注视不息屏：进验证页盯 3 分钟不触摸 → 不锁屏；退出验证页 → 恢复按休眠锁屏。
+2. 若进验证页仍锁屏：`hdc shell hilog | grep waygate_screen`，看 `keep screen on=yes failed code=`。
+3. 对照：App 首页盯 3 分钟 → 若也锁，说明是系统对该应用整体（省电模式/耗电优化），与 Web 场景无关。
+4. 锁屏→解锁后验证页仍在时，应重新常亮（`visibilityChanged` 重持生效）。
+
+**下一步**：在 DevEco 机器上构建签名 HAP、装机，按上面 4 条取证；Android 端仍未编译，
+其常亮改动只做了静态一致性核对。

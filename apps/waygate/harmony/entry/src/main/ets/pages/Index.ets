@@ -9,6 +9,7 @@ import { registerPush } from '../services/Push';
 import { runtime } from '../services/SessionRuntime';
 import { AuditView, BuiltinNode, BuiltinConfig, Credentials, DirectClaim, DirectTarget, EmptyReply, ExitValue, Inbox, Incident, Link, NodeProfile, NodeState, PrepareValue, ProbeValue, ResultValue, ResumeValue, StockState, VerificationDescriptor } from '../services/Models';
 import { NodeSsh, runAction } from '../services/NodeSsh';
+import { screenOn } from '../services/ScreenOn';
 import { close, connect, exec, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
 
 const INK = '#173E37';
@@ -382,6 +383,9 @@ struct Index {
       this.stopRefresh();
       return;
     }
+    // The system drops a keep-screen-on hold when the window leaves the foreground; if the
+    // verification page is still the one on screen, it has to be taken again.
+    if (this.showWeb) { screenOn.hold(true); }
     this.scheduleRefresh(true);
     this.resumeChannel();
   }
@@ -418,6 +422,8 @@ struct Index {
     this.detachPending = new Promise<void>((resolve) => {
       this.destroyWeb = resolve;
       this.showWeb = false;
+      // The hold belongs to the verification page; no page means no reason to defeat sleep.
+      screenOn.hold(false);
     });
     await bounded(this.detachPending);
     // Drop the pending promise even after a timeout: keeping a never-resolving one here
@@ -446,6 +452,9 @@ struct Index {
     await this.detach();
     await this.removeProxy();
     await runtime.proxy.stop();
+    // Covers the paths that never got as far as showing a page (a failed proxy override, an
+    // unreachable exit check), where detach() returns immediately and nothing else releases.
+    screenOn.hold(false);
     // Releasing the waiter must also settle it. Dropping the reference alone left
     // measureExit() pending forever, so the whole verification chain never unwound, busy
     // stayed true and every control felt dead until the request happened to finish.
@@ -700,6 +709,9 @@ struct Index {
     this.browser = new webview.WebviewController();
     this.webUrl = 'https://api.ipify.org';
     this.screen = 'verify'; this.showWeb = true;
+    // From here until the page is taken down the operator is watching a captcha without
+    // touching the screen, which is precisely the case the system heuristic does not cover.
+    screenOn.hold(true);
     this.message = '正在核对手机与节点的共同出口';
     let ip = await this.measureExit();
     if (ip.length === 0) {

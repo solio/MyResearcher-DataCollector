@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -235,6 +236,14 @@ class MainActivity : Activity(), VerificationHost {
         // The header stays reachable except while a browser is on screen.
         findViewById<Button>(R.id.settings_button).visibility =
             if (name == "verify") View.GONE else View.VISIBLE
+        // A captcha keeps the operator watching without touching for minutes, and the OEM
+        // smart-stay heuristic is not a guarantee, so the verification window holds its own
+        // screen-on. Every other screen clears it, matching the ArkTS port.
+        if (name == "verify") {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         if (name == "result") {
             claimMessage.text = verifier.claimMessage
             findViewById<Button>(R.id.resume_button).isEnabled = verifier.claimCanResume
