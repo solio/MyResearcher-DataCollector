@@ -115,6 +115,19 @@ class InboxTests(unittest.TestCase):
         self.store.reconcile(self.nodes)
         self.assertNotEqual(self.store.inbox(self.nodes)[0]["id"], first)
 
+    def test_detached_block_is_history_not_an_alert(self):
+        # A node that moved on to another job keeps its old halt in detached_stock_runtimes.
+        # That stock is no longer collected, the worker cannot resume it, and verifying it
+        # would pause whatever runs now — so it must neither raise an incident nor keep the
+        # one that was already raised.
+        self.store.reconcile(self.nodes)
+        self.assertEqual(len(self.store.inbox(self.nodes)), 1)
+        detached = dict(self.nodes[0]["status"]["stock_runtimes"].pop(), detached=True)
+        self.nodes[0]["status"]["detached_stock_runtimes"] = [detached]
+        self.store.reconcile(self.nodes)
+        self.assertEqual(self.store.inbox(self.nodes), [])
+        self.assertEqual(self.store.notifications(), [])
+
 
 class Tunnel:
     port = 1

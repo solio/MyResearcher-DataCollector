@@ -18,15 +18,17 @@ KINDS = {
 
 
 def live_target(status):
-    rows = status.get("stock_runtimes", []) + status.get("detached_stock_runtimes", [])
-    candidates = [r for r in rows if r.get("active_halt") in KINDS]
+    # Only the current job may raise a phone alert. A detached runtime is a block the node left
+    # behind when it moved on to another job: that stock is no longer being collected, the
+    # worker's resume guard cannot match it, and acting on it would pause whatever runs now.
+    # It is history for the console, never an item the operator is asked to verify from a phone.
+    candidates = [r for r in status.get("stock_runtimes", []) if r.get("active_halt") in KINDS]
     barrier = status.get("node_source_auth_barrier") or {}
     owner = next((r for r in candidates if r.get("job") == barrier.get("job")
                   and r.get("stock") == barrier.get("stock")), None)
     if owner:
         return owner
-    return max(candidates, key=lambda r: (not r.get("detached", False),
-               (r.get("block_evidence") or {}).get("id", 0)), default=None)
+    return max(candidates, key=lambda r: (r.get("block_evidence") or {}).get("id", 0), default=None)
 
 
 def fresh(node, now):

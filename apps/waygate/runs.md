@@ -2446,3 +2446,30 @@ hub 把 `node["name"]` 原样放进待办的 `name`，App 再拼成 `name + ' ·
   **同时复验了第四十二轮**：待办标题已是「需要人工验证」，按钮可点（此前锁屏未能确认）。
 
 **未验证**：`!online` 那行灰字仍未在真机上见过（截图时节点在线）。
+
+### 2026-10-26 / Windows / 第四十四轮：detached 旧阻断不再进待办（服务端规则）
+
+用户确认：「根本不该提醒」。
+
+**规则**：[hub/store.py](hub/store.py) 的 `live_target()` 只从 `stock_runtimes`（当前任务窗口）
+挑候选，`detached_stock_runtimes` 不再参与。detached 是节点换任务后留下的历史阻断：
+该股票已不在采集，worker 的 `resume` 只查 `stock_runtimes`（必然匹配失败），
+而 `prepare` 会暂停当前正在跑的股票——拿它当待办，轻则白忙，重则把正常采集停掉。
+
+**已有待办**：下一轮 `reconcile` 时 owner 变 None，`state='cleared'` 会自动清掉，不需要手工删库。
+App 不需要重新打包，待办由 hub 下发。
+
+**精确命令与结果**
+
+- 新增 `test_detached_block_is_history_not_an_alert`：先正常产生一条待办，再把该 runtime
+  移进 `detached_stock_runtimes`，断言 inbox 与通知队列都为空。
+- `pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py`
+  → `49 passed, 2 skipped, 7 subtests passed`
+
+**未部署（不声称已生效）**：本机 `ssh root@8.148.251.114` 用现有三把 key 全部 `Permission denied`；
+`git push` 仍被凭据/代理阻断。因此这条规则还没跑到主控上，需要在 fzz-002 执行：
+
+```bash
+cd /usr/local/src/MyResearcher-DataCollector && git pull && \
+bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector
+```
