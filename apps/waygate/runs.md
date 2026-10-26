@@ -2421,3 +2421,28 @@ during the application launch），新文案与按钮状态**没有在屏幕上�
 「需要人工验证」，下面一行灰字提示状态未更新，按钮可点；点下去离线时应显示 409 的具体原因。
 
 **下一步**：解锁后点一条待办复看；若 409 文案仍不够直白，再改服务端那句话，而不是在 App 里另造状态。
+
+### 2026-10-26 / Windows + Mate 70 Pro+ / 第四十三轮：「本机 · 600312」里的「本机」是谁
+
+用户问首页为什么会出现「本机 · 600312」。
+
+**来源**：不是 App 起的名字。主控 collector 把自己那台机器注册成固定节点
+`{"id":"local","name":"本机"}`（[fleet.py:367](apps/http_backfill/fleet.py:367)），
+hub 把 `node["name"]` 原样放进待办的 `name`，App 再拼成 `name + ' · ' + stock`。
+所以「本机」是**主控主机**（251 / fzz-002，兼 worker），「600312」是股票代码。
+从服务端视角叫「本机」没错；到手机上就成了「这台手机」，语义正好反了。
+
+**改法**：App 层加 `nodeLabel(id, name)`，`id === 'local'` 显示「主控机」，其余原样；
+三处展示统一走它：待办标题、任务进度、`stockTitle`（错误消息的上下文也用它）。
+不动 collector 的注册名——那是主控控制台自己的口径（站在服务器上看「本机」是对的），
+改它会影响 H5 控制台且需要重新部署。
+
+**精确命令与结果**
+
+- `check_project.py` → OK；`pytest ...` → `48 passed, 2 skipped`
+- `hvigorw assembleHap` → `BUILD SUCCESSFUL`，signed HAP 5,742,434 B
+- `hdc install -r` → `install bundle successfully`；`aa start` → `start ability successfully`（pid 64406）
+- 真机截图：首页显示「主控机 · 600312」「主控机 / 601012 采集中」。
+  **同时复验了第四十二轮**：待办标题已是「需要人工验证」，按钮可点（此前锁屏未能确认）。
+
+**未验证**：`!online` 那行灰字仍未在真机上见过（截图时节点在线）。

@@ -601,7 +601,7 @@ struct Index {
     }
     this.enterBusy(); this.message = '正在读取该节点的验证信息';
     this.incidentId = item.id;
-    this.stockTitle = item.name + ' · ' + item.stock;
+    this.stockTitle = this.nodeLabel(item.node, item.name) + ' · ' + item.stock;
     this.verifiedExit = false;
     this.measuredOnce = false;
     try {
@@ -915,9 +915,15 @@ struct Index {
     } finally { this.leaveBusy(); }
   }
 
+  // The collector names its own machine "本机" because that name is written from the server's
+  // point of view. On a handset that reads as "this phone", which is exactly the wrong machine,
+  // so the local node is called what it is: the main console.
+  private nodeLabel(id: string, name: string): string {
+    return id === 'local' ? '主控机' : name;
+  }
+
   // Which incidents may be started right now. A claim only holds its own incident, so an
   // unconfirmed probe never disables the rest of the inbox.
-  //
   // A stale `can_verify` deliberately does NOT gate the button: it only reflects the hub's
   // cached fleet snapshot, while the descriptor call re-polls the collector and answers
   // authoritatively (409 with a concrete reason). Greying out the only action on a 45-second
@@ -1291,7 +1297,7 @@ struct Index {
         }
         ForEach(this.items, (item: Incident) => {
           Column({ space: 12 }) {
-            Text(item.name + ' · ' + item.stock).width('100%').fontSize(19).fontWeight(FontWeight.Bold).fontColor(INK)
+            Text(this.nodeLabel(item.node, item.name) + ' · ' + item.stock).width('100%').fontSize(19).fontWeight(FontWeight.Bold).fontColor(INK)
             Text(item.title).width('100%').fontColor(MUTED)
             // `online` is the hub's own freshness flag (connection, status present, last_seen
             // within 45 s), not a verdict about the block. Say exactly that instead of
@@ -1314,7 +1320,7 @@ struct Index {
         Text('任务进度').width('100%').fontSize(20).fontWeight(FontWeight.Bold).fontColor(INK)
         ForEach(this.nodes, (node: NodeState) => {
           Column({ space: 10 }) {
-            Text(node.name + (node.online ? '' : ' · 离线')).width('100%').fontWeight(FontWeight.Bold).fontColor(INK)
+            Text(this.nodeLabel(node.id, node.name) + (node.online ? '' : ' · 离线')).width('100%').fontWeight(FontWeight.Bold).fontColor(INK)
             ForEach(node.stocks, (stock: StockState) => {
               Column({ space: 6 }) {
                 Row() {
