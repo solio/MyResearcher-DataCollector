@@ -103,6 +103,7 @@ struct Index {
   private exitWaiter: ((ip: string) => void) | undefined = undefined;
   private timer: number = -1;
   private busyTimer: number = -1;
+  private busySince: number = 0;
   private disposed: boolean = false;
   // Counts consecutive polls whose actionable state did not move; drives the back-off.
   private unchangedRounds: number = 0;
@@ -173,6 +174,7 @@ struct Index {
   // watchdog: however a step ends, the operator always gets the app back.
   private enterBusy(): void {
     this.busy = true;
+    this.busySince = Date.now();
     this.stopBusyTimer();
     this.busyTimer = setTimeout(() => {
       this.busyTimer = -1;
@@ -186,6 +188,7 @@ struct Index {
   private leaveBusy(): void {
     this.stopBusyTimer();
     this.busy = false;
+    this.busySince = 0;
   }
 
   private stopBusyTimer(): void {
@@ -929,7 +932,12 @@ struct Index {
   // authoritatively (409 with a concrete reason). Greying out the only action on a 45-second
   // cache made a recoverable node look like a dead end.
   private startBlocked(item: Incident): string {
-    if (this.busy) { return '正在处理上一步'; }
+    if (this.busy) {
+      // Say how long it has been stuck instead of a bare "busy": a disabled button with no
+      // reason is indistinguishable from a broken app, which is exactly how it was reported.
+      const seconds = this.busySince > 0 ? Math.max(0, Math.round((Date.now() - this.busySince) / 1000)) : 0;
+      return '上一步仍在进行（已 ' + seconds.toString() + ' 秒），完成后可再试';
+    }
     if (runtime.incident === item.id && !runtime.dispatching) { return '该待办正在验证中'; }
     if (this.claim && this.claim.incident === item.id && !runtime.dispatching) {
       return '该待办已有一次探测结果待核对';
@@ -1309,8 +1317,13 @@ struct Index {
             Row({ space: 10 }) {
               Button(item.kind === 'challenge' ? '现在处理' : '查看控制台')
                 .backgroundColor(INK).fontColor(Color.White).layoutWeight(1)
-                .enabled(this.startBlocked(item).length === 0)
-                .onClick(() => { if (item.kind === 'challenge') { this.verify(item); } else { this.openConsole(); } })
+                // Never disabled: a local transient flag must not turn the only action into a
+                // dead grey button with no explanation. The tap reports the actual reason.
+                .onClick(() => {
+                  const blocked = this.startBlocked(item);
+                  if (blocked.length > 0) { this.message = blocked; return; }
+                  if (item.kind === 'challenge') { this.verify(item); } else { this.openConsole(); }
+                })
               Button('稍后提醒').backgroundColor(BG).fontColor(INK).onClick(() => this.snooze(item))
             }
           }.padding(20).width('100%').backgroundColor(Color.White).borderRadius(18)

@@ -2485,3 +2485,29 @@ App 不需要重新打包，待办由 hub 下发。
 cd /usr/local/src/MyResearcher-DataCollector && git pull --ff-only && \
 bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector
 ```
+
+### 2026-10-27 / Windows + Mate 70 Pro+ / 第四十五轮：灰按钮与 ERR_CONNECTION_CLOSED
+
+**一、首页「现在处理」变灰**
+
+- 现场：`uitest dumpLayout` 显示 `enabled=false`；读 `/data/app/el2/100/base/.../preferences/waygate`
+  确认 `pendingClaim` 为空 ⇒ 不是 claim 锁的。
+- 成因：`startBlocked()` 用内存暂态（`busy` / 残留 `runtime.incident`）决定 `.enabled()`，
+  而原因从不显示；`busy` 的 watchdog 是 5 分钟，这期间就是一个没有任何解释的死按钮。
+  `aa force-stop` 后按钮恢复，证明与节点无关。
+- 改法：按钮**永不禁用**；点击时把真实原因写进 message，`busy` 时带上「已 N 秒」。
+
+**二、验证页 `ERR_CONNECTION_CLOSED`**
+
+- 节点侧排除：02 的 mihomo 在该时段（09:33–09:36）无错误日志；worker `audit`/`exit` 均成功，
+  `route.signature` 一致，出口 `141.164.51.157`；sshd 无断连记录。
+- 成因（最可能）：`LocalProxy` 连接池上限 24，页面 keep-alive 的空闲 socket 占满后，
+  新连接被**直接 close**——主 frame 请求就会得到 `ERR_CONNECTION_CLOSED`，与隧道断开无法区分。
+- 改法：上限 64；新建连接前先回收空闲 >45 s 的 pipe（`sweep()`）；池满时记
+  `connection pool full size=N` 日志，下次可直接取证。
+
+**构建/安装**：`BUILD SUCCESSFUL`；signed HAP 5,740,468 B；`install bundle successfully`；
+`aa start` 成功。装机后 `dumpLayout` 确认「现在处理」`enabled=true`。
+
+**未验证**：验证页能否稳定加载（需真实点开一次验证码页）；`connection pool full` 是否真的出现过
+（本轮没有日志可证，只是把边界收紧并留下证据）。

@@ -12,7 +12,12 @@ const LOG_TAG = 'waygate_proxy';
 const HEAD_LIMIT = 16384;
 const HEAD_TIMEOUT = 12000;
 const OUTSTANDING_LIMIT = 1024 * 1024;
-const MAX_CONNECTIONS = 24;
+// A page loads its document, stylesheets, scripts and ads over many sockets, and keep-alive
+// lets idle ones linger. 24 was low enough that a captcha page could exhaust the pool and have
+// a main-frame request closed with no response at all, which the browser reports as
+// ERR_CONNECTION_CLOSED — indistinguishable from a dead tunnel.
+const MAX_CONNECTIONS = 64;
+const IDLE_PIPE_MS = 45000;
 
 export class ReadyFlag { value: boolean = false; }
 
@@ -80,6 +85,7 @@ class Pipe {
   private opened: boolean = false;
   private closed: boolean = false;
   private timer: number = -1;
+  private lastActive: number = Date.now();
   private toUpstream: Promise<void> = Promise.resolve();
   private toClient: Promise<void> = Promise.resolve();
   private upOutstanding: number = 0;
@@ -100,6 +106,7 @@ class Pipe {
 
   private fromClient(data: ArrayBuffer): void {
     if (this.closed) { return; }
+    this.lastActive = Date.now();
     if (!this.opened) {
       this.head = joined(this.head, data);
       if (this.head.byteLength > HEAD_LIMIT) { this.close(); return; }
@@ -169,6 +176,7 @@ class Pipe {
 
   private fromUpstream(data: ArrayBuffer): void {
     if (this.closed) { return; }
+    this.lastActive = Date.now();
     this.downOutstanding += data.byteLength;
     if (this.downOutstanding > OUTSTANDING_LIMIT) { this.close(); return; }
     const base = this.toClient;
@@ -176,6 +184,12 @@ class Pipe {
       if (!this.closed) { await this.client.send({ data: data }); }
       this.downOutstanding -= data.byteLength;
     }).catch(() => this.close());
+  }
+
+  // Keep-alive sockets the browser is done with still hold a slot; they are closed before the
+  // pool is declared full, so a stale idle connection can never refuse a live request.
+  idleFor(ms: number): boolean {
+    return Date.now() - this.lastActive > ms;
   }
 
   close(): void {
@@ -204,7 +218,13 @@ export class LocalProxy {
       await server.listen({ address: '127.0.0.1', family: 1, port: 0 });
       const local = await server.getLocalAddress();
       server.on('connect', (client: socket.TCPSocketConnection) => {
-        if (this.pipes.size >= MAX_CONNECTIONS || !this.server) { client.close().catch(() => {}); return; }
+        if (!this.server) { client.close().catch(() => {}); return; }
+        if (this.pipes.size >= MAX_CONNECTIONS) { this.sweep(); }
+        if (this.pipes.size >= MAX_CONNECTIONS) {
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'connection pool full size=%{public}d', this.pipes.size);
+          client.close().catch(() => {});
+          return;
+        }
         const pipe = new Pipe(client, forwardPort, domains, this.ready,
           (id: number) => { this.pipes.delete(id); });
         this.pipes.set(client.clientId, pipe);
@@ -214,6 +234,12 @@ export class LocalProxy {
       await this.stop();
       throw new Error('无法建立应用内验证通道');
     }
+  }
+
+  private sweep(): void {
+    this.pipes.forEach((pipe: Pipe, id: number) => {
+      if (pipe.idleFor(IDLE_PIPE_MS)) { pipe.close(); this.pipes.delete(id); }
+    });
   }
 
   // Called only after the browser's neutral exit check matched the node exit.
