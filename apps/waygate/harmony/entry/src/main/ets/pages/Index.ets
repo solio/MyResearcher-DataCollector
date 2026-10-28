@@ -12,12 +12,12 @@ import { NodeSsh, runAction } from '../services/NodeSsh';
 import { screenOn } from '../services/ScreenOn';
 import { close, connect, exec, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
 
-// The desktop command that reliably gets the challenge opens a fresh Chrome profile every run.
-// ArkWeb keeps cookies between runs, so eastmoney serves the page as a returning visitor and no
-// captcha is ever shown. The verification browser therefore starts from the same state the
-// desktop path does: no cookies, and a desktop Chrome user agent.
-const VERIFY_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+// The desktop command that gets the challenge opens a fresh Chrome profile every run, so the
+// phone clears its cookies for the same effect. The user agent stays that of an ordinary
+// Android phone: a desktop UA switched the source to its wide layout and shrank the captcha
+// slider to an unusable size on a phone screen.
+const VERIFY_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
 const INK = '#173E37';
 const MUTED = '#657970';

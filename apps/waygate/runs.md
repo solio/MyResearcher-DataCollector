@@ -2558,3 +2558,18 @@ App：ArkWeb，持久 cookie，且没有关闭 QUIC 的开关。
 启动被锁屏挡住（`10106102`），未做界面验证。
 
 **未执行**：没有跑任何 probe 或验证流程，是否执行由操作者决定。
+
+### 2026-10-28 / Windows + Mate 70 Pro+ / 第四十八轮：UA 换回普通安卓手机
+
+用户反馈：清 cookie + 桌面 UA 之后验证码能出来，但**验证码窗口很小**——桌面版布局被塞进手机视口。
+
+**改法**
+
+- `VERIFY_UA` 从 macOS Chrome 换成 Android 14 / Pixel 7 的 Chrome 131 Mobile UA。
+- **保留** `clearAllCookies()`：让它看起来像首次访问的是 cookie 状态，UA 只决定页面用哪套布局。
+
+**构建/安装**：`BUILD SUCCESSFUL`；signed HAP 5,749,579 B；`install bundle successfully`；
+`aa start` 成功。
+
+**未验证**：换 UA 后验证码是否仍会弹出、尺寸是否正常——本轮没有执行验证流程。
+注意：安装会重启 App，正在进行的验证会被中断。
