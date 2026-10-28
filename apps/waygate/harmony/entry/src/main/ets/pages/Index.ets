@@ -34,6 +34,10 @@ const BUSY_WATCHDOG_MS = 300000;
 // read by request id, so the operator is given an explicit way to close it instead of the
 // app sitting on "结果尚未确认" forever.
 const CLAIM_TTL_MS = 15 * 60 * 1000;
+// The worker waits 120 s for the one probe it queued; past that there is nothing left to wait
+// for. Framing a three-minute-old probe as "still waiting" made an already-unknown outcome look
+// like something the operator should sit and watch.
+const PROBE_RESULT_WINDOW_MS = 3 * 60 * 1000;
 
 function bounded(work: Promise<void>, ms: number = CALLBACK_WAIT_MS): Promise<void> {
   // A rejection that arrives after the race settled has nobody left to observe it, so it
@@ -862,9 +866,19 @@ struct Index {
     }
     const age = this.ageText(claim.at);
     if (claim.before_request_id > 0) {
+      if (this.claimStale()) {
+        const minutes = Math.max(3, Math.floor((Date.now() - claim.at) / 60000));
+        return '这次探测已提交 ' + minutes.toString() + ' 分钟，超过等待时限（2 分钟）仍没有结果，' +
+          '按未知处理：不用再等。点“按节点当前状态判定”核对节点现在是否仍被阻断。没有重发请求。';
+      }
       return '这次探测已提交（' + age + '），结果尚未确认。没有重发请求；点“继续核对探测结果”只读取结果。';
     }
     return '这次探测没有记录到请求编号（' + age + '）。没有重发请求；点“按节点当前状态判定”从节点当前状态判断。';
+  }
+
+  private claimStale(): boolean {
+    const claim = this.claim;
+    return !!claim && Date.now() - claim.at > PROBE_RESULT_WINDOW_MS;
   }
 
   // A claim is a record of one probe, not a lock on the app. Every way out of it goes through
@@ -1487,18 +1501,26 @@ struct Index {
             Text(this.claimGuidance()).fontSize(14).fontColor(INK).width('100%')
               .padding({ left: 30, right: 30 }).textAlign(TextAlign.Center)
           }
-          if (this.screen === 'result' && runtime.dispatching && this.claimCanResume) {
+          if (this.screen === 'result' && runtime.dispatching && this.claimCanResume && !this.claimStale()) {
             Button(this.busy ? '正在核对…' : '核对探测结果').backgroundColor(INK)
               .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.resumeClaim())
           }
           if (this.screen === 'result' && runtime.dispatching) {
             // The claim is never a dead end: it can be decided from the node's live view, or
-            // closed outright. Neither path resends the probe.
-            Button(this.busy ? '正在判定…' : '按节点当前状态判定').backgroundColor('#DDECE4').fontColor(INK)
+            // closed outright. Neither path resends the probe. Once the probe's own window has
+            // passed, this becomes the primary action — reading a result that will never arrive
+            // is not something to ask the operator to keep doing.
+            Button(this.busy ? '正在判定…' : '按节点当前状态判定')
+              .backgroundColor(this.claimStale() ? INK : '#DDECE4')
+              .fontColor(this.claimStale() ? Color.White : INK)
               .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.resolveClaimByState())
             Button('结束核对（任务保持暂停）').backgroundColor('#EAEFEC').fontColor(INK)
               .enabled(!this.busy)
               .onClick(() => this.endClaim('已结束本次核对；任务保持暂停，可从待办重新处理或到控制台查看'))
+          }
+          if (this.screen === 'result' && runtime.dispatching && this.claimCanResume && this.claimStale()) {
+            Button(this.busy ? '正在核对…' : '再读一次结果').backgroundColor('#DDECE4').fontColor(INK)
+              .opacity(this.busy ? 0.6 : 1).enabled(!this.busy).onClick(() => this.resumeClaim())
           }
           if (this.screen === 'result' && !runtime.dispatching) {
             Button('返回待办').backgroundColor('#DDECE4').fontColor(INK).onClick(() => this.leaveResult())
