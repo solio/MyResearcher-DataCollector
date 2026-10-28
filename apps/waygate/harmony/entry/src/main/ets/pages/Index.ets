@@ -12,6 +12,13 @@ import { NodeSsh, runAction } from '../services/NodeSsh';
 import { screenOn } from '../services/ScreenOn';
 import { close, connect, exec, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
 
+// The desktop command that reliably gets the challenge opens a fresh Chrome profile every run.
+// ArkWeb keeps cookies between runs, so eastmoney serves the page as a returning visitor and no
+// captcha is ever shown. The verification browser therefore starts from the same state the
+// desktop path does: no cookies, and a desktop Chrome user agent.
+const VERIFY_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+  '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
 const INK = '#173E37';
 const MUTED = '#657970';
 const BG = '#F3F6F5';
@@ -714,6 +721,9 @@ struct Index {
   // the source page to the operator.
   private async openWindow(target: DirectTarget): Promise<void> {
     const generation = this.generation;
+    // Cleared before the page loads: the point is to look like a first-time visitor, which is
+    // exactly what makes the source show its challenge. A refused clear is not fatal.
+    try { await bounded(webview.WebCookieManager.clearAllCookies(), 2500); } catch (_) {}
     this.measuredOnce = false;
     this.verifiedExit = false;
     this.browser = new webview.WebviewController();
@@ -1532,6 +1542,7 @@ struct Index {
       }
       if (this.showWeb) {
         Web({ src: this.webUrl, controller: this.browser })
+          .userAgent(VERIFY_UA)
           .javaScriptAccess(true).domStorageAccess(true)
           .mixedMode(MixedMode.None).fileAccess(false)
           .onPageEnd((event) => { if (event) { this.pageEnded(event.url); } })

@@ -2533,3 +2533,28 @@ bash apps/waygate/deploy/start.sh --public-url https://testapi.zuzurent.com.cn/c
 
 **未验证**：装机后重开，原来那条 11 分钟的 claim 已不存在（待办列表 5 条、无结果屏），
 所以新文案没有在真机屏幕上截到；判定是确定性的（`age > 3 分钟` 即走该分支）。
+
+### 2026-10-28 / Windows + Mate 70 Pro+ / 第四十七轮：验证页按桌面命令的条件起浏览器
+
+用户指出：Mac 上 `scripts/ops/verify_backfill.command` 能正常撞出验证码并手工过审，
+随后在主控把五个节点全部恢复采集（实测 5 节点 running、inbox 0 条）。
+⇒ 站点与出口没问题，差异在 App 的浏览器侧。
+
+**差异（读桌面脚本 `verify_http_backfill.py:410-413`）**
+
+桌面：`launch_persistent_context(tempdir, channel="chrome", proxy=…, args=["--disable-quic"])`
+—— 每次全新 profile（无 cookie）、桌面 Chrome、禁用 QUIC。
+App：ArkWeb，持久 cookie，且没有关闭 QUIC 的开关。
+
+**改法（只动验证浏览器）**
+
+- `openWindow()` 在载入前 `WebCookieManager.clearAllCookies()`（bounded 2.5 s，失败不阻断），
+  让验证会话等价于“首次访问”。
+- 验证 Web 组件加 `.userAgent(VERIFY_UA)`（macOS Chrome 131 的 UA），与桌面路径一致。
+- 清 cookie 不影响控制台：`openConsole()` 每次都重新取 ticket，服务端会下发新 cookie。
+- **未覆盖**：ArkWeb 不能关闭 QUIC，这条差异仍在。
+
+**构建/安装**：`BUILD SUCCESSFUL`；signed HAP 5,749,577 B；`install bundle successfully`。
+启动被锁屏挡住（`10106102`），未做界面验证。
+
+**未执行**：没有跑任何 probe 或验证流程，是否执行由操作者决定。
