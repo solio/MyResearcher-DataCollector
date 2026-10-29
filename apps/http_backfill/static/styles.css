@@ -38,3 +38,13 @@
 .help-popover p{margin:4px 0}
 .mihomo-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
 .mihomo-row select{min-width:220px;max-width:100%}
+
+.field-row{display:grid;grid-template-columns:150px minmax(0,1fr);align-items:center;gap:10px;margin:12px 0}
+.field-row>label{margin:0}
+.proxy-card .field-row>label{margin-top:0}
+.proxy-grid.proxy-grid-wide{grid-template-columns:minmax(0,2fr) minmax(0,1fr);align-items:start}
+.mihomo-row{flex-wrap:nowrap}
+.mihomo-row>label{margin:0;white-space:nowrap}
+.mihomo-row select{flex:1 1 220px;min-width:0}
+.mihomo-row .button{flex:0 0 auto;white-space:nowrap}
+@media(max-width:720px){.field-row{grid-template-columns:1fr;gap:4px}.field-row>label{margin-bottom:2px}.mihomo-row{flex-wrap:wrap}.mihomo-row select{flex:1 1 100%}.proxy-grid.proxy-grid-wide{grid-template-columns:1fr}}
