@@ -142,17 +142,18 @@ class NodeClient:
     def __init__(self, timeout=3, max_bytes=MAX_JSON):
         self.timeout, self.max_bytes = timeout, max_bytes
 
-    def request(self, method, url, token, body=None):
+    def request(self, method, url, token, body=None, timeout=None):
+        wait = timeout if isinstance(timeout, (int, float)) and timeout > 0 else self.timeout
         encoded = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
         headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
         if encoded is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=encoded, headers=headers, method=method)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + max(8.0, float(wait) * 2)
         try:
             try:
-                response = opener.open(request, timeout=self.timeout)
+                response = opener.open(request, timeout=wait)
             except urllib.error.HTTPError as exc:
                 response = exc
             with response:
@@ -467,7 +468,10 @@ class FleetManager:
         if query:
             url += "?" + urlencode(query, doseq=True)
         try:
-            result = self.client.request(method, url, node["token"], body)
+            # Node-side mihomo latency sweeps take tens of seconds; keep the
+            # ordinary short budget for every other call.
+            wait = 120 if path.startswith("api/mihomo/") else None
+            result = self.client.request(method, url, node["token"], body, timeout=wait)
             return self._redact(result, (node["token"],))
         except FleetError as exc:
             error = exc.error
@@ -558,8 +562,8 @@ class FleetManager:
         if not isinstance(path, str):
             raise ValueError("代理路径无效")
         path = path.lstrip("/")
-        allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy", "api/mihomo/config"})
-                   or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate"})
+        allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy", "api/mihomo/config", "api/mihomo/nodes"})
+                   or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate", "api/mihomo/select"})
                    or (method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/(?:control|proxy/config|start-page)", path))
                    or (method == "PATCH" and path == "api/jobs/current")
                    or (method == "DELETE" and (path == "api/jobs/current" or re.fullmatch(r"api/jobs/current/stocks/[0-9]{6}", path))))

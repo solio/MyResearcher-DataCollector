@@ -2199,7 +2199,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                         if not same_http_author_identity(old, item):
                             fields.append("author_name")
                     if old.title and item.title and old.title != item.title:
-                        fields.append("title")
+                        self._event("title_updated", "列表标题与既有记录不一致，已按本次来源更新",
+                                    {"post_id": item.source_item_id, "old_title": old.title,
+                                     "new_title": item.title, "request_id": rid})
                     if fields:
                         facts = []
                         for field in fields:
@@ -2412,6 +2414,10 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self._skip_detail_scope(task, rid, payload, scope)
             return scope
         detail = guba.parse_detail_page(html)
+        if item.title and detail.title and item.title != detail.title:
+            self._event("title_updated", "详情标题与列表不一致，已按详情更新",
+                        {"post_id": item.source_item_id, "old_title": item.title,
+                         "new_title": detail.title, "request_id": rid})
         merged = merge_http_observations(item, detail, old_request=old_request, new_request=new_request)
         if detail.source_item_id != task["post_id"]:
             raise ValueError("详情源 ID 不匹配")

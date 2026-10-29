@@ -312,6 +312,9 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
                     return self.send(200, self.server.engine.status())
+                if path == "api/mihomo/nodes":
+                    import mihomo_control
+                    return self.send(200, mihomo_control.nodes())
                 if path == "api/mihomo/config":
                     return self.send(200, self.server.engine.mihomo_config())
                 if path == "api/proxy":
@@ -360,6 +363,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.engine.create_job(obj)
             elif path == "api/proxy/config":
                 return self.send(200, self.server.engine.configure_proxy(obj))
+            elif path == "api/mihomo/select":
+                import mihomo_control
+                return self.send(200, mihomo_control.select(obj.get("name")))
             elif path == "api/proxy/rotate":
                 if obj:
                     raise ValueError("切换出口请求不接受额外参数")

@@ -135,8 +135,14 @@ def merge_http_observations(item, detail, *, old_request=None, new_request=None)
               if getattr(item, name) != getattr(detail, name)]
     if item.author_name != detail.author_name and not same_http_author_identity(item, detail):
         fields.append("author_name")
+    # Title is display text, not identity. The detail surface is the newer
+    # observation, so adopt it instead of halting the stock (2026-10-29:
+    # source changed tab separators to spaces and the exact match blocked
+    # 601888 with an un-clearable schema_error). Replacing the list title
+    # keeps the parser exact list/detail equality contract while storing
+    # the current source value; a warning event is emitted by the caller.
     if item.title and detail.title and item.title != detail.title:
-        fields.append("title")
+        item = replace(item, title=detail.title)
     if fields:
         raise SourceFieldConflict([source_field_fact(item, detail, name, old_request=old_request,
                                                      new_request=new_request) for name in fields])
@@ -359,8 +365,8 @@ class CompatibleDataStore:
         if (initial_item.author_name != observed_item.author_name
                 and not same_http_author_identity(initial_item, observed_item)):
             fields.append("author_name")
-        if initial_item.title and observed_item.title and initial_item.title != observed_item.title:
-            fields.append("title")
+        # Title changes are display-only: the projection below already uses
+        # observed_item (the newer list observation), so no conflict is raised.
         if fields:
             conflict = SourceFieldConflict([source_field_fact(initial_item, observed_item, field,
                                          old_request=initial_request, new_request=observed_request) for field in fields])

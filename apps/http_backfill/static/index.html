@@ -65,13 +65,21 @@
       </section>
 
       <section class="card proxy-card" aria-label="当前节点出站代理">
-        <details id="proxy-panel"><summary class="proxy-summary"><strong>节点默认出站代理</strong><span id="proxy-summary-state" class="tag">尚未读取</span></summary>
-          <p class="field-note">下方股票卡片可单独指定出口；选择“继承节点”的股票共用这里的设置与动态 IP 提取额度。</p>
-          <p id="proxy-node-note" class="field-note">设置作用于当前控制节点，手机与主控的管理连接不使用此代理。</p>
+        <details id="proxy-panel"><summary class="proxy-summary"><strong>节点默认出站代理</strong><button id="proxy-help-toggle" type="button" class="help-badge" aria-label="说明" aria-expanded="false" title="说明">?</button><span id="proxy-summary-state" class="tag">尚未读取</span></summary>
+          <div id="proxy-help" class="help-popover" hidden>
+            <p class="field-note">下方股票卡片可单独指定出口；选择“继承节点”的股票共用这里的设置与动态 IP 提取额度。</p>
+            <p id="proxy-node-note" class="field-note">设置作用于当前控制节点，手机与主控的管理连接不使用此代理。</p>
+            <p id="proxy-capability-note" class="field-note">展开后读取该节点的代理能力；旧节点需要升级。</p>
+            <p id="proxy-lease-note" class="field-note">尚无候选出站状态。</p>
+            <p id="proxy-recovery-note" class="field-note"></p>
+          </div>
+          
+          
           <div class="proxy-toolbar"><span id="proxy-config-state" class="quiet-text">等待脱敏配置</span><button id="proxy-refresh" type="button" class="button quiet small">读取代理状态</button></div>
-          <p id="proxy-capability-note" class="field-note">展开后读取该节点的代理能力；旧节点需要升级。</p>
+          <div class="mihomo-row"><label for="mihomo-nodes" class="quiet-text">Mihomo 节点</label><select id="mihomo-nodes"><option value="">尚未加载</option></select><button id="mihomo-load" type="button" class="button quiet small">加载节点</button><button id="mihomo-switch" type="button" class="button secondary small" disabled>切换节点</button><span id="mihomo-state" class="quiet-text"></span></div>
+          
           <div id="proxy-facts" class="coverage-counts"></div>
-          <p id="proxy-lease-note" class="field-note">尚无候选出站状态。</p><p id="proxy-recovery-note" class="field-note"></p>
+          
           <p id="proxy-status-error" class="page-error" role="status" hidden></p>
           <form id="proxy-form"><fieldset id="proxy-fields" disabled>
             <label for="proxy-mode">来源请求的出站方式</label><select id="proxy-mode"><option value="direct">直连</option><option value="http">已有 HTTP / mixed 代理</option><option value="mayi">mayihttp 动态 IP</option><option value="qingguo">青果动态 IP</option></select>

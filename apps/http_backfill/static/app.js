@@ -1765,6 +1765,40 @@
     if ($("proxy-clear-api").checked) payload.clear_api_url = true;
     return payload;
   }
+  async function loadMihomoNodes() {
+    if (!authenticated) return;
+    const button = $("mihomo-load"), select = $("mihomo-nodes"), note = $("mihomo-state");
+    const epoch = nodeEpoch;
+    button.disabled = true; $("mihomo-switch").disabled = true; note.textContent = "读取节点并测速…";
+    try {
+      const data = await api("mihomo/nodes", "GET", undefined, selectedNode);
+      if (epoch !== nodeEpoch) return;
+      const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+      select.replaceChildren();
+      if (!nodes.length) { select.append(new Option("没有返回延时的节点", "")); note.textContent = "没有可用节点"; return; }
+      for (const item of nodes) select.append(new Option(`${item.name} · ${item.delay}ms`, item.name));
+      note.textContent = `当前：${data.now || "未知"} · 测速 ${data.test_url || ""}`;
+      if (data.now) { const hit = [...select.options].find((option) => option.value === data.now); if (hit) select.value = hit.value; }
+      $("mihomo-switch").disabled = false;
+    } catch (error) { note.textContent = error.message || "读取失败"; }
+    finally { button.disabled = false; }
+  }
+  async function switchMihomoNode() {
+    const name = $("mihomo-nodes").value;
+    if (!name) return;
+    const button = $("mihomo-switch"), note = $("mihomo-state");
+    button.disabled = true; note.textContent = `切换到 ${name}…`;
+    try { const data = await api("mihomo/select", "POST", { name }, selectedNode); note.textContent = `已切换：${data?.now || name}`; }
+    catch (error) { note.textContent = error.message || "切换失败"; }
+    finally { button.disabled = false; }
+  }
+  $("mihomo-load").addEventListener("click", () => { void loadMihomoNodes(); });
+  $("mihomo-switch").addEventListener("click", () => { void switchMihomoNode(); });
+  $("proxy-help-toggle").addEventListener("click", (event) => {
+    event.preventDefault(); event.stopPropagation();
+    const box = $("proxy-help"); box.hidden = !box.hidden;
+    $("proxy-help-toggle").setAttribute("aria-expanded", String(!box.hidden));
+  });
   $("proxy-panel").addEventListener("toggle", () => { if ($("proxy-panel").open) void readProxy(); });
   $("proxy-refresh").addEventListener("click", () => { void readProxy(); });
   $("proxy-form").addEventListener("input", markProxyDirty);
