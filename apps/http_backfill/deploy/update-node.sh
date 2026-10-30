@@ -62,13 +62,19 @@ else
 fi
 
 echo "== 4/5 等待接口就绪 =="
+# A rebuilt container may run database migrations on first start; on a multi-gigabyte
+# collector.db that took several minutes on the main console. Wait for it instead of
+# declaring failure after two minutes.
 ready=0
-for _ in $(seq 1 60); do
+for i in $(seq 1 300); do
   if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then ready=1; break; fi
+  if [ $((i % 15)) -eq 0 ]; then
+    echo "  仍在启动（已 $((i * 2)) 秒）；首次升级可能在做数据库迁移，勿中断容器"
+  fi
   sleep 2
 done
 if [ "$ready" != "1" ]; then
-  echo "  接口 120 秒内未就绪，后续检查可能失败"
+  echo "  接口 600 秒内未就绪：看 docker logs 确认是否仍在迁移"
 fi
 
 echo "== 5/5 测速并写缓存 =="
