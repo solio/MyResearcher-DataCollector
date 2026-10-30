@@ -2267,3 +2267,29 @@ dataset_complete=false and model_database_eligible=false. Local reconciliation
 does not prove deleted/unavailable or never-observed history complete. A queue
 ending does not establish a one-year dataset. Keep partial data in this isolated
 research store and evaluate future long trials using the actual request ledger.
+
+## 2026-10-30 - console node list reads a cache; empty MIHOMO_API fixed
+
+`GET /api/mihomo/nodes` used to sweep every provider node synchronously (about
+sixty health checks), so a console request outlived its budget. It now returns
+`MIHOMO_CACHE_FILE` (default `/data/mihomo-nodes.json`) immediately, and
+`POST /api/mihomo/nodes/refresh` starts a single background sweep. The console
+shows the cached list with its age and polls after asking for a refresh.
+
+`switch.sh latency` writes that same file and still prints the table.
+`deploy/patch-switch-cache.py` applies the write to an existing node script,
+keeps a `.bak`, and is safe to re-run.
+
+An exported-but-empty `MIHOMO_API` / `MIHOMO_GROUP` / `MIHOMO_PROVIDER` no longer
+produces a relative URL: empty values fall back to the defaults. This was the
+`{"error":"unknown url type: '/proxies/WW'"}` reported on node 02 after its
+redeploy.
+
+Note: the collector container cannot reach mihomo's controller (it listens on
+127.0.0.1:9090), so the background sweep is only a fallback. The file written by
+`switch.sh latency` is the working path for the node list.
+
+Node 02 was deployed and verified: cache 1.4 KB, `GET /api/mihomo/nodes` returned
+200 in 7 ms with the measured list. The remaining nodes still run the previous
+code. The same sweep also showed most provider entries failing with 503 or
+timeout, which is why the selected exit keeps drifting.

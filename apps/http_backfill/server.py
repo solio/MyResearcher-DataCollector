@@ -366,6 +366,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "api/mihomo/select":
                 import mihomo_control
                 return self.send(200, mihomo_control.select(obj.get("name")))
+            elif path == "api/mihomo/nodes/refresh":
+                # A sweep takes tens of seconds, so it runs in the background and the console
+                # polls the cached list instead of holding a request open.
+                import mihomo_control
+                return self.send(202, mihomo_control.refresh_async())
             elif path == "api/proxy/rotate":
                 if obj:
                     raise ValueError("切换出口请求不接受额外参数")

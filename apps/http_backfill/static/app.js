@@ -1765,23 +1765,33 @@
     if ($("proxy-clear-api").checked) payload.clear_api_url = true;
     return payload;
   }
-  async function loadMihomoNodes() {
+  async function loadMihomoNodes(silent) {
     if (!authenticated) return;
     const button = $("mihomo-load"), select = $("mihomo-nodes"), note = $("mihomo-state");
     const epoch = nodeEpoch;
-    button.disabled = true; $("mihomo-switch").disabled = true; note.textContent = "读取节点并测速…";
+    if (!silent) { button.disabled = true; $("mihomo-switch").disabled = true; note.textContent = "读取节点…"; }
     try {
       const data = await api("mihomo/nodes", "GET", undefined, selectedNode);
       if (epoch !== nodeEpoch) return;
       const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
+      const age = Number(data?.age || 0);
       select.replaceChildren();
-      if (!nodes.length) { select.append(new Option("没有返回延时的节点", "")); note.textContent = "没有可用节点"; return; }
-      for (const item of nodes) select.append(new Option(`${item.name} · ${item.delay}ms`, item.name));
-      note.textContent = `当前：${data.now || "未知"} · 测速 ${data.test_url || ""}`;
-      if (data.now) { const hit = [...select.options].find((option) => option.value === data.now); if (hit) select.value = hit.value; }
-      $("mihomo-switch").disabled = false;
-    } catch (error) { note.textContent = error.message || "读取失败"; }
-    finally { button.disabled = false; }
+      if (!nodes.length) {
+        select.append(new Option(data?.refreshing ? "正在后台测速…" : "还没有测速结果", ""));
+        note.textContent = data?.refreshing ? "正在后台测速，完成后自动刷新；也可以跑 switch.sh latency" : "还没有测速结果，先跑一次 switch.sh latency";
+      } else {
+        for (const item of nodes) select.append(new Option(`${item.name} · ${item.delay}ms`, item.name));
+        note.textContent = `当前：${data.now || "未知"} · ${age > 0 ? `测速 ${age}s 前` : "刚测速"}`;
+        if (data.now) { const hit = [...select.options].find((option) => option.value === data.now); if (hit) select.value = hit.value; }
+        $("mihomo-switch").disabled = false;
+      }
+      // Never hold the request open for a sweep: start it in the background and poll the cache.
+      if (!silent && (data?.refreshing || !nodes.length || age > 600)) {
+        try { await api("mihomo/nodes/refresh", "POST", {}, selectedNode); } catch (_) {}
+        setTimeout(() => { void loadMihomoNodes(true); }, 4000);
+      }
+    } catch (error) { if (!silent) note.textContent = error.message || "读取失败"; }
+    finally { if (!silent) button.disabled = false; }
   }
   async function switchMihomoNode() {
     const name = $("mihomo-nodes").value;

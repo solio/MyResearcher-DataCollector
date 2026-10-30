@@ -563,7 +563,7 @@ class FleetManager:
             raise ValueError("代理路径无效")
         path = path.lstrip("/")
         allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy", "api/mihomo/config", "api/mihomo/nodes"})
-                   or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate", "api/mihomo/select"})
+                   or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate", "api/mihomo/select", "api/mihomo/nodes/refresh"})
                    or (method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/(?:control|proxy/config|start-page)", path))
                    or (method == "PATCH" and path == "api/jobs/current")
                    or (method == "DELETE" and (path == "api/jobs/current" or re.fullmatch(r"api/jobs/current/stocks/[0-9]{6}", path))))
