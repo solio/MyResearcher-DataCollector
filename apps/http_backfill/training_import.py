@@ -255,7 +255,7 @@ def _publish(source, destination):
         Path(name).unlink(missing_ok=True)
 
 
-def import_file(path, target, *, kind="bundle", dry_run=False, source_dir=None):
+def import_file(path, target, *, kind="bundle", dry_run=False, source_dir=None, backup=False):
     original, target = _path(path), _path(target)
     if not target.is_file() or original == target:
         raise ValueError("目标必须为已存在的训练数据库，且不能作为输入")
@@ -283,27 +283,30 @@ def import_file(path, target, *, kind="bundle", dry_run=False, source_dir=None):
                     return summary | {"applied": False, "no_changes": not needs_write}
                 imported = datetime.now(timezone.utc)
                 import_id = imported.strftime("%Y%m%dT%H%M%S%fZ") + "-" + uuid.uuid4().hex[:8]
-                backup = _path(target.parent / (target.name + ".import-backups") / (import_id + ".db"))
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                # This writer holds RESERVED before any mutation. A separate
-                # read connection can back up the committed database, including
-                # WAL, while other writers queue rather than changing it.
-                with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as before, closing(
-                    sqlite3.connect(backup)
-                ) as copy:
-                    before.backup(copy)
-                with backup.open("rb") as stream:
-                    os.fsync(stream.fileno())
-                backup.chmod(0o600)
-                directory_fd = os.open(backup.parent, os.O_RDONLY)
-                try:
-                    os.fsync(directory_fd)
-                finally:
-                    os.close(directory_fd)
+                backup_path = None
+                if backup:
+                    backup_path = _path(target.parent / (target.name + ".import-backups") / (import_id + ".db"))
+                    backup_path.parent.mkdir(parents=True, exist_ok=True)
+                    # This writer holds RESERVED before any mutation. A separate
+                    # read connection can back up the committed database, including
+                    # WAL, while other writers queue rather than changing it.
+                    with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as before, closing(
+                        sqlite3.connect(backup_path)
+                    ) as copy:
+                        before.backup(copy)
+                    with backup_path.open("rb") as stream:
+                        os.fsync(stream.fileno())
+                    backup_path.chmod(0o600)
+                    directory_fd = os.open(backup_path.parent, os.O_RDONLY)
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
                 evidence = _path(target.parent / (target.name + ".imports") / "inputs" /
                                  (staged.digest + (".zip" if kind == "bundle" else ".jsonl")))
                 _publish(staged.path, evidence)
-                summary.update(import_id=import_id, imported_at=imported.isoformat(), backup_path=str(backup),
+                summary.update(import_id=import_id, imported_at=imported.isoformat(),
+                               backup_path=str(backup_path) if backup_path else None,
                                evidence_path=str(evidence), applied=True, no_changes=False)
                 for statement in IMPORT_SCHEMA:
                     db.execute(statement)
@@ -325,7 +328,7 @@ def import_file(path, target, *, kind="bundle", dry_run=False, source_dir=None):
                                (staged.identity, sequence, digest, source, pid, kind, payload, import_id))
                 db.execute("INSERT INTO collector_import_runs VALUES(?,?,?,?,?,?,?,?,?)",
                            (import_id, summary["imported_at"], kind, staged.digest, summary["input_path"], staged.identity,
-                            str(evidence), str(backup), _json(summary)))
+                           str(evidence), str(backup_path) if backup_path else "", _json(summary)))
                 db.commit()
                 return summary
             except BaseException:
@@ -334,23 +337,26 @@ def import_file(path, target, *, kind="bundle", dry_run=False, source_dir=None):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="将节点帖子直接合入训练 collector.db；自动备份、去重、补正文并保留来源")
+    parser = argparse.ArgumentParser(description="将节点帖子直接合入训练 collector.db；事务写入、去重、补正文并保留来源")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--bundle", type=Path, help="节点 transfer.py 导出的含 raw 证据 ZIP")
     source.add_argument("--source-dir", type=Path, help="本地节点数据目录；只读快照导出后直接导入")
     source.add_argument("--jsonl", type=Path, help="已有 H5 JSONL 导出；保留原文件，未包含 raw")
     parser.add_argument("--target-db", type=Path, default=DEFAULT_TARGET, help="默认仓库根目录 data/collector.db")
-    parser.add_argument("--dry-run", action="store_true", help="只预览，不写目标库、不创建备份")
+    parser.add_argument("--dry-run", action="store_true", help="只预览，不写目标库")
+    parser.add_argument("--backup", action="store_true", help="写入前额外复制一份完整数据库（默认关闭，文件可能很大）")
     args = parser.parse_args(argv)
     try:
         if args.source_dir:
             with tempfile.TemporaryDirectory(prefix="collector-node-snapshot-", dir=Path(tempfile.gettempdir()).resolve()) as directory:
                 bundle = Path(directory) / "node.zip"
                 export_bundle(args.source_dir, bundle)
-                result = import_file(bundle, args.target_db, dry_run=args.dry_run, source_dir=args.source_dir)
+                result = import_file(bundle, args.target_db, dry_run=args.dry_run, source_dir=args.source_dir,
+                                     backup=args.backup)
         else:
             result = import_file(args.bundle or args.jsonl, args.target_db,
-                                 kind="bundle" if args.bundle else "jsonl", dry_run=args.dry_run)
+                                 kind="bundle" if args.bundle else "jsonl", dry_run=args.dry_run,
+                                 backup=args.backup)
     except (ValueError, TypeError, KeyError, OSError, sqlite3.Error, zipfile.BadZipFile, FederationError, TransferError) as exc:
         print(_json({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 1
