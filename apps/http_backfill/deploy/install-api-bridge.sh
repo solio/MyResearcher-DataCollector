@@ -130,9 +130,25 @@ fi
 echo "MIHOMO_API=http://$GATEWAY:9090"
 
 cd "$APP"
+# Seed the storage watermark first: a recreate without it makes the new process re-verify the
+# whole ledger, which on a multi-gigabyte database looks like a hang.
+if curl -fsS "http://127.0.0.1:8790/healthz" >/dev/null 2>&1 && [ -f "$APP/data/collector.db" ]; then
+  python3 - "$APP/data/collector.db" <<'PY'
+import sqlite3
+import sys
+
+db = sqlite3.connect(sys.argv[1])
+highest = db.execute("select coalesce(max(rowid),0) from http_posts").fetchone()[0]
+db.execute("insert into meta values('storage_sync_rowid',?) on conflict(key) do update set value=excluded.value",
+           (str(highest),))
+db.execute("insert into meta values('clean_shutdown','1') on conflict(key) do update set value=excluded.value")
+db.commit()
+print("同步水位:", highest)
+PY
+fi
 if docker compose version >/dev/null 2>&1; then compose() { docker compose "$@"; }; else compose() { docker-compose "$@"; }; fi
 compose up -d --force-recreate --no-deps collector-console >/dev/null
-for _ in $(seq 1 60); do
+for _ in $(seq 1 300); do
   curl -fsS "http://127.0.0.1:8790/healthz" >/dev/null 2>&1 && break
   sleep 2
 done
