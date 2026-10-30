@@ -53,7 +53,8 @@ else
   echo "  没有 $DB（新库，无需迁移）"
 fi
 
-echo "== 1/5 检查代码是否为缓存版 =="missing=0
+echo "== 1/5 检查代码是否为缓存版 =="
+missing=0
 grep -q MIHOMO_CACHE_FILE "$APP/mihomo_control.py" || { echo "  mihomo_control.py 还是旧版"; missing=1; }
 grep -q "api/mihomo/nodes/refresh" "$APP/server.py" || { echo "  server.py 缺少刷新路由"; missing=1; }
 grep -q "loadMihomoNodes(silent)" "$APP/static/app.js" || { echo "  app.js 还是旧版"; missing=1; }
