@@ -18,6 +18,7 @@ import json
 import os
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -183,6 +184,12 @@ def select(name):
     if not isinstance(name, str) or not name.strip():
         raise ValueError("节点名称不能为空")
     group = _group()
-    _put("/proxies/" + urllib.parse.quote(group, safe=""), {"name": name})
+    try:
+        _put("/proxies/" + urllib.parse.quote(group, safe=""), {"name": name})
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:160].strip()
+        raise ValueError("节点控制器拒绝切换（HTTP " + str(exc.code) + "）：" + (detail or "无返回内容")) from exc
+    except urllib.error.URLError as exc:
+        raise ValueError("无法连接节点控制器：" + str(getattr(exc, "reason", exc))) from exc
     now = (_get("/proxies/" + urllib.parse.quote(group, safe="")) or {}).get("now")
     return {"now": now, "group": group}

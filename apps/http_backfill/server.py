@@ -472,6 +472,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send(400, _error_payload(exc))
         except RuntimeError as exc:
             self.send(409, _error_payload(exc))
+        except Exception as exc:
+            # Never drop the connection: a reset reaches the console as "无法连接节点",
+            # which hides the real cause (for example mihomo rejecting a node name).
+            try:
+                self.send(500, {"error": type(exc).__name__ + ": " + str(exc)})
+            except Exception:
+                pass
 
     def do_PATCH(self):
         path = unquote(urlparse(self.path).path).lstrip("/")
