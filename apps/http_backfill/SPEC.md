@@ -1,5 +1,39 @@
 # Low-frequency HTTP backfill console — experimental contract
 
+## 2026-10-19 automatically rebase unproductive pagination drift — authorized
+
+When a completed interval pass disagrees with the prior pass, use the latest
+valid pass's final list response and its ordered ID/publish-time observations as
+the new navigation frontier, whether or not that pass found new eligible
+posts. Continue from the next source page without requiring a manual
+starting-page edit. Mark the recovery complete with proof level
+`latest_pass_rebased_with_gap`, keep the affected interval as a coverage gap,
+and do not mark it reconciled or complete. Authentication/challenge barriers
+and calibration request/pass budgets remain unchanged.
+
+On upgrade, recover a legacy `pagination_drift_no_progress` manual stop only
+when its latest pass is backed by a retained successful list request, matching
+page observation hash, and saved source rows. Rebuild the frontier from that
+evidence, keep the gap, clear only this obsolete pagination halt, and queue the
+next forward page. If the saved evidence cannot be matched, leave the state
+stopped for explicit review. Test current and legacy recovery without live
+source requests.
+
+## 2026-10-19 include two imported nodes in operator verification
+
+Make the imported `8.148.251.114` and `8.148.252.117` nodes selectable by
+`verify_backfill.command`, using short aliases `251` and `252` plus their full
+IP addresses. The interactive chooser lists aliases for registered nodes and
+full addresses for the remaining locally registered nodes. Keep SSH identities
+in the ignored private node file; never place key contents or tokens in source.
+
+The read-only `--check` must display node/task/stop state even when a retained
+authentication halt has no usable HTTP/mixed proxy route. It may report the
+route error as evidence, but must not navigate to Guba, pause, probe, resume, or
+change any proxy. The actual operator-verification path remains strict: it
+requires the current task's effective unauthenticated HTTP/mixed route and must
+not guess or silently switch to the node's installed Mihomo listener.
+
 ## 2026-10-15 mobile reuse of the existing operator worker
 
 Expose a pure command builder for the existing REMOTE_WORKER so a direct SSH

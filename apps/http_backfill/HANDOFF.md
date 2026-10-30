@@ -2,6 +2,23 @@
 
 Date: 2026-10-14, Asia/Shanghai. Version: http-backfill.v5.
 
+## Latest local operator helper update: imported 8.148 nodes
+
+On 2026-10-19, added aliases `251` and `252` for `8.148.251.114` and
+`8.148.252.117` to `verify_backfill.command`; full IPs remain accepted. The
+interactive chooser now reads the ignored private `nodes.json` and lists all
+configured aliases and addresses, including unaliased nodes.
+
+Read-only `--check` now returns node/task/halt state when a halt's effective
+HTTP proxy route is absent, with the route problem attached to that target.
+Actual browser verification remains strict and refuses missing/authenticated
+routes; it never silently falls back to the installed Mihomo endpoint. No
+collector, source request, server task, or proxy settings were changed.
+
+Focused tests and the two live read-only checks are recorded in
+`runs/operator-verification-node-coverage-2026-10-19/`. Private SSH identities
+and node config remain only in ignored `.runtime/http-backfill-verification/`.
+
 ## Waygate HarmonyOS implementation handoff
 
 User now authorizes implementing the mobile app in `apps/waygate` and assigns
