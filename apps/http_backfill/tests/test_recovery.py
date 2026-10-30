@@ -233,6 +233,101 @@ class RecoveryTests(unittest.TestCase):
         self.until(e, lambda: e.status()["recovery"][0]["phase"] == "complete")
         self.assertTrue(any(p["post_id"] == source[2]["post_id"] and p["body_complete"] for p in e.raw_posts()))
 
+    def test_pagination_drift_rebases_to_latest_pass_and_keeps_gap(self):
+        source = rows()
+        site = MovingSite(source)
+        e = self.started(site)
+        self.tick(e)  # Save known posts and a stable frontier.
+        job, stock = e._get("job_id"), "601012"
+        frontier = e._frontier(job, stock)
+        e._begin_recovery(job, stock, frontier, "source_count_decrease", force_first=True)
+        rec = e._recovery(job, stock)
+        times = [item["post_publish_time"] for item in source[:2]]
+        rec.update({"phase": "scan", "strategy": "two_pass", "scan_start_page": frontier["page"],
+                    "start_rows": frontier["rows"], "target_time": min(times), "anchor_min": min(times),
+                    "anchor_max": max(times), "anchor_ids": [str(item["post_id"]) for item in source[:2]],
+                    "anchor_seen": True, "time_fallback": False, "last_signature": "previous-pass-signature",
+                    "pass_members": [], "pass_pages": [], "passes": 1, "completed_passes": 1,
+                    "pass_new_posts": 0})
+        e._save_recovery(rec)
+
+        self.tick(e)  # Latest full-page signature disagrees; rebase instead of rescanning.
+
+        rebased = e._recovery(job, stock)
+        self.assertEqual(rebased["phase"], "complete")
+        self.assertEqual(rebased["proof_level"], "latest_pass_rebased_with_gap")
+        self.assertFalse(rebased["manual_restart_required"])
+        self.assertIsNone(rebased["stop_reason"])
+        self.assertTrue(any(gap["kind"] == "pagination_drift_rebased"
+                            for gap in e.status()["coverage"][0]["gaps"]))
+        self.assertIsNone(e._stock_runtime(job, stock)["active_halt"])
+        published = next(item for item in e.status()["recovery"] if item["stock"] == stock)
+        self.assertEqual(published["proof_level"], "latest_pass_rebased_with_gap")
+        frontier = e._frontier(job, stock)
+        self.assertEqual(frontier["page"], 1)
+        self.assertEqual(frontier["rows"], source[:2])
+        self.assertFalse(frontier["reconciled"])
+        self.assertFalse(frontier["navigation_stable"])
+        self.assertEqual(e.db.execute("SELECT outcome FROM requests ORDER BY id DESC LIMIT 1").fetchone()[0], "real_data")
+        forward = e.db.execute("SELECT page FROM tasks WHERE job=? AND stock=? AND kind='list' "
+                               "AND purpose='forward' AND status='pending' ORDER BY id DESC LIMIT 1", (job, stock)).fetchone()
+        self.assertEqual(forward["page"], 2)
+        self.assertEqual(e.status()["state"], "running")
+
+    def test_start_auto_recovers_legacy_unproductive_drift_stop_from_latest_saved_list(self):
+        source = rows()
+        site = MovingSite(source)
+        e = self.started(site)
+        self.tick(e)
+        job, stock = e._get("job_id"), "601012"
+        frontier = e._frontier(job, stock)
+        page_observation = e.db.execute("SELECT id_sha256 FROM page_observations WHERE request_id=?",
+                                        (frontier["request_id"],)).fetchone()
+        e._begin_recovery(job, stock, frontier, "source_count_decrease", force_first=True)
+        rec = e._recovery(job, stock)
+        rec.update({"phase": "error", "strategy": "two_pass", "scan_start_page": frontier["page"],
+                    "start_rows": frontier["rows"], "target_time": source[1]["post_publish_time"],
+                    "anchor_min": source[1]["post_publish_time"], "anchor_max": source[0]["post_publish_time"],
+                    "anchor_ids": [str(item["post_id"]) for item in source[:2]], "anchor_seen": True,
+                    "time_fallback": False, "last_signature": "previous-pass-signature",
+                    "pass_members": [(str(item["post_id"]), item["post_publish_time"]) for item in source[:2]],
+                    "pass_pages": [{"page": frontier["page"], "request_id": frontier["request_id"],
+                                    "sha256": page_observation["id_sha256"], "source_count": frontier["source_count"]}],
+                    "passes": 1, "completed_passes": 1, "pass_new_posts": 0,
+                    "current_page": frontier["page"], "manual_restart_required": True,
+                    "stop_reason": "pagination_drift_no_progress", "error": "旧版停止状态"})
+        e._save_recovery(rec)
+        with e._stock_context(stock, job):
+            e._set("state", "error")
+            e._set("active_halt", "pagination_drift_no_progress")
+            e._set("reason", "旧版分页校准停止")
+
+        e.start(stock)
+
+        resumed = e._recovery(job, stock)
+        self.assertEqual(resumed["phase"], "complete")
+        self.assertFalse(resumed["manual_restart_required"])
+        self.assertIsNone(e._stock_runtime(job, stock)["active_halt"])
+        next_forward = e.db.execute("SELECT page FROM tasks WHERE job=? AND stock=? AND kind='list' "
+                                    "AND purpose='forward' AND status='pending' ORDER BY id DESC LIMIT 1",
+                                    (job, stock)).fetchone()
+        self.assertEqual(next_forward["page"], frontier["page"] + 1)
+        self.assertTrue(any(gap["kind"] == "pagination_drift_rebased"
+                            for gap in e.status()["coverage"][0]["gaps"]))
+
+    def test_global_start_keeps_other_stocks_running_when_one_needs_manual_restart(self):
+        e = self.engine(MovingSite(rows()))
+        e.create_job({**CONFIG, "stocks": ["601012", "600519"]})
+        job = e._get("job_id")
+        e._save_recovery({"job": job, "stock": "601012", "phase": "error",
+                          "manual_restart_required": True, "stop_reason": "pagination_drift_no_progress",
+                          "error": "分页位置不稳定，请设置新的起始页"})
+
+        e.start()
+
+        self.assertEqual(e._stock_runtime(job, "601012")["state"], "paused")
+        self.assertEqual(e._stock_runtime(job, "600519")["state"], "running")
+
     def test_calibration_challenge_stops_and_probe_has_same_target(self):
         site = MovingSite(rows())
         e = self.started(site)

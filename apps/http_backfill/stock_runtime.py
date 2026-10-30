@@ -418,17 +418,31 @@ class StockRuntimeMixin:
                 raise RuntimeError("本节点遇到验证码或身份核验；请先选择一只股票人工单次探测")
             if self._get_global("legacy_stock_halt_barrier"):
                 raise RuntimeError("旧阻断目标缺失，须恢复原目标证据后继续")
-            scopes = [self._resolve_stock_scope(stock, job)] if stock is not None or self._stock_scope() else self._current_stock_scopes()
+            explicit_scope = stock is not None or self._stock_scope() is not None
+            scopes = [self._resolve_stock_scope(stock, job)] if explicit_scope else self._current_stock_scopes()
             if not scopes:
                 raise RuntimeError("请先创建任务")
+            started = 0
+            manual_stops = []
             for scope in scopes:
                 if scope not in self._current_stock_scopes():
                     raise RuntimeError("已移除或归档的股票只能单次探测原阻断")
-                runtime = self._stock_runtime(*scope)
-                if stock is None and not self._stock_scope() and (runtime["active_halt"] or runtime["state"] == "completed"):
-                    continue
                 with self._stock_context(scope[1], scope[0]):
+                    self._auto_rebase_legacy_drift_stop()
+                    runtime = self._stock_runtime(*scope)
+                    recovery = self._recovery(*scope)
+                    if recovery and recovery.get("manual_restart_required"):
+                        manual_stops.append(scope[1])
+                        if explicit_scope:
+                            raise RuntimeError(recovery.get("error") or
+                                               "该股票分页校准已停止；请为这只股票设置新的起始页后再继续")
+                        continue
+                    if stock is None and not self._stock_scope() and (runtime["active_halt"] or runtime["state"] == "completed"):
+                        continue
                     self._start_one()
+                started += 1
+            if not started and manual_stops and len(manual_stops) == len(scopes):
+                raise RuntimeError("分页校准已因来源页持续变化而停止；请为相关股票设置新的起始页后再继续")
             self._publish_stock_summary()
             return self.status()
 
