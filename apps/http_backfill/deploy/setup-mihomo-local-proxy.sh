@@ -195,12 +195,14 @@ echo "== [7/7] 部署节点切换工具 switch.sh =="
 cat > "$MIHOMO_DIR/switch.sh" <<'SWITCH'
 #!/bin/bash
 set -e
-API="http://127.0.0.1:9090/proxies/WW"
+API_BASE="http://127.0.0.1:9090"
+API="$API_BASE/proxies/WW"
 CMD="${1:-}"
 case "$CMD" in
   ""|-h|--help|help)
     echo "用法:"
     echo "  switch.sh list          查看当前节点与全部可选节点"
+    echo "  switch.sh latency [关键字] 测量全部节点延时；可按名称关键字筛选，不会切换当前节点"
     echo "  switch.sh auto          切回自动择优"
     echo "  switch.sh <关键字>      切换至第一个名称包含关键字的节点"
     ;;
@@ -212,6 +214,78 @@ print(\"当前选中:\", d.get(\"now\"))
 print(\"可选节点:\")
 for i,n in enumerate(d.get(\"all\",[])): print(\" %2d. %s\" % (i+1, n))
 "
+    ;;
+  latency|delay|ping)
+    PROVIDER="${MIHOMO_PROVIDER:-westworld}"
+    TEST_URL="${MIHOMO_TEST_URL:-https://www.gstatic.com/generate_204}"
+    TEST_TIMEOUT="${MIHOMO_TEST_TIMEOUT:-5000}"
+    TEST_WORKERS="${MIHOMO_TEST_WORKERS:-10}"
+    FILTER="${2:-}"
+    API_BASE="$API_BASE" PROVIDER="$PROVIDER" TEST_URL="$TEST_URL" \
+      TEST_TIMEOUT="$TEST_TIMEOUT" TEST_WORKERS="$TEST_WORKERS" FILTER="$FILTER" \
+      python3 - <<'PY'
+import concurrent.futures
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+base = os.environ["API_BASE"]
+provider = os.environ["PROVIDER"]
+test_url = os.environ["TEST_URL"]
+timeout_ms = int(os.environ["TEST_TIMEOUT"])
+workers = max(1, min(32, int(os.environ["TEST_WORKERS"])))
+keyword = os.environ.get("FILTER", "").casefold()
+if timeout_ms < 1000 or timeout_ms > 30000:
+    raise SystemExit("测速超时必须在 1000 到 30000 毫秒之间")
+
+def get_json(url, timeout):
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+provider_url = base + "/providers/proxies/" + urllib.parse.quote(provider, safe="")
+try:
+    proxies = get_json(provider_url, 8).get("proxies", [])
+except Exception as exc:
+    raise SystemExit("读取 Mihomo 代理提供者失败：" + str(exc))
+
+names = [item.get("name", "") for item in proxies if isinstance(item, dict) and item.get("name")]
+if keyword:
+    names = [name for name in names if keyword in name.casefold()]
+if not names:
+    raise SystemExit("没有匹配的代理节点" if keyword else "Mihomo 代理提供者没有可测节点")
+
+query = urllib.parse.urlencode({"url": test_url, "timeout": str(timeout_ms)})
+def probe(name):
+    url = (base + "/providers/proxies/" + urllib.parse.quote(provider, safe="") + "/"
+           + urllib.parse.quote(name, safe="") + "/healthcheck?" + query)
+    try:
+        result = get_json(url, timeout_ms / 1000 + 5)
+        delay = result.get("delay")
+        if not isinstance(delay, (int, float)) or delay <= 0:
+            return (None, name, "无有效延时")
+        return (delay, name, "")
+    except urllib.error.HTTPError as exc:
+        detail = "超时" if exc.code == 504 else "HTTP " + str(exc.code)
+        return (None, name, detail)
+    except Exception as exc:
+        return (None, name, str(exc))
+
+print("测速目标：" + test_url)
+print("代理提供者：" + provider + "；节点数：" + str(len(names)) + "；并发：" + str(workers))
+with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+    results = list(pool.map(probe, names))
+results.sort(key=lambda row: (row[0] is None, row[0] or 0, row[1].casefold()))
+ok = sum(row[0] is not None for row in results)
+print("测速完成：" + str(ok) + "/" + str(len(results)) + " 成功；当前选择未更改")
+for delay, name, error in results:
+    if delay is None:
+        print("  -- ms  " + name + "  [" + error + "]")
+    else:
+        print("  %4d ms  %s" % (delay, name))
+PY
     ;;
   auto)
     curl -s -X PUT "$API" -H "Content-Type: application/json" -d "{\"name\":\"auto\"}"
@@ -235,6 +309,6 @@ chmod +x "$MIHOMO_DIR/switch.sh"
 
 echo
 echo "===================== 全部完成 ====================="
-echo "  节点查看/切换: $MIHOMO_DIR/switch.sh list | auto | <关键字>"
+echo "  节点查看/测速/切换: $MIHOMO_DIR/switch.sh list | latency [关键字] | auto | <关键字>"
 echo "  mihomo 控制台（仅本机）: http://127.0.0.1:9090"
 echo "  重跑本脚本即可幂等更新（订阅/配置/服务/接入全检查）"
