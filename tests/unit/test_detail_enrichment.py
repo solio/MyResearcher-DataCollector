@@ -12,6 +12,11 @@ from myresearcher_collector.sources.eastmoney_guba.acquisition import AcquiredDo
 from myresearcher_collector.sources.eastmoney_guba.content_rules import list_title_metadata
 from myresearcher_collector.sources.eastmoney_guba.parser import SCHEMA_VERSION, SOURCE
 from myresearcher_collector.storage import RawEvidenceStore, SQLitePersistence
+from myresearcher_collector.detail_enrichment import (
+    SKIP_REASON_NOT_FOUND,
+    _SkipLedger,
+    _skip_ledger_path,
+)
 
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "eastmoney_guba"
@@ -480,3 +485,52 @@ def test_run_log_path_is_required_so_a_caller_cannot_hit_the_production_ledger(t
             db_path=tmp_path / "collector.db", stock_code="601012", transport=T()
         )
     assert "log_path" in str(excinfo.value)
+
+
+def _ledger(tmp_path):
+    return _SkipLedger(_skip_ledger_path(tmp_path / "collector.db"))
+
+
+def test_deleted_post_is_retired_on_first_sighting(tmp_path):
+    """A 404 is permanent: one sighting is enough."""
+    ledger = _ledger(tmp_path)
+    ledger.record(source="eastmoney_guba", source_item_id="gone", stock_code="601012",
+                  reason=SKIP_REASON_NOT_FOUND, observed_at=datetime(2026, 10, 16, tzinfo=timezone.utc))
+    assert "gone" in ledger.skipped_ids("eastmoney_guba", 5)
+
+
+def test_a_single_failure_is_still_retried(tmp_path):
+    """REGRESSION 2026-10-16: a post that always failed to parse was re-fetched on
+    every run (67 attempts for one id, 38 for another). A transient bad page must
+    still get its retries, so one failure is not enough to retire it."""
+    ledger = _ledger(tmp_path)
+    ledger.record(source="eastmoney_guba", source_item_id="flaky", stock_code="601012",
+                  reason="detail_parse_failure", observed_at=datetime(2026, 10, 16, tzinfo=timezone.utc))
+    assert "flaky" not in ledger.skipped_ids("eastmoney_guba", 5)
+
+
+def test_failures_are_retired_once_they_hit_the_cap(tmp_path):
+    ledger = _ledger(tmp_path)
+    for _ in range(5):
+        ledger.record(source="eastmoney_guba", source_item_id="broken", stock_code="601012",
+                      reason="detail_parse_failure", observed_at=datetime(2026, 10, 16, tzinfo=timezone.utc))
+    assert "broken" in ledger.skipped_ids("eastmoney_guba", 5)
+    # ...and the cap is what decides, not the reason.
+    assert "broken" not in ledger.skipped_ids("eastmoney_guba", 99)
+
+
+def test_session_level_failures_cannot_retire_a_post(tmp_path):
+    """REGRESSION 2026-10-16: an access_block is about the SESSION, not the post.
+    Counting it would drop innocent posts after a few bad nights."""
+    from myresearcher_collector.detail_enrichment import is_post_level_failure
+
+    # Session-level: a block, a challenge, a dropped connection, a broken browser.
+    assert not is_post_level_failure("access_block")
+    assert not is_post_level_failure("challenge")
+    assert not is_post_level_failure("ExistingChromeAcquisitionError: could not attach")
+    assert not is_post_level_failure("ReadTimeout: timed out")
+    # Post-level: the parser/schema said something about THIS post.
+    assert is_post_level_failure("detail_parse_failure")
+    assert is_post_level_failure("parse_failure")
+    assert is_post_level_failure("detail_schema_mismatch")
+    assert is_post_level_failure(SKIP_REASON_NOT_FOUND)

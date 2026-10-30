@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import sqlite3
 import sys
@@ -141,6 +142,30 @@ def _table_names(db_path: Path) -> set[str]:
 
 SKIP_LEDGER_TABLE = "detail_enrichment_skips"
 SKIP_REASON_NOT_FOUND = "detail_not_found"
+# How many times an unexplained failure (parse/fetch) may be retried before the
+# post is treated as permanently un-fetchable. `detail_not_found` does not need
+# this -- a deleted post stays deleted, so it is skipped on the first sighting.
+# Without a cap, a post that never parses stays a candidate forever and is
+# re-fetched every run: on 2026-10-16 two posts had 67 and 38 attempts.
+FAILURE_RETRY_CAP = max(1, int(os.environ.get("MYRESEARCHER_ENRICH_FAILURE_CAP", "5")))
+# Only a failure that is ABOUT this post may retire it. A block, a challenge or
+# a dropped connection is about the SESSION: counting those would drop innocent
+# posts after a few bad nights (2026-10-16: two posts were one cap away from
+# being retired purely for access_block).
+# Matched as substrings, case-insensitively, against whatever reason came back:
+# a session-level reason forfeits a post only when the SESSION was at fault. A
+# deny-list rather than an allow-list because the post-level reason space is open
+# (a parser raises its own message) while session-level ones are recognisable.
+SESSION_LEVEL_FAILURE_MARKERS = (
+    "access", "block", "challenge", "verify", "captcha",
+    "timeout", "timed out", "connection", "connect", "chrome", "proxy", "tls",
+)
+
+
+def is_post_level_failure(reason: str) -> bool:
+    """True when the failure is about the post itself, not about the session."""
+    low = (reason or "").lower()
+    return not any(marker in low for marker in SESSION_LEVEL_FAILURE_MARKERS)
 _SKIP_LEDGER_SUFFIX = ".detail_enrichment_skips.db"
 
 
@@ -182,13 +207,20 @@ class _SkipLedger:
         conn.commit()
         return conn
 
-    def skipped_ids(self, source: str) -> set[str]:
+    def skipped_ids(self, source: str, attempt_cap: int = FAILURE_RETRY_CAP) -> set[str]:
+        """Ids that must not be retried.
+
+        A deleted post is permanent on first sighting. Any other recorded reason is
+        a FAILURE COUNT: the id is only retired once it has failed `attempt_cap`
+        times, so a transient bad page still gets its retries.
+        """
         try:
             conn = self._connect()
             try:
                 rows = conn.execute(
-                    f"SELECT source_item_id FROM {SKIP_LEDGER_TABLE} WHERE source=?",
-                    (source,),
+                    f"SELECT source_item_id FROM {SKIP_LEDGER_TABLE}"
+                    " WHERE source=? AND (reason=? OR attempts>=?)",
+                    (source, SKIP_REASON_NOT_FOUND, attempt_cap),
                 ).fetchall()
             finally:
                 conn.close()
@@ -451,7 +483,7 @@ def execute_detail_enrichment(
         )
 
     skip_ledger = _SkipLedger(_skip_ledger_path(path))
-    known_missing = skip_ledger.skipped_ids(SOURCE)
+    known_missing = skip_ledger.skipped_ids(SOURCE, FAILURE_RETRY_CAP)
 
     persistence: SQLitePersistence | None = None
     legacy_store: SimplePostStore | None = None
@@ -902,7 +934,11 @@ def execute_detail_enrichment(
                 failures.append(
                     {"source_item_id": candidate.source_item_id, "reason": reason}
                 )
-                if reason == SKIP_REASON_NOT_FOUND:
+                # Post-level failures are counted so the cap can retire a post that
+                # never parses (before this, only 404s were recorded and such a post
+                # was re-fetched on every run forever). Session-level failures -- a
+                # block, a challenge, a dropped connection -- are NOT counted.
+                if is_post_level_failure(reason):
                     skip_ledger.record(
                         source=SOURCE,
                         source_item_id=candidate.source_item_id,
@@ -910,6 +946,7 @@ def execute_detail_enrichment(
                         reason=reason,
                         observed_at=_utc_now(clock),
                     )
+                if reason == SKIP_REASON_NOT_FOUND:
                     skipped_not_found += 1
                 if candidate.canonical_item is not None and persistence is not None:
                     counters.details_failed += 1
@@ -943,7 +980,7 @@ def execute_detail_enrichment(
                 counters=counters,
             )
 
-        refreshed_skips = skip_ledger.skipped_ids(SOURCE)
+        refreshed_skips = skip_ledger.skipped_ids(SOURCE, FAILURE_RETRY_CAP)
         if canonical:
             remaining = len(
                 _canonical_candidates(
