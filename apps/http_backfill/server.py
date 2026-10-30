@@ -47,6 +47,50 @@ class ConsoleServer(ThreadingHTTPServer):
         self.session_lock = threading.Lock()
         self.cookie_path = cookie_path
         self.fleet = fleet
+        # /api/status parses JSON per row and takes seconds on a large ledger. The hub polls it
+        # as a heartbeat, so a slow answer looks like an offline node. Serve the last snapshot
+        # and refresh it in the background instead of making every caller wait.
+        self._status_cache = None
+        self._status_at = 0.0
+        self._status_lock = threading.Lock()
+        self._status_refreshing = False
+        self.status_ttl = max(1.0, float(os.environ.get("BACKFILL_STATUS_TTL") or 30))
+        # Warm the snapshot in the background so even the first caller after a restart does not
+        # pay for the aggregation.
+        threading.Thread(target=self._warm_status, daemon=True).start()
+
+    def _warm_status(self):
+        time.sleep(1.0)
+        with self._status_lock:
+            if self._status_refreshing:
+                return
+            self._status_refreshing = True
+        self._refresh_status()
+
+    def status_snapshot(self):
+        with self._status_lock:
+            fresh = self._status_cache is not None and time.time() - self._status_at <= self.status_ttl
+            if fresh:
+                return self._status_cache
+            stale = self._status_cache
+            if not self._status_refreshing:
+                self._status_refreshing = True
+                threading.Thread(target=self._refresh_status, daemon=True).start()
+        if stale is None:
+            return self.engine.status()
+        return stale
+
+    def _refresh_status(self):
+        try:
+            payload = self.engine.status()
+        except Exception as exc:
+            print(f"Status snapshot failed: {type(exc).__name__}", flush=True)
+            payload = None
+        with self._status_lock:
+            if payload is not None:
+                self._status_cache = payload
+                self._status_at = time.time()
+            self._status_refreshing = False
 
     def token_valid(self, value):
         return isinstance(value, str) and secrets.compare_digest(
@@ -311,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1 <= limit <= 1000 or offset < 0:
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
-                    return self.send(200, self.server.engine.status())
+                    return self.send(200, self.server.status_snapshot())
                 if path == "api/mihomo/nodes":
                     import mihomo_control
                     return self.send(200, mihomo_control.nodes())

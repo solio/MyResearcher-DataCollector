@@ -468,9 +468,10 @@ class FleetManager:
         if query:
             url += "?" + urlencode(query, doseq=True)
         try:
-            # Node-side mihomo latency sweeps take tens of seconds; keep the
-            # ordinary short budget for every other call.
-            wait = 120 if path.startswith("api/mihomo/") else None
+            # Node-side mihomo latency sweeps take tens of seconds, and a busy node's status
+            # snapshot can take several seconds on a multi-gigabyte ledger; the ordinary 3 s
+            # budget made such a node look offline between polls.
+            wait = 120 if path.startswith("api/mihomo/") else 15 if path == "api/status" else None
             result = self.client.request(method, url, node["token"], body, timeout=wait)
             return self._redact(result, (node["token"],))
         except FleetError as exc:
