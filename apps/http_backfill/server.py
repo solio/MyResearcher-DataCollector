@@ -80,6 +80,12 @@ class ConsoleServer(ThreadingHTTPServer):
             return self.engine.status()
         return stale
 
+    def remember_status(self, payload):
+        """A mutation just produced a fresh snapshot; keep it so the next poll agrees."""
+        with self._status_lock:
+            self._status_cache = payload
+            self._status_at = time.time()
+
     def _refresh_status(self):
         try:
             payload = self.engine.status()
@@ -355,6 +361,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1 <= limit <= 1000 or offset < 0:
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
+                    if "fresh" in query:
+                        payload = self.server.engine.status()
+                        self.server.remember_status(payload)
+                        return self.send(200, payload)
                     return self.send(200, self.server.status_snapshot())
                 if path == "api/mihomo/nodes":
                     import mihomo_control
@@ -445,7 +455,9 @@ class Handler(BaseHTTPRequestHandler):
                 getattr(self.server.engine, action)()
             else:
                 return self.send(404, {"error": "接口不存在"})
-            return self.send(200, self.server.engine.status())
+            payload = self.server.engine.status()
+            self.server.remember_status(payload)
+            return self.send(200, payload)
         except ValueError as exc:
             self.send(400, _error_payload(exc))
         except RuntimeError as exc:
@@ -470,7 +482,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "接口不存在"})
         try:
             self.server.engine.update_job(self.read_json())
-            self.send(200, self.server.engine.status())
+            payload = self.server.engine.status()
+            self.server.remember_status(payload)
+            self.send(200, payload)
         except ValueError as exc:
             self.send(400, _error_payload(exc))
         except RuntimeError as exc:
@@ -496,7 +510,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.engine.delete_job()
                 else:
                     self.server.engine.remove_stock(path[len("api/jobs/current/stocks/"):])
-                return self.send(200, self.server.engine.status())
+                payload = self.server.engine.status()
+                self.server.remember_status(payload)
+                return self.send(200, payload)
             except ValueError as exc:
                 return self.send(400, _error_payload(exc))
             except RuntimeError as exc:
