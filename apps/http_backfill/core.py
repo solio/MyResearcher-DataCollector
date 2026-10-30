@@ -435,6 +435,14 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 if self._get("job_id") and self._get("state") != "completed":
                     self._mark_recovery_needed("process_restart")
         self.compatible_store = CompatibleDataStore(self.data_dir, self._get("instance_id"))
+        # Mark the process as running before the startup pass, so a crash during it still forces
+        # a full verification next time. Committed on its own: if the process dies mid-sync the
+        # flag must stay 0 rather than roll back with the interrupted transaction.
+        with self.db:
+            # Remember whether the previous process closed cleanly before overwriting the flag:
+            # the startup pass itself must read the old value, not the one we just wrote.
+            self._set_global("storage_sync_clean", self._get_global("clean_shutdown") == 1)
+            self._set_global("clean_shutdown", 0)
         self._sync_storage()
         from task_proxy import TaskProxyRoutes
         self.task_proxies = TaskProxyRoutes(self.data_dir, self.proxy, clock=self.clock)
@@ -2946,6 +2954,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     self._set("reason", "进程关闭后安全暂停，等待继续")
                 self._end_segment("process_closed")
                 self._set("probe", False)
+            self._set_global("clean_shutdown", 1)
             self.db.close()
             fcntl.flock(self._lock_file, fcntl.LOCK_UN)
             self._lock_file.close()

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -499,8 +500,20 @@ class CompatibleDataStore:
                 raise CompatibleStorageError(f"兼容数据库初始化失败: {type(exc).__name__}: {exc}") from exc
             self._raw_cache.clear()
             self._list_cache.clear()
+            watermark = 0
             if request_id is None:
-                query, args = "SELECT * FROM http_posts ORDER BY rowid", ()
+                # A startup pass used to walk every post. That is only needed when the previous
+                # process did not shut down cleanly (or a storage halt is being repaired); a
+                # clean restart resumes from the highest rowid already projected.
+                full = (os.environ.get("BACKFILL_FULL_SYNC_ON_START") == "1"
+                        or bool(engine._get_global("storage_halt"))
+                        or not engine._get_global("storage_sync_clean"))
+                if full:
+                    query, args = "SELECT * FROM http_posts ORDER BY rowid", ()
+                else:
+                    watermark = int(engine._get_global("storage_sync_rowid") or 0)
+                    query = "SELECT * FROM http_posts WHERE rowid > ? ORDER BY rowid"
+                    args = (watermark,)
             else:
                 if isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 1:
                     raise ValueError("request_id 必须为正整数")
@@ -517,10 +530,14 @@ class CompatibleDataStore:
             try:
                 # Shared connection commits original posts, provenance and
                 # immutable export sequence as one transaction.
+                highest = watermark
                 with self._borrowed_store(engine, self.db_path) as store, engine.db, store.transaction():
                     for post in engine.db.execute(query, args):
                         processed += 1
+                        highest = max(highest, int(post["rowid"] or 0))
                         projected += int(self._project_post(engine, store, post, request_id))
+                if request_id is None:
+                    engine._set_global("storage_sync_rowid", highest)
                 return {"storage_version": VERSION, "db_path": str(self.db_path),
                         "processed": processed, "projected": projected,
                         "body_provenance_table": "collector.db:compatible_posts", "storage_layout": LAYOUT,

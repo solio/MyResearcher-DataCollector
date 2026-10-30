@@ -2310,3 +2310,23 @@ Verified on 2026-10-30 against node 02: the console path
 15 ms with 15 measured nodes, and `update-node.sh --skip-build --skip-sweep`
 reports the same. The browser-side rendering is unchanged in shape, so an old
 console build still lists these nodes; only the async polling needs the new UI.
+
+### Startup storage check is incremental (2026-10-30)
+
+The startup pass in `compatible_store.sync()` used to read every row of
+`http_posts` on each container start. On the main console (2.9 GB database) that
+cost about five minutes of CPU and 1.8 GB of reads for a code-only redeploy.
+
+It now resumes from `meta.storage_sync_rowid`, the highest rowid already
+projected. A full pass still runs when the previous process did not close
+cleanly (`storage_sync_clean` is false), when `storage_halt` is set, or when
+`BACKFILL_FULL_SYNC_ON_START=1` is exported. `Engine.close()` records
+`clean_shutdown=1`; `__init__` copies that into `storage_sync_clean` before
+clearing it, so the startup pass reads the previous process's verdict rather than
+the flag it just wrote.
+
+Measured on the main console: 4 m 51 s -> 26.7 s for build + restart + node
+sweep, with `storage_sync_rowid=115320`, `storage_sync_clean=true`. Node 02
+followed the same path. `deploy/update-node.sh` seeds the watermark (from
+`max(rowid)`) and `clean_shutdown=1` when the service is healthy before
+rebuilding, so the first start with this code does not pay for a full pass.

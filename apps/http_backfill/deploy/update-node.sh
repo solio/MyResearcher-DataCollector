@@ -64,6 +64,22 @@ if [ "$missing" != "0" ]; then
 fi
 echo "  OK"
 
+if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && [ -f "$DB" ]; then
+  echo "  服务在运行：预置同步水位，升级后首次启动不再全量核对"
+  python3 - "$DB" <<'PY'
+import sqlite3
+import sys
+
+db = sqlite3.connect(sys.argv[1])
+highest = db.execute("select coalesce(max(rowid),0) from http_posts").fetchone()[0]
+db.execute("insert into meta values('storage_sync_rowid',?) on conflict(key) do update set value=excluded.value",
+           (str(highest),))
+db.execute("insert into meta values('clean_shutdown','1') on conflict(key) do update set value=excluded.value")
+db.commit()
+print("  水位:", highest)
+PY
+fi
+
 echo "== 2/5 switch.sh 写入缓存 =="
 if [ ! -x /opt/mihomo/switch.sh ]; then
   echo "  跳过：找不到 /opt/mihomo/switch.sh"
