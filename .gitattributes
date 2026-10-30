@@ -1,0 +1,4 @@
+# Windows checkouts must get LF shell scripts: bash cannot parse CRLF
+# (a trailing CR glues onto tokens like `}` / `then` and breaks parsing).
+# Index content stays LF; the eol attribute only fixes the working tree.
+*.sh text eol=lf

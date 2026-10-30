@@ -95,13 +95,27 @@ if [ "$SKIP_BUILD" = "1" ]; then
 else
   cd "$APP"
   if docker compose version >/dev/null 2>&1; then
-    docker compose build collector-console
-    docker compose up -d collector-console
+    compose() { docker compose "$@"; }
   else
-    docker-compose build collector-console
-    docker-compose up -d collector-console
+    compose() { docker-compose "$@"; }
   fi
+  compose build collector-console
+  # Recreate unconditionally: a compose file without an image tag lets "up -d" keep the old
+  # container while the freshly built image sits unused.
+  compose up -d --force-recreate --no-deps collector-console
 fi
+
+echo "== 3.5/5 校验容器里跑的是新代码 =="
+CID=$(cd "$APP" && { docker compose ps -q collector-console 2>/dev/null || docker-compose ps -q collector-console 2>/dev/null; })
+if [ -z "$CID" ]; then
+  echo "  容器没有跑起来"
+  exit 1
+fi
+if ! docker exec "$CID" grep -q MIHOMO_CACHE_FILE /opt/collector/apps/http_backfill/mihomo_control.py 2>/dev/null; then
+  echo "  容器内仍是旧代码（镜像没换），脚本终止"
+  exit 1
+fi
+echo "  OK：容器内已是缓存版"
 
 echo "== 4/5 等待接口就绪 =="
 # A rebuilt container may run database migrations on first start; on a multi-gigabyte
@@ -131,6 +145,13 @@ else
 fi
 
 echo "== 结果：控制台同一条接口 =="
+TOKEN_FILE="$APP/data/console.token"
+if [ -f "$TOKEN_FILE" ]; then
+  TOKEN_EARLY=$(cat "$TOKEN_FILE")
+  FIRST=$(curl -s -o /dev/null -w "%{time_total}" -H "Authorization: Bearer $TOKEN_EARLY" "http://127.0.0.1:$PORT/api/status" --max-time 30)
+  SECOND=$(curl -s -o /dev/null -w "%{time_total}" -H "Authorization: Bearer $TOKEN_EARLY" "http://127.0.0.1:$PORT/api/status" --max-time 30)
+  echo "  /api/status 耗时：首次 ${FIRST}s，再次 ${SECOND}s（缓存生效应 < 0.1s）"
+fi
 TOKEN_FILE="$APP/data/console.token"
 if [ ! -f "$TOKEN_FILE" ]; then
   echo "  找不到 $TOKEN_FILE，无法校验"
