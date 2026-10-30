@@ -27,8 +27,33 @@ if [ ! -d "$APP" ]; then
   exit 1
 fi
 
-echo "== 1/5 检查代码是否为缓存版 =="
-missing=0
+echo "== 0/5 预检：待执行的数据库迁移 =="
+DB="$APP/data/collector.db"
+if [ -f "$DB" ]; then
+  python3 - "$DB" <<'PY'
+import sqlite3
+import sys
+
+db = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+
+
+def get(key):
+    row = db.execute("select value from meta where key=?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+policy = get("content_policy_version")
+print("  content_policy_version:", policy if policy is not None else "缺失")
+if str(policy) != "3":
+    print("  !! 有待执行的迁移：首次启动会扫描 http_post_state，库大时要几分钟，期间接口不可用")
+else:
+    print("  没有待执行的策略迁移")
+PY
+else
+  echo "  没有 $DB（新库，无需迁移）"
+fi
+
+echo "== 1/5 检查代码是否为缓存版 =="missing=0
 grep -q MIHOMO_CACHE_FILE "$APP/mihomo_control.py" || { echo "  mihomo_control.py 还是旧版"; missing=1; }
 grep -q "api/mihomo/nodes/refresh" "$APP/server.py" || { echo "  server.py 缺少刷新路由"; missing=1; }
 grep -q "loadMihomoNodes(silent)" "$APP/static/app.js" || { echo "  app.js 还是旧版"; missing=1; }
