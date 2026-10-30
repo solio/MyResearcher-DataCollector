@@ -112,12 +112,18 @@ RUN_TAG=$(date -u +%Y%m%d)
 #   * backfill_coverage lists exactly these 16, but a newly added stock has no
 #     coverage row yet, so deriving from it can never bootstrap a new stock;
 #   * config/targets.short-term.json is internally inconsistent (38 codes in
+#     603129 / 002353 / 300124 / 600031 added 2026-10-12 by operator request: they
+#     were in the database (fed by the http_backfill federation) but absent from
+#     this roster, so no backfill ever covered them and their data stopped at
+#     2026-09-30 while the other 16 ran to the current day.
 #     `stocks`, 43 in `stock_names`; 002648 / 600312 / 603997 appear only in
 #     `stock_names`).
 # Picking the wrong source would silently drop a stock from collection, which is
 # worse than a literal list that currently matches reality. Until the registry
 # question is settled, coverage_drift_check() below fails loudly instead.
-all_stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997)
+all_stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997
+            603129 002353 300124 600031
+            601966)
 stocks=("${all_stocks[@]}")
 # STOCKS="300487 603806" runs an ad-hoc queue -- a second, disjoint one, or a
 # retry after a halt -- in whatever order it is given. The roster above stays

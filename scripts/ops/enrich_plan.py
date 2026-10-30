@@ -73,6 +73,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from myresearcher_collector.detail_enrichment import FAILURE_RETRY_CAP
+
 REPO = Path(__file__).resolve().parents[2]
 DB = REPO / "data" / "collector.db"
 LEDGER = REPO / "data" / "collector.detail_enrichment_skips.db"
@@ -82,6 +84,7 @@ MIN_TITLE_LEN = 40
 
 
 def _connect(db_path: Path | None = None) -> sqlite3.Connection:
+    # WAL 下别的进程在写时，立刻读会得到 database is locked；不设超时会把"读不到"误报成 0
     """Read-only connection with the skip ledger attached when it is readable.
 
     A broken/absent ledger degrades to "no exclusions" rather than failing the
@@ -91,6 +94,7 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     db_path = Path(db_path or DB).resolve()
     ledger = db_path.with_name(f"{db_path.stem}.detail_enrichment_skips.db") if db_path != DB.resolve() else LEDGER
     con = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True)
+    con.execute("PRAGMA busy_timeout=15000")
     if not ledger.exists():
         return con
     try:
@@ -115,8 +119,14 @@ def _exclusion(con: sqlite3.Connection) -> str:
         return ""
     return (
         " AND p.source_item_id NOT IN ("
-        "SELECT source_item_id FROM skips.detail_enrichment_skips"
-        f" WHERE source='{SOURCE}')"
+        # Same rule as the collector (detail_enrichment.skipped_ids): a deleted post
+        # is excluded at once, any other reason only once it has hit the cap. Before
+        # 2026-10-22 this excluded EVERY recorded id, so posts that had failed fewer
+        # than the cap were hidden from the plan while the collector still retried
+        # them -- the plan reported "0 pending" with retryable work left.
+        f"SELECT source_item_id FROM skips.detail_enrichment_skips"
+        f" WHERE source='{SOURCE}'"
+        f" AND (reason = 'detail_not_found' OR attempts >= {FAILURE_RETRY_CAP}))"
     )
 
 
