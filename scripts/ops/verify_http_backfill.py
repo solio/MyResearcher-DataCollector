@@ -20,7 +20,8 @@ import time
 
 REPO = Path(__file__).resolve().parents[2]
 PRIVATE = REPO / ".runtime/http-backfill-verification"
-ALIASES = {"36": "36.138.125.17", "43": "43.132.206.172"}
+ALIASES = {"36": "36.138.125.17", "43": "43.132.206.172",
+           "251": "8.148.251.114", "252": "8.148.252.117"}
 
 # Runs via SSH stdin. Credentials remain inside the node, never in its output.
 REMOTE_WORKER = r'''
@@ -118,7 +119,7 @@ def route(status, stock=None, job=None):
     result["signature"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
 
-def snapshot(status):
+def snapshot(status, *, allow_route_errors=False):
     job = status.get("job") or {}
     runtimes = status.get("stock_runtimes", []) + status.get("detached_stock_runtimes", [])
     targets = []
@@ -129,10 +130,18 @@ def snapshot(status):
         task = runtime.get("halt_task_id") or runtime.get("halted_task_id")
         if not evidence.get("id") or not task or not source_url(evidence.get("url")):
             raise RuntimeError("当前身份核验缺少原请求/任务/股吧网址证据，请在控制台处理")
-        targets.append({"job": runtime["job"], "stock": runtime["stock"], "task": task,
-                        "request_id": evidence["id"], "url": evidence["url"],
-                        "instance_id": status["instance_id"], "revision": job.get("revision"),
-                        "detached": bool(runtime.get("detached")), "route": route(status, runtime["stock"], runtime["job"])})
+        target = {"job": runtime["job"], "stock": runtime["stock"], "task": task,
+                  "request_id": evidence["id"], "url": evidence["url"],
+                  "instance_id": status["instance_id"], "revision": job.get("revision"),
+                  "detached": bool(runtime.get("detached"))}
+        try:
+            target["route"] = route(status, runtime["stock"], runtime["job"])
+        except RuntimeError as exc:
+            if not allow_route_errors:
+                raise
+            target["route"] = None
+            target["route_error"] = str(exc)
+        targets.append(target)
     barrier = status.get("node_source_auth_barrier") or {}
     return {"state": status.get("state"), "instance_id": status.get("instance_id"),
             "revision": job.get("revision"), "barrier_request_id": barrier.get("request_id"),
@@ -155,8 +164,8 @@ def unchanged(view, expected):
 def execute(payload):
     data, base = locate()
     status = api(base, data)
-    view = snapshot(status)
     action = payload["action"]
+    view = snapshot(status, allow_route_errors=action == "audit")
     if action == "audit":
         return view
     if action == "exit":
@@ -253,6 +262,18 @@ def node_config(value):
         if not Path(node["identity_file"]).is_file():
             raise RuntimeError("对应 SSH key 文件不存在")
     return node
+
+
+def configured_node_choices():
+    try:
+        nodes = json.loads((PRIVATE / "nodes.json").read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(nodes, dict):
+        return []
+    choices = [(alias, f"{alias} ({host})") for alias, host in ALIASES.items() if host in nodes]
+    choices.extend((host, host) for host in sorted(nodes))
+    return choices
 
 
 def ssh_args(node):
@@ -452,6 +473,8 @@ def run(node, args):
         return 0
     target = choose_target(view, args.stock)
     if args.check_exit:
+        if target and target.get("route_error"):
+            raise RuntimeError(target["route_error"])
         try:
             browser_session(node, {"target": target}, check_exit=True)
         finally:
@@ -460,6 +483,8 @@ def run(node, args):
     if target is None:
         print("该节点目前没有验证码/身份核验阻断，无需开启验证浏览器。")
         return 0
+    if target.get("route_error"):
+        raise RuntimeError(target["route_error"])
     print(f"{node['host']} · {target['stock']} · 原阻断请求 #{target['request_id']}", flush=True)
     remote(node, "prepare", target=target)
     try:
@@ -493,7 +518,7 @@ def run(node, args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("node", nargs="?", help="36、43 或已配置的服务器 IP")
+    parser.add_argument("node", nargs="?", help="36、43、251、252 或已配置的服务器 IP")
     parser.add_argument("--stock", help="指定验证股票；默认自动选择当前阻断任务")
     parser.add_argument("--resume", action="store_true", help="探测通过后继续该股票")
     checks = parser.add_mutually_exclusive_group()
@@ -507,8 +532,14 @@ def main(argv=None):
         parser.error("--probe-wait 必须为正整数")
     if not args.node:
         if not sys.stdin.isatty():
-            parser.error("请指定节点36或43")
-        args.node = input("选择验证节点：36 或 43：").strip()
+            parser.error("请指定节点36、43、251、252或已配置的服务器 IP")
+        choices = configured_node_choices()
+        if choices:
+            print("已配置节点：")
+            for _, label in choices:
+                print("  " + label)
+            print("也可输入任一已配置节点的完整 IP。")
+        args.node = input("选择验证节点别名或 IP：").strip()
     try:
         return run(node_config(args.node), args)
     except (KeyboardInterrupt, EOFError):

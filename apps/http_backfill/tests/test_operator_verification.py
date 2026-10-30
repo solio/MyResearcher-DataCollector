@@ -49,9 +49,31 @@ class VerificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             directory.joinpath("nodes.json").write_text(json.dumps({
-                "36.138.125.17": {"user": "root", "port": 22}}))
+                "36.138.125.17": {"user": "root", "port": 22},
+                "8.148.251.114": {"user": "root", "port": 22},
+                "8.148.252.117": {"user": "root", "port": 22}}))
             with patch.object(helper, "PRIVATE", directory):
                 self.assertEqual(helper.node_config("36"), helper.node_config("36.138.125.17"))
+                self.assertEqual(helper.node_config("251"), helper.node_config("8.148.251.114"))
+                self.assertEqual(helper.node_config("252"), helper.node_config("8.148.252.117"))
+                choices = helper.configured_node_choices()
+                labels = [label for _, label in choices]
+                self.assertIn("251 (8.148.251.114)", labels)
+                self.assertIn("252 (8.148.252.117)", labels)
+                self.assertIn("8.148.251.114", labels)
+                self.assertIn("8.148.252.117", labels)
+
+    def test_read_only_audit_reports_halt_when_effective_route_is_missing(self):
+        w = worker()
+        def missing_route(*_args):
+            raise RuntimeError("当前任务没有 HTTP 代理")
+        w["route"] = missing_route
+        with self.assertRaisesRegex(RuntimeError, "没有 HTTP 代理"):
+            w["snapshot"](status())
+        view = w["snapshot"](status(), allow_route_errors=True)
+        self.assertEqual(view["targets"][0]["stock"], "002648")
+        self.assertIsNone(view["targets"][0]["route"])
+        self.assertIn("没有 HTTP 代理", view["targets"][0]["route_error"])
 
     def test_native_ssh_command_passes_json_stdin_without_interpolation(self):
         # Execute only a harmless stand-in, never the real worker/SSH/source.
