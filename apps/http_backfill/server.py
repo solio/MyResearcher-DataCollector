@@ -47,6 +47,7 @@ class ConsoleServer(ThreadingHTTPServer):
         self.session_lock = threading.Lock()
         self.cookie_path = cookie_path
         self.fleet = fleet
+        engine.on_change = self.invalidate_status
         # /api/status parses JSON per row and takes seconds on a large ledger. The hub polls it
         # as a heartbeat, so a slow answer looks like an offline node. Serve the last snapshot
         # and refresh it in the background instead of making every caller wait.
@@ -79,6 +80,15 @@ class ConsoleServer(ThreadingHTTPServer):
         if stale is None:
             return self.engine.status()
         return stale
+
+    def invalidate_status(self):
+        """A request just changed state; rebuild the snapshot now, not after the TTL."""
+        with self._status_lock:
+            self._status_at = 0.0
+            if self._status_refreshing:
+                return
+            self._status_refreshing = True
+        threading.Thread(target=self._refresh_status, daemon=True).start()
 
     def remember_status(self, payload):
         """A mutation just produced a fresh snapshot; keep it so the next poll agrees."""

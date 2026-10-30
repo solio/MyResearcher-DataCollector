@@ -57,7 +57,9 @@ def locate():
         raise RuntimeError("未找到采集器运行目录")
     return data, "http://127.0.0.1:8790"
 
-def api(base, data, path="status", body=None):
+def api(base, data, path="status?fresh=1", body=None):
+    # The console heartbeat is served from a snapshot (up to 30 s old). Verification must never
+    # decide on a stale view, so every status read here asks the node to recompute.
     headers = {"Authorization": "Bearer " + (data / "console.token").read_text().strip(),
                "Content-Type": "application/json"}
     request = urllib.request.Request(base + "/api/" + path, headers=headers,

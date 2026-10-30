@@ -366,6 +366,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self._lock_file.close()
             raise RuntimeError("该实验目录已有运行中的 worker，不能启动第二个进程") from exc
         self._mutex = threading.RLock()
+        # Set by the HTTP layer: tells it the state may have changed so its snapshot is rebuilt
+        # before the next poll instead of waiting out the TTL.
+        self.on_change = None
         self._inflight = False
         self._inflight_stock = None
         self._inflight_probe = False
@@ -1798,6 +1801,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         with self._mutex:
             try:
                 self._record_response(rid, task, response, config, probe, probe_only)
+                self._notify_change()
                 try:
                     outcome = self.db.execute("SELECT outcome FROM requests WHERE id=?", (rid,)).fetchone()[0]
                     manager.observe(response, outcome, self._get("next_due", 0))
@@ -1875,6 +1879,15 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return task
         self._begin_recovery(task["job"], task["stock"], frontier, "list_delay_recheck", force_first=True)
         return self._target()
+
+    def _notify_change(self):
+        callback = self.on_change
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            pass
 
     def _record_response(self, rid, task, response, config, probe, probe_only=False):
         if not isinstance(response.body, bytes):
