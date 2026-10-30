@@ -2293,3 +2293,20 @@ Node 02 was deployed and verified: cache 1.4 KB, `GET /api/mihomo/nodes` returne
 200 in 7 ms with the measured list. The remaining nodes still run the previous
 code. The same sweep also showed most provider entries failing with 503 or
 timeout, which is why the selected exit keeps drifting.
+
+### One-command node update
+
+`deploy/update-node.sh` performs the whole sequence on one node: verify the cached
+node-list code is present, patch `switch.sh`, rebuild and restart the collector
+container, warm the cache, then call the console's own endpoint. It refuses to run
+against an old checkout, so a half-updated node cannot look successful.
+
+`deploy/update-fleet.sh` runs it over ssh for the five known nodes (or the hosts
+given on the command line) and reports per-host success. Both accept
+`--skip-build` / `--skip-sweep`.
+
+Verified on 2026-10-30 against node 02: the console path
+`GET /api/nodes/02/mihomo/nodes` (issued from the main console) returns 200 in
+15 ms with 15 measured nodes, and `update-node.sh --skip-build --skip-sweep`
+reports the same. The browser-side rendering is unchanged in shape, so an old
+console build still lists these nodes; only the async polling needs the new UI.
