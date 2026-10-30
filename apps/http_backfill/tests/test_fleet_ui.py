@@ -16,6 +16,8 @@ class Element {
   append(...n){this.children.push(...n);}replaceChildren(...n){this.children=n;}
   setAttribute(k,v){this.attrs[k]=v;}getAttribute(k){return this.attrs[k];}
   addEventListener(k,f){(this.listeners[k]||=[]).push(f);}focus(){}scrollIntoView(){}
+  querySelectorAll(selector){const key=selector.match(/^\[data-(.+)\]$/)?.[1]?.replace(/-([a-z])/g,(_,s)=>s.toUpperCase());return key?descend(this).filter(n=>n.dataset[key]!==undefined):[];}
+  contains(node){return descend(this).includes(node);}
   showModal(){this.open=true;this.returnValue='';}close(v){if(v!==undefined)this.returnValue=v;this.open=false;for(const f of this.listeners.close||[])f({});}
   click(){if(this.download)downloads.push({filename:this.download,url:this.href});}remove(){this.removed=true;}
 }
@@ -55,8 +57,8 @@ async function fetch(url,opt={}){
     }else throw Error('Unexpected route '+name);
   }return response(data);
 }
-const instrumented=source.replace('throw err;', 'window.lastApiError=err; throw err;').replace(/\}\)\(\);\s*$/,`window.test={load(s){authenticated=true;online=true;renderStatus(s);},setFleet(d){fleetData=d;renderFleet(d);},api,poll,switchNode,requestSelection,loadActivity,post,openNodeForm,refreshFleet,fleetMutation,confirmNodeRemoval,markDirty,downloadPosts,get(){return{selectedNode,nodeEpoch,status,busy,authenticated,online,formDirty,pages:activityPages,fleetData};}};})();`);
-vm.runInNewContext(instrumented,{document,window,fetch,URL,Intl,Date,Promise,JSON,Number,String,Object,Array,Math,RegExp,Error,setInterval:()=>0,clearInterval(){},setTimeout:f=>f()});
+const instrumented=source.replace('throw err;', 'window.lastApiError=err; throw err;').replace(/\}\)\(\);\s*$/,`window.test={load(s){authenticated=true;online=true;renderStatus(s);},setFleet(d){fleetData=d;renderFleet(d);},api,poll,switchNode,requestSelection,loadActivity,post,openNodeForm,refreshFleet,fleetMutation,confirmNodeRemoval,markDirty,renderProxy,downloadPosts,get(){return{selectedNode,nodeEpoch,status,busy,authenticated,online,formDirty,pages:activityPages,fleetData};}};})();`);
+vm.runInNewContext(instrumented,{document,window,fetch,URL,Intl,Date,Promise,JSON,Number,String,Object,Array,Math,RegExp,Error,setInterval:()=>0,clearInterval(){},setTimeout:f=>f(),clearTimeout(){}});
 const tick=()=>new Promise(setImmediate);
 async function ready(){await tick();const t=window.test;t.load(statuses.local);t.setFleet(fleet);await t.poll();return t;}
 async function trigger(id,type,event={preventDefault(){}}){await Promise.all((ids[id].listeners[type]||[]).map(f=>f(event)));await tick();}
@@ -164,8 +166,28 @@ await t.api('session');await t.api('fleet');assert.strictEqual(calls.at(-2).name
     def test_dirty_switch_requires_discard_and_resets_draft(self):
         self.run_ui(r"""
 const t=await ready();ids.stocks.value='600519';t.markDirty();t.requestSelection('alpha');assert(ids['switch-node-dialog'].open);assert.strictEqual(t.get().selectedNode,'local');
+assert(ids['switch-node-description'].textContent.includes('未保存：任务配置'));
 ids['switch-node-dialog'].close('cancel');await tick();assert.strictEqual(t.get().selectedNode,'local');assert(t.get().formDirty);
 t.requestSelection('alpha');ids['switch-node-dialog'].close('confirm');await tick();await tick();assert.strictEqual(t.get().selectedNode,'alpha');assert.strictEqual(t.get().formDirty,false);assert.strictEqual(ids.stocks.value,'601012');assert(!calls.some(c=>c.method!=='GET'));
+""")
+
+    def test_restoring_saved_values_clears_dirty_switch_guard(self):
+        self.run_ui(r"""
+const t=await ready();
+ids.stocks.value='600519';await trigger('config-form','input');assert.strictEqual(t.get().formDirty,true);
+ids.stocks.value='601012';await trigger('config-form','input');assert.strictEqual(t.get().formDirty,false);assert.strictEqual(ids['config-state'].textContent,'已保存');
+t.requestSelection('alpha');await tick();await tick();assert(!ids['switch-node-dialog'].open);assert.strictEqual(t.get().selectedNode,'alpha');
+assert(!calls.some(c=>c.method!=='GET'));
+""")
+
+    def test_restoring_saved_proxy_values_clears_dirty_switch_guard(self):
+        self.run_ui(r"""
+const t=await ready();
+t.renderProxy({mode:'http',settings:{mode:'http',endpoint:'http://proxy.invalid:8080',auto_recover:false},has_auth:false,has_api_url:false});
+ids['proxy-endpoint'].value='http://proxy.invalid:8081';await trigger('proxy-form','input');assert(ids['proxy-config-state'].textContent.includes('尚未保存'));
+ids['proxy-endpoint'].value='http://proxy.invalid:8080';await trigger('proxy-form','input');assert.strictEqual(ids['proxy-config-state'].textContent,'已读取保存配置');
+t.requestSelection('alpha');await tick();await tick();assert(!ids['switch-node-dialog'].open);assert.strictEqual(t.get().selectedNode,'alpha');
+assert(!calls.some(c=>c.method!=='GET'));
 """)
 
     def test_tokens_are_write_only_omitted_when_unchanged_and_cleared(self):

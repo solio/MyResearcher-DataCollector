@@ -371,10 +371,49 @@
     $("merge-error").hidden = !errors.length; display("merge-error", errors.join("\n"));
     controls();
   }
+  function taskConfigDraftChanged() {
+    if (!formDirty) return false;
+    const saved = jobConfig();
+    if (!saved) return true;
+    const stocks = [...new Set($("stocks").value.trim().split(/[\s,，、;；]+/).filter(Boolean))];
+    const savedStocks = [...new Set((Array.isArray(saved.stocks) ? saved.stocks : []).map(String))];
+    return JSON.stringify(stocks) !== JSON.stringify(savedStocks)
+      || $("from-date").value !== String(saved.from_date || "")
+      || $("to-date").value !== String(saved.to_date || "")
+      || Number($("interval").value) !== Number(saved.interval_seconds ?? 60)
+      || $("client").value !== String(saved.client || "curl");
+  }
+  function proxyDraftChanged() {
+    if (!proxyDirty) return false;
+    if (!proxyState) return true;
+    const settings = objectValue(proxyState.settings), savedMode = first(settings, ["mode"], proxyState.mode || "direct");
+    const mode = $("proxy-mode").value;
+    if (mode !== savedMode) return true;
+    if ($("proxy-clear-auth").checked || $("proxy-username").value || $("proxy-password").value) return true;
+    if ($("proxy-clear-api").checked || $("proxy-api-url").value.trim()) return true;
+    if (mode === "http" && $("proxy-endpoint").value !== String(settings.endpoint || "")) return true;
+    if (dynamicProxyMode(mode)) {
+      for (const [id, field] of [["proxy-rotate-seconds", "rotate_seconds"], ["proxy-rotate-requests", "rotate_requests"], ["proxy-daily-limit", "daily_limit"], ["proxy-recovery-cooldown", "recovery_cooldown_seconds"], ["proxy-recovery-max", "recovery_max_attempts"]]) {
+        if ($(id).value !== (settings[field] == null ? "" : String(settings[field]))) return true;
+      }
+      if ($("proxy-auto-recover").checked !== (settings.auto_recover === true)) return true;
+    }
+    return false;
+  }
   function requestSelection(id) {
     $("selected-node").value = selectedNode;
     if (busy || id === selectedNode) return;
-    if (formDirty || proxyDirty || [...taskProxyDrafts.values(), ...startPageDrafts.values()].some((draft) => draft.dirty)) { pendingSelection = id; $("switch-node-dialog").showModal(); return; }
+    const dirty = [
+      ...(taskConfigDraftChanged() ? ["任务配置"] : []),
+      ...(proxyDraftChanged() ? ["节点代理"] : []),
+      ...[...taskProxyDrafts].filter(([, draft]) => draft.dirty).map(([key]) => `${key.split(":").at(-1)} 本股出口`),
+      ...[...startPageDrafts].filter(([, draft]) => draft.dirty).map(([key]) => `${key.split(":").at(-1)} 起始页`),
+    ];
+    if (dirty.length) {
+      pendingSelection = id;
+      display("switch-node-description", `未保存：${[...new Set(dirty)].join("、")}。切换会丢弃这些页面草稿，不会修改或暂停实例任务。`);
+      $("switch-node-dialog").showModal(); return;
+    }
     void switchNode(id);
   }
   async function switchNode(id, force = false) {
@@ -587,7 +626,7 @@
     if (existingPanels.has(key)) { row.append(existingPanels.get(key)); return; }
     let draft = taskProxyDrafts.get(key);
     if (!draft) { draft = { open: false, dirty: false }; taskProxyDrafts.set(key, draft); }
-    if (!draft.dirty) Object.assign(draft, { mode: settings.mode || "inherit", endpoint: settings.endpoint || "", outbound: settings.outbound || "", listen_address: settings.mode === "mihomo" ? settings.listen_address || proxy.suggested_listen_address || "127.0.0.1" : proxy.suggested_listen_address || settings.listen_address || "127.0.0.1", username: "", password: "", clear_auth: false });
+    if (!draft.dirty) Object.assign(draft, { mode: settings.mode || "inherit", endpoint: settings.endpoint || "", outbound: settings.outbound || "", listen_address: settings.mode === "mihomo" ? settings.listen_address || proxy.suggested_listen_address || "127.0.0.1" : proxy.suggested_listen_address || settings.listen_address || "127.0.0.1", username: "", password: "", clear_auth: false, saved: { mode: settings.mode || "inherit", endpoint: settings.endpoint || "", outbound: settings.outbound || "", listen_address: settings.mode === "mihomo" ? settings.listen_address || proxy.suggested_listen_address || "127.0.0.1" : proxy.suggested_listen_address || settings.listen_address || "127.0.0.1" } });
     const details = el("details", "task-proxy-panel"); details.open = draft.open; details.dataset.taskProxyKey = key;
     const modeLabels = { inherit: "继承节点", direct: "直连", http: "HTTP 代理", mihomo: "Mihomo 独立入口" };
     details.append(el("summary", "task-proxy-summary", `本股出口 · ${modeLabels[settings.mode] || "继承节点"}${settings.outbound ? " · " + settings.outbound : ""}`));
@@ -627,14 +666,22 @@
     const error = el("p", "page-error"); error.hidden = true; error.setAttribute("role", "status"); form.append(error);
     const showMode = () => { httpFields.hidden = !["http", "mihomo"].includes(mode.value); mihomoFields.hidden = mode.value !== "mihomo"; authFields.hidden = mode.value !== "http"; user.control.disabled = password.control.disabled = clear.control.checked; };
     showMode();
-    form.addEventListener("input", () => { for (const field of [mode, address.control, outbound.control, listen.control, user.control, password.control, clear.control]) draft[field.name] = field.type === "checkbox" ? field.checked : field.value; draft.dirty = true; reset.hidden = false; error.hidden = true; showMode(); });
+    const updateDraft = () => {
+      for (const field of [mode, address.control, outbound.control, listen.control, user.control, password.control, clear.control]) draft[field.name] = field.type === "checkbox" ? field.checked : field.value;
+      const saved = draft.saved || {};
+      draft.dirty = draft.mode !== saved.mode
+        || (["http", "mihomo"].includes(draft.mode) && draft.endpoint !== saved.endpoint)
+        || (draft.mode === "mihomo" && (draft.outbound !== saved.outbound || draft.listen_address !== saved.listen_address))
+        || (draft.mode === "http" && (draft.clear_auth || !!draft.username || !!draft.password));
+      reset.hidden = !draft.dirty; error.hidden = true; showMode();
+    };
+    form.addEventListener("input", updateDraft);
     mode.addEventListener("change", () => {
       if (mode.value === "mihomo") {
         if (!address.control.value.trim()) address.control.value = suggestedEndpoint;
         if (!listen.control.value.trim()) listen.control.value = proxy.suggested_listen_address || "127.0.0.1";
       }
-      Object.assign(draft, { mode: mode.value, endpoint: address.control.value, listen_address: listen.control.value, dirty: true });
-      reset.hidden = false; showMode();
+      updateDraft();
     });
     reset.addEventListener("click", () => { taskProxyDrafts.delete(key); renderCoverage(status, jobConfig()); controls(); });
     form.addEventListener("submit", async (event) => {
@@ -652,7 +699,12 @@
         } else if (payload.mode === "http") { if (user.control.value) payload.username = user.control.value; if (password.control.value) payload.password = password.control.value; if (clear.control.checked) payload.clear_auth = true; }
         const saved = await saveStockProxy(String(stock), runtime?.job, payload);
         draft.username = draft.password = ""; user.control.value = password.control.value = "";
-        if (saved) { draft.dirty = false; draft.open = true; }
+        if (saved) {
+          draft.dirty = false; draft.open = true;
+          draft.saved = { mode: payload.mode, endpoint: payload.endpoint || "", outbound: payload.outbound || "", listen_address: payload.listen_address || draft.listen_address };
+          Object.assign(draft, { mode: draft.saved.mode, endpoint: draft.saved.endpoint, outbound: draft.saved.outbound, listen_address: draft.saved.listen_address, clear_auth: false });
+          reset.hidden = true;
+        }
         renderCoverage(status, jobConfig()); controls();
       } catch (err) { error.textContent = safeProxyMessage(err.message, [user.control.value, password.control.value]); error.hidden = false; }
     });
@@ -664,11 +716,11 @@
     if (!draft) {
       const current = first(runtime, ["current", "current_target", "target"]), seek = windowSeekInfo(status, stock, item);
       const page = current?.kind === "list" ? current.page : seek?.manual_start_page || seek?.start_page || 1;
-      draft = { open: false, page: String(page || 1), dirty: false }; startPageDrafts.set(key, draft);
+      draft = { open: false, page: String(page || 1), savedPage: String(page || 1), dirty: false }; startPageDrafts.set(key, draft);
     }
     if (!draft.open && !draft.dirty) {
       const current = first(runtime, ["current", "current_target", "target"]), seek = windowSeekInfo(status, stock, item);
-      draft.page = String((current?.kind === "list" ? current.page : seek?.manual_start_page || seek?.start_page) || 1);
+      draft.page = draft.savedPage = String((current?.kind === "list" ? current.page : seek?.manual_start_page || seek?.start_page) || 1);
     }
     const button = el("button", "button secondary small stock-control", "设置起始页"); button.type = "button";
     button.dataset.startPageStock = String(stock); button.dataset.stockJob = String(runtime.job); button.setAttribute("aria-expanded", String(draft.open));
@@ -685,7 +737,7 @@
     const save = el("button", "button secondary small", "暂停本股并保存"), cancel = el("button", "button quiet small", "关闭"); save.type = "submit"; cancel.type = "button";
     const actions = el("div", "start-page-actions"); actions.append(input, save, cancel); fields.append(label, actions); form.append(fields, hintLine("field-note compact-fact", "保存后暂停 · 上界未核实", `${key}:start-page`, "只设置本股顺序采集入口，其他股票继续。保存后点击本股“采集”才请求该页；手动跳页不表示此前页面已采集，也不证明窗口上界完整。"));
     const error = el("p", "page-error"); error.hidden = true; error.setAttribute("role", "status"); form.append(error);
-    input.addEventListener("input", () => { draft.page = input.value; draft.dirty = true; error.hidden = true; });
+    input.addEventListener("input", () => { draft.page = input.value; draft.dirty = draft.page !== draft.savedPage; error.hidden = true; });
     form.addEventListener("submit", async (event) => {
       event.preventDefault(); if (fields.disabled) return;
       const text = input.value.trim(), page = Number(text);
@@ -1332,6 +1384,7 @@
   const recoveryPhases = { pending: "等待校准", scheduled: "等待校准", verify_frontier: "检查末次前进页", seek: "定位 ID 与时间区间", anchor: "检查原始源页码", probe: "检查原始源页码", backtrack: "向前校准", scan: "回扫局部区间", scanning: "回扫局部区间", verify: "核对发现项", reconciling: "核对发现项", complete: "本轮校准结束", completed: "本轮校准结束", done: "本轮校准结束", paused: "校准已暂停", blocked: "校准被拦截", error: "校准异常", idle: "尚未校准" };
   const recoveryReasons = { process_restart: "进程重启后检查列表位置", manual_resume: "暂停恢复后检查列表位置", config_updated: "配置修改后重新核对列表位置", config_changed: "配置修改后重新核对列表位置", details_completed_recheck: "详情取得后检查列表位置", list_delay_recheck: "距上次列表已达校准间隔", periodic_recheck: "定期检查列表位置", forward_no_progress: "前进列表没有新增 ID，重新定位", source_count_decrease: "来源计数下降，核对局部区间", forward_time_shift: "前进页时间发生偏移，核对局部区间", nonstandard_page_recheck: "页面锚点不能直接确认，核对局部区间", terminal_recheck: "到达日期或来源尾页边界，核对局部区间", source_tail_recheck: "核对来源尾页", date_boundary_confirmed: "已到请求日期边界，核对局部区间", source_exhausted: "来源列表到尾，核对局部区间" };
   function recoveryProof(info) {
+    if (info.proof_level === "latest_pass_rebased_with_gap") return "两轮 ID／发布时间集合不一致；已更新到最新一轮并继续，回扫区间保留缺口。";
     if (info.proof_level === "sequential_frontier_join") return "新页已与本次顺序采集的旧页尾衔接；整体覆盖仍未确认。";
     if (info.time_fallback || info.proof_level === "time_boundary_with_gap") return "旧 ID 不可见，仅按时间回扫，缺口保留。";
     if (info.time_order_verified === false || info.proof_level === "id_interval_time_order_unverified") return "发布时间次序尚未核实，局部覆盖不能确认。";
@@ -1356,6 +1409,7 @@
     return { next_page_first: "先取下一页，按需递归回查", stable_frontier: "末页单次检查", boundary_two_pass: "分页交界两轮核对", two_pass: "区间两轮校准" }[info.strategy] || "";
   }
   function recoveryPhaseLabel(info, phase) {
+    if (phase === "complete" && info.proof_level === "latest_pass_rebased_with_gap") return "已按最新观察继续";
     if (phase === "await_next") return "检查下一页衔接";
     if (phase === "rollback_frontier") return "递归回查旧页尾";
     const boundaryPhases = { pending: "交界核对待继续", scheduled: "交界核对待继续", seek: "定位分页交界", anchor: "检查分页交界", probe: "检查分页交界", backtrack: "定位分页交界", scan: "核对分页交界", scanning: "核对分页交界", verify: "核对分页交界", reconciling: "核对分页交界", complete: "交界核对完成", completed: "交界核对完成", done: "交界核对完成", paused: "交界核对已暂停", blocked: "交界核对被拦截", error: "交界核对异常" };
@@ -1726,8 +1780,8 @@
     catch (error) { if (authenticated) notice(error.message, true); }
     finally { busy = false; controls(); }
   });
-  function markDirty() { formDirty = true; display("config-state", "未保存"); controls(); }
-  function markProxyDirty() { proxyDirty = true; display("proxy-config-state", "页面修改尚未保存"); proxyError(); controls(); }
+  function markDirty() { formDirty = true; formDirty = taskConfigDraftChanged(); display("config-state", formDirty ? "未保存" : "已保存"); controls(); }
+  function markProxyDirty() { proxyDirty = true; proxyDirty = proxyDraftChanged(); display("proxy-config-state", proxyDirty ? "页面修改尚未保存" : "已读取保存配置"); proxyError(); controls(); }
   function proxyInteger(id, label, minimum = 0, required = false) {
     const raw = $(id).value.trim();
     if (!raw && !required) return undefined;
