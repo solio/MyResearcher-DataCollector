@@ -2387,7 +2387,26 @@ Android 版仍未同步。
   `loadMihomoNodes(true)`，下拉框与「当前」从同一实时来源刷新，而不是只信 POST 返回值。
 
 **验证**：`python -m py_compile mihomo_control.py` 通过；本机没有 Node，未跑 `node --check`。
-**未部署**：本轮改动尚未重建 hk 镜像；浏览器内的切换与回读未点验。
+
+**已在 hk 生效**
+
+- 本机访问 GitHub 失败（`curl github.com` 超时，`git push` 连接被重置），无法直接推送；
+  改用 `git bundle` 把同一提交（`0a6ca7c`）快进到 hk 仓库，再跑
+  `deploy/update-node.sh --skip-sweep` 重建容器。
+- 结果：容器 `Up (healthy)`；容器内已是新代码；`/api/mihomo/nodes` 返回
+  `当前: 12. IEPL·日本JP·A155…`（改造前同一接口返回缓存里的 `37. 荷兰NL…`），
+  40 个节点的测速缓存和 `age` 保留。`/api/proxy` 仍为 `mode=http`、
+  `scope=node`、`endpoint=http://172.18.0.1:7891`。
+- 测试期间为复现保存先暂停了该节点；重建后状态为 `paused`，没有自动开始采集。
+
+**未生效 / 未验证**
+
+- 主控（`8.148.251.114`）仍是 `440bc6e`，未重建；因此页面上「切换后立即刷新节点列表」
+  这一项要等主控更新后才生效（`nodes()` 的实时 `now` 修复已在 hk 生效，
+  重开面板即可看到正确节点）。
+- 浏览器内的切换、保存、回读未点验。
+- origin 仍是 `440bc6e`：两个提交（`440bc6e` 已在 origin，`0a6ca7c` 仅本地与 hk）
+  待 GitHub 可达后补推。
 
 
 
