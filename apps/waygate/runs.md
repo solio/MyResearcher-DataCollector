@@ -2306,6 +2306,49 @@ Android 版仍未同步。
 **未验证（不声称完成）**：需要在**代理真实超时**的验证页上点一次返回才能确认；
 这种失败不是随时能造出来的，本轮没有在真机上复现该条件。Android 版仍未同步。
 
+### 2026-11-02 / Windows / 第四十一轮：节点代理面板「写读不是同一个对象」
+
+用户报三件事，实为同一族：节点代理设置异步、设几次状态都对不上；latency 明明有数据，
+打开节点代理面板仍显示「尚未加载」；读代理状态不同步。
+
+**查到的事实**
+
+1. **写读作用域不一致（状态对不上的真因）**
+   - 面板「节点默认出站代理」保存走 `POST api/proxy/config` → `Engine.configure_proxy()`，
+     写的是 **`self.proxy`（节点默认）**（[core.py](apps/http_backfill/core.py) 1588-1598）。
+   - 同屏读取走 `GET api/proxy` → `Engine.proxy_status()`，而它返回的是
+     **`self._proxy_for_stock()`**（[core.py](apps/http_backfill/core.py) 1664-1675）。
+   - 该节点启用逐股运行时，`_proxy_for_stock()` 返回**当前股票**的独立代理管理器
+     （[core.py](apps/http_backfill/core.py) 477-479）。
+   ⇒ **写节点默认、读当前股票**。两者本就不是一个对象，所以「设置几次都对不上」不是异步延迟，是作用域错位。
+2. **「尚未加载」不是没数据**
+   - 三台节点的测速缓存都真实存在且已在容器内可见（挂载
+     `/usr/local/src/.../apps/http_backfill/data => /data`）：
+     hk 21 个节点、sg 37 个、03 2 个。
+   - 但 `loadMihomoNodes()` **只绑在「加载节点」按钮上**；展开 `proxy-panel` 只调 `readProxy()`，
+     不读节点列表 ⇒ 展开面板永远是 HTML 初始值「尚未加载」。
+3. **读代理会被静默丢弃**：`readProxy()` 在 `busy` 时直接 `return`，保存/轮询重叠时旧值留在屏幕上。
+
+**改了什么（只改 collector 代码，未部署）**
+
+- [core.py](apps/http_backfill/core.py)：`proxy_status()` 明确返回 `scope`（`node`/`stock`）、
+  `scope_stock` 与 `node_default`；面板编辑的对象因此可以被准确取出，不再把两个作用域混在一起。
+- [app.js](apps/http_backfill/static/app.js)：
+  - `readProxy()` 用 `node_default` 渲染**表单**，用原始返回渲染**租约/回退/自动恢复**事实；
+    逐股模式下在面板上明确写出「当前按股票拆分出口，本面板显示并修改的是节点默认」。
+  - 展开 `proxy-panel` 时**自动读取代理并加载节点列表**（不再依赖那个看起来可选的按钮）。
+  - 切换节点后重置节点下拉为「尚未加载」，避免沿用上一台节点的列表。
+  - 保存代理后**主动回读一次**，显示节点实际存储的值，而不是留在刚输入的表单值。
+  - `busy` 期间的读请求不再丢弃，改为等写入结束后补读一次。
+
+**验证**：`node --check app.js` 通过；`python -m py_compile core.py` 通过。
+**未运行 pytest**（本机 Python 没有 pytest 模块）。
+
+**未验证（不声称完成）**：改动**未部署**。collector 代码在容器镜像内，
+需要按 `deploy/update-node.sh` 重建/更新节点镜像后才生效；按 `apps/waygate/AGENTS.md` 的限制，
+升级 36/43 采集器需要用户明确授权，本轮未执行。浏览器内的实际面板行为也未点验。
+
+
 
 
 

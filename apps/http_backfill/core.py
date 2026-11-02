@@ -1663,7 +1663,18 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def proxy_status(self):
         with self._mutex:
-            result = self._proxy_for_stock().status()
+            manager = self._proxy_for_stock()
+            result = manager.status()
+            # The console panel edits the node default, but this status describes the stock
+            # that is currently running. Both are returned so a write and the following read
+            # are about the same object instead of silently different scopes.
+            if manager is not self.proxy:
+                scope = self._stock_scope()
+                result["scope"] = "stock"
+                result["scope_stock"] = str(scope[1]) if scope else ""
+                result["node_default"] = self.proxy.status()
+            else:
+                result["scope"] = "node"
             result["auto_suspended"] = self._get("proxy_auto_suspended", True)
             if (not result["auto_suspended"] and result["settings"]["auto_recover"]
                     and self._get("state") in {"blocked", "error"}):

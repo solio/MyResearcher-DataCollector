@@ -43,6 +43,9 @@
   const startPageDrafts = new Map();
   const stockEvidenceOpen = new Set();
   let mihomoDownloading = false;
+  // Which node the node list in the proxy panel belongs to; the select must never keep a
+  // list loaded for a different node.
+  let mihomoNode = "";
   let tooltipState = null;
   let tooltipHideTimer = null;
   let helpReturnFocus = null;
@@ -807,21 +810,21 @@
     for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) safe = safe.split(secret).join("[已隐藏]");
     return safe;
   }
-  function renderProxy(data) {
+  function renderProxy(data, effective = data) {
     if (!data || !Object.hasOwn(proxyModes, first(data.settings, ["mode"], data.mode))) return;
     proxyState = data; proxySupported = true;
     const settings = objectValue(data.settings), mode = first(settings, ["mode"], data.mode);
-    const fallback = dynamicProxyMode(mode) && data.effective_mode === "direct" && data.fallback ? objectValue(data.fallback) : null;
+    const fallback = dynamicProxyMode(mode) && effective.effective_mode === "direct" && effective.fallback ? objectValue(effective.fallback) : null;
     display("proxy-summary-state", fallback ? `${proxyModes[mode]} · 已回退直连` : proxyModes[mode]);
     display("proxy-config-state", proxyDirty ? "页面修改尚未保存" : "已读取保存配置");
-    display("proxy-node-note", `作用节点：${nodeName()}（${selectedNode}）。这里只改变该节点的来源请求出站，手机与主控的管理连接不使用此代理。`);
+    display("proxy-node-note", `作用节点：${nodeName()}（${selectedNode}）。这里只改变该节点的来源请求出站，手机与主控的管理连接不使用此代理。` + (data.scope === "stock" ? `当前按股票拆分出口，本面板显示并修改的是节点默认；股票 ${textValue(data.scope_stock)} 的当前生效配置见“本股出口”。` : ""));
     display("proxy-capability-note", "保存只修改该节点的代理配置，不会清除已有阻断、冷却或响应证据。已保存的用户名、密码和完整提取 API 不回显。");
     const auth = first(data, ["has_auth"], settings.has_auth) === true, apiConfigured = first(data, ["has_api_url"], settings.has_api_url) === true;
     for (const id of ["proxy-username", "proxy-password"]) $(id).placeholder = auth ? "已配置，留空保留" : "未配置，可留空";
     $("proxy-api-url").placeholder = apiConfigured ? "已配置，留空保留" : "填写供应商生成的提取 API URL";
     loadProxyForm(data);
-    const daily = objectValue(data.daily_extractions), lease = objectValue(data.lease), facts = $("proxy-facts"); facts.replaceChildren();
-    for (const [label, value] of [["今日提取", number(daily.count)], ["每日上限", number(first(daily, ["limit"], settings.daily_limit))], ["今日剩余", number(daily.remaining)], ["连续恢复", number(data.recovery_attempts)]]) facts.append(el("span", "", `${label} ${value}`));
+    const daily = objectValue(effective.daily_extractions || data.daily_extractions), lease = objectValue(effective.lease), facts = $("proxy-facts"); facts.replaceChildren();
+    for (const [label, value] of [["今日提取", number(daily.count)], ["每日上限", number(first(daily, ["limit"], settings.daily_limit))], ["今日剩余", number(daily.remaining)], ["连续恢复", number(effective.recovery_attempts)]]) facts.append(el("span", "", `${label} ${value}`));
     if (daily.date) facts.append(el("span", "", `额度日期 ${daily.date}`));
     if (fallback) {
       const reasons = { provider_budget: "每日提取额度已用完", provider_balance: "供应商余额不足", provider_unavailable: "提取服务暂不可用", provider_no_ip: "提取接口未返回 IP", provider_duplicate: "返回的 IP 仍在隔离期", provider_expiry: "返回的 IP 有效期不足", provider_auth: "提取接口认证失败", provider_schema: "提取响应格式无法识别" };
@@ -833,7 +836,7 @@
       else if (fallback.retry_at) parts.push(`下次最早提取 ${time(fallback.retry_at)}，仅在有采集请求时尝试`);
       if (fallback.blocked === true) parts.push("来源已阻断直连，采集已暂停；不会自动用直连重试，检查证据后可安排单次探测");
       display("proxy-lease-note", parts.join(" · "));
-    } else if (data.lease) {
+    } else if (effective.lease) {
       const parts = [`${mode === "qingguo" ? "代理连接端点" : "候选出站"}：${lease.endpoint || "尚未返回"}`, `租约剩余 ${lease.remaining_seconds == null ? "—" : duration(lease.remaining_seconds)}`, `候选来源尝试 ${number(lease.requests)}`];
       if (mode === "qingguo" && lease.ip) parts.splice(1, 0, `供应商报告出口 IP ${lease.ip}`);
       const reasons = { explicit_endpoint: "使用已配置端点", initial_extraction: "首次提取", lease_expiring: "租约即将到期", elapsed_rotation: "达到使用时间", attempt_count_rotation: "达到尝试次数", manual_rotation: "手动更换" };
@@ -842,13 +845,16 @@
       if (lease.expires_at) parts.push(`到期 ${time(lease.expires_at)}`);
       display("proxy-lease-note", parts.join(" · "));
     } else display("proxy-lease-note", mode === "direct" ? "当前为直连，没有代理候选。" : "尚无候选租约。更换操作只安排下一次出站，来源结果仍须实际请求核实。");
-    const suspended = first(data, ["auto_suspended"], status?.proxy?.auto_suspended) === true;
-    display("proxy-recovery-note", fallback ? "回退直连保留原采集间隔与来源冷却；遇到验证码或限流仍会暂停，不会自动重复直连请求。恢复动态 IP 后仍须由实际来源响应核实可用性。" : !dynamicProxyMode(mode) || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${data.next_recovery_at ? "；下次最早 " + time(data.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
-    const error = safeProxyMessage(data.last_error, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
+    const suspended = first(effective, ["auto_suspended"], status?.proxy?.auto_suspended) === true;
+    display("proxy-recovery-note", fallback ? "回退直连保留原采集间隔与来源冷却；遇到验证码或限流仍会暂停，不会自动重复直连请求。恢复动态 IP 后仍须由实际来源响应核实可用性。" : !dynamicProxyMode(mode) || settings.auto_recover !== true ? "自动恢复未启用；普通重试仅安排一次探测。" : `自动恢复已配置${suspended ? "，目前已挂起；点击开始或继续后才允许运行" : "，受每日额度、连续次数和冷却约束"}。冷却 ${duration(settings.recovery_cooldown_seconds)}，最多连续 ${number(settings.recovery_max_attempts)} 次${effective.next_recovery_at ? "；下次最早 " + time(effective.next_recovery_at) : ""}。保存配置后保持暂停，不会自动请求来源。`);
+    const error = safeProxyMessage(effective.last_error, [$("proxy-username").value, $("proxy-password").value, $("proxy-api-url").value]);
     $("proxy-status-error").hidden = !error; display("proxy-status-error", error);
   }
   async function readProxy() {
-    if (!authenticated || busy || proxyLoading) return;
+    // Reading while a write is in flight used to be dropped silently, which left the panel
+    // showing the previous configuration. Re-read once the write finishes instead.
+    if (!authenticated || proxyLoading) return;
+    if (busy) { setTimeout(() => { if (!busy) void readProxy(); }, 400); return; }
     const target = selectedNode, selection = nodeEpoch, generation = statusGeneration, serial = ++proxyReadSerial;
     proxyLoading = true; controls();
     try {
@@ -856,7 +862,11 @@
       if (!authenticated || selection !== nodeEpoch || generation !== statusGeneration || serial !== proxyReadSerial) return;
       const proxy = data?.proxy || data;
       if (!Object.hasOwn(proxyModes, first(proxy?.settings, ["mode"], proxy?.mode))) throw new Error("该节点返回的代理配置格式无法识别，需要更新节点。");
-      renderProxy(proxy); proxyError();
+      // This panel edits the node default; when the node runs per-stock managers the status
+      // above describes the running stock, so the form and facts must not be mixed up.
+      const form = proxy?.scope === "stock" && proxy?.node_default ? proxy.node_default : proxy;
+      renderProxy(form, proxy); proxyError();
+      if (mihomoNode !== target) { resetMihomoNodes(); void loadMihomoNodes(true); }
     } catch (error) {
       if (!authenticated || selection !== nodeEpoch || generation !== statusGeneration || serial !== proxyReadSerial) return;
       if ([400, 404, 405].includes(error.status)) {
@@ -1765,14 +1775,22 @@
     if ($("proxy-clear-api").checked) payload.clear_api_url = true;
     return payload;
   }
+  function resetMihomoNodes() {
+    const select = $("mihomo-nodes");
+    select.replaceChildren(new Option("尚未加载", ""));
+    $("mihomo-switch").disabled = true;
+    display("mihomo-state", "");
+    mihomoNode = "";
+  }
   async function loadMihomoNodes(silent) {
     if (!authenticated) return;
     const button = $("mihomo-load"), select = $("mihomo-nodes"), note = $("mihomo-state");
-    const epoch = nodeEpoch;
+    const epoch = nodeEpoch, target = selectedNode;
     if (!silent) { button.disabled = true; $("mihomo-switch").disabled = true; note.textContent = "读取节点…"; }
     try {
-      const data = await api("mihomo/nodes", "GET", undefined, selectedNode);
+      const data = await api("mihomo/nodes", "GET", undefined, target);
       if (epoch !== nodeEpoch) return;
+      mihomoNode = target;
       const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
       const age = Number(data?.age || 0);
       select.replaceChildren();
@@ -1787,7 +1805,7 @@
       }
       // Never hold the request open for a sweep: start it in the background and poll the cache.
       if (!silent && (data?.refreshing || !nodes.length || age > 600)) {
-        try { await api("mihomo/nodes/refresh", "POST", {}, selectedNode); } catch (_) {}
+        try { await api("mihomo/nodes/refresh", "POST", {}, target); } catch (_) {}
         setTimeout(() => { void loadMihomoNodes(true); }, 4000);
       }
     } catch (error) { if (!silent) note.textContent = error.message || "读取失败"; }
@@ -1809,7 +1827,14 @@
     const box = $("proxy-help"); box.hidden = !box.hidden;
     $("proxy-help-toggle").setAttribute("aria-expanded", String(!box.hidden));
   });
-  $("proxy-panel").addEventListener("toggle", () => { if ($("proxy-panel").open) void readProxy(); });
+  $("proxy-panel").addEventListener("toggle", () => {
+    if (!$("proxy-panel").open) return;
+    // Opening the panel is the operator asking for the node's proxy facts; the node list
+    // must load with it, not wait for a second button that looks optional.
+    void readProxy();
+    if (mihomoNode !== selectedNode) { resetMihomoNodes(); }
+    void loadMihomoNodes(true);
+  });
   $("proxy-refresh").addEventListener("click", () => { void readProxy(); });
   $("proxy-form").addEventListener("input", markProxyDirty);
   $("proxy-form").addEventListener("change", markProxyDirty);
@@ -1825,6 +1850,9 @@
     let payload; try { payload = proxyPayload(); } catch (error) { proxyError(error.message); return; }
     const name = nodeName();
     await post("proxy/config", payload, `${name} 的代理配置已保存。采集与自动恢复仍暂停；已有阻断、冷却和证据保留，点击开始或继续才运行。`, "POST", { pauseFirst: true, clearProxyDraft: true, proxyOperation: true, sensitiveValues: [payload.username, payload.password, payload.api_url] });
+    // Show what the node actually stored instead of leaving the form on the values that were
+    // typed, so a scope or normalisation difference cannot look like "设置了几次都对不上".
+    await readProxy();
   });
   $("proxy-rotate").addEventListener("click", () => {
     if ($("proxy-rotate").disabled) return;
