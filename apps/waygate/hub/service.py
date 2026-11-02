@@ -296,7 +296,9 @@ class Waygate:
                 if error != self.poll_error:
                     logging.warning("Waygate 同步 collector 失败：%s", error)
                 self.poll_error = error
-            await asyncio.sleep(10)
+            # Node status is cheap now (served from a warm snapshot), so poll often enough that a
+            # control action shows up on the next screen refresh instead of the next 10 s cycle.
+            await asyncio.sleep(2)
 
     async def reap(self):
         while True:

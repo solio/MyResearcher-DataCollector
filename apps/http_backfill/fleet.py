@@ -777,7 +777,9 @@ class FleetManager:
                 poll = now >= self._poll_due.get(key, 0)
                 if not (sync or poll):
                     continue
-                self._poll_due[key] = now + 10
+                # Node status is served from a warm snapshot (a few ms), so a 10 s cycle made a
+                # control action look stuck until the next round. Poll every two seconds.
+                self._poll_due[key] = now + 2
                 if sync:
                     self._sync_due[key] = now + 60
                     cache = self._cache.setdefault(key, {})
