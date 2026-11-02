@@ -2348,6 +2348,47 @@ Android 版仍未同步。
 需要按 `deploy/update-node.sh` 重建/更新节点镜像后才生效；按 `apps/waygate/AGENTS.md` 的限制，
 升级 36/43 采集器需要用户明确授权，本轮未执行。浏览器内的实际面板行为也未点验。
 
+### 2026-11-02 / Windows / 第四十二轮：hk「保存不上」取证；切换节点的回读是旧值
+
+用户报「hk 更新了也一样，保存都保存不上」。先取证，再看是保存链路还是回读显示。
+
+**已部署事实（与上一轮「未部署」不同）**
+
+- hk（`43.132.206.172`，主控别名 `tokenSeller`）容器内
+  `/opt/collector/apps/http_backfill/static/app.js` 含 `resetMihomoNodes`、`mihomoNode`，
+  `core.py` 含 `node_default`；主机 `HEAD=440bc6e`。上一轮的代码确实已生效。
+- 主控（`8.148.251.114`）`HEAD=440bc6e`；公网 `/collector/app.js` 与容器内同为
+  178,097 B，含同一批标记。页面 JS 也是新版。
+
+**保存链路是通的（不是「保存不上」）**
+
+- hk 事件：09:52（CST）`proxy_configured` `mode=direct` ×2，09:57 `mode=http` ×4；
+  说明这几次保存都到达服务端并落库。
+- 直接复现 `POST /api/proxy/config`：节点 `state=running` 时 HTTP 409
+  「请先暂停并等待当前请求结束」；先 `POST /api/control {"action":"pause"}`
+  （与页面 `pauseFirst` 相同）后同一 payload 返回 **200**，随后 `GET /api/proxy`
+  回读 `mode=http`、`endpoint=http://172.18.0.1:7891`，与写入一致。
+- 走主控页面实际使用的路由 `POST /api/nodes/tokenSeller/proxy/config` 也是 **200**。
+  ⇒ 服务端、fleet 路由、回读都正常；页面若只看到「没保存」，要看它显示的是哪个对象。
+
+**真正对不上的：Mihomo「当前节点」读的是旧缓存**
+
+- hk 的 `/data/mihomo-nodes.json`：`now = 37. 商务·荷兰NL…`（测速时间 09:56:07）。
+- 同一时刻控制器 `/proxies/WW` 的实时 `now = 12. IEPL·日本JP·A155…`。
+- `nodes()` 只回缓存；`select()` 切换后**不更新缓存里的 `now`**。
+  ⇒ 切换其实成功了，但下次打开面板 `loadMihomoNodes()` 把下拉框和「当前」拨回旧节点，
+  再点「切换节点」还会把控制器切回去，表现就是「设几次都对不上 / 保存不上」。
+
+**改法**
+
+- [mihomo_control.py](apps/http_backfill/mihomo_control.py)：`nodes()` 在返回缓存前用
+  `_current_now(timeout=2.5)` 覆盖 `now`；控制器不可达时保留缓存值，测速时间与 `age` 不变。
+- [app.js](apps/http_backfill/static/app.js)：`switchMihomoNode()` 成功后立即
+  `loadMihomoNodes(true)`，下拉框与「当前」从同一实时来源刷新，而不是只信 POST 返回值。
+
+**验证**：`python -m py_compile mihomo_control.py` 通过；本机没有 Node，未跑 `node --check`。
+**未部署**：本轮改动尚未重建 hk 镜像；浏览器内的切换与回读未点验。
+
 
 
 
