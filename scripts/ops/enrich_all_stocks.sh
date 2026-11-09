@@ -331,7 +331,7 @@ fi
 # One owned browser for the whole batch, same pattern as backfill_all_stocks.sh:
 # without it every stock pays a managed-chromium cold start and re-warms the
 # visitor identity, which is what the driver was trying to avoid.
-ENRICH_BROWSER_REUSE=${ENRICH_BROWSER_REUSE:-1}
+ENRICH_BROWSER_REUSE=${ENRICH_BROWSER_REUSE:-0}
 SESSION_PID=""
 SESSION_DIR=""
 cleanup_enrich_session() {
@@ -364,7 +364,10 @@ if [ "$ENRICH_BROWSER_REUSE" = "1" ] && [ "${DRY_RUN:-0}" != "1" ]; then
     exit 1
   fi
   ENRICH_COMMAND=("$PY" scripts/ops/backfill_session.py call --socket "$SESSION_DIR/browser.sock")
-  ENRICH_ACQ_MODE="browser-socket"
+  # Keep managed-chromium: the session builds the browser from this mode and
+  # lends it to every call.  Switching to browser-socket here would make each
+  # call dial DEFAULT_BROWSER_SOCKET instead of the session's own socket.
+  ENRICH_ACQ_MODE="$ACQ_MODE"
 fi
 
 for s in "${stocks[@]}"; do
