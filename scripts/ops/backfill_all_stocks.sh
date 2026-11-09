@@ -126,7 +126,8 @@ all_stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 60502
             601966
             603893 002352 603899
             600096 601995
-            002230 002916 300604)
+            002230 002916 300604
+            002271 002597 300017 300442 300866 600563 603337)
 stocks=("${all_stocks[@]}")
 # STOCKS="300487 603806" runs an ad-hoc queue -- a second, disjoint one, or a
 # retry after a halt -- in whatever order it is given. The roster above stays
