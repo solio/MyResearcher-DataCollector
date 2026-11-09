@@ -54,11 +54,19 @@ class BorrowedTransport:
         pass
 
 
+def _dispatch(args, *, transport):
+    """Run either a list backfill or a detail enrichment on the shared browser."""
+    from myresearcher_collector.cli.main import execute_backfill_cli, execute_enrich_cli
+    if args.command == "enrich-details":
+        return execute_enrich_cli(args, transport=transport)
+    return execute_backfill_cli(args, transport=transport)
+
+
 class BrowserSession:
     def __init__(self, factory=None, execute=None):
-        from myresearcher_collector.cli.main import _browser_socket_transport, execute_backfill_cli
+        from myresearcher_collector.cli.main import _browser_socket_transport
         self.factory = factory or _browser_socket_transport
-        self.execute = execute or execute_backfill_cli
+        self.execute = execute or _dispatch
         self.transport = self.settings = self.last_finished = None
         self.halted = False
 
@@ -67,11 +75,13 @@ class BrowserSession:
         if self.halted:
             raise RuntimeError("上一只股票未成功，本轮浏览器会话已停止；不会继续请求其他股票")
         args = build_parser().parse_args(request["argv"])
-        if (args.command != "backfill" or args.source != "eastmoney_guba"
-                or not args.confirm_live or not args.list_only
-                or args.acquisition_mode not in {"managed-chromium", "chrome-cdp"}):
-            raise ValueError("共享浏览器只支持当前股吧列表 backfill")
-        settings = (args.acquisition_mode, args.profile_dir, args.list_click_paging)
+        is_enrich = args.command == "enrich-details"
+        if (args.command not in {"backfill", "enrich-details"} or args.source != "eastmoney_guba"
+                or not args.confirm_live
+                or (not is_enrich and not args.list_only)
+                or args.acquisition_mode not in {"managed-chromium", "chrome-cdp", "browser-socket"}):
+            raise ValueError("共享浏览器只支持当前股吧列表 backfill 与 enrich-details")
+        settings = (args.acquisition_mode, args.profile_dir, getattr(args, "list_click_paging", False))
         if self.transport is not None and settings != self.settings:
             raise ValueError("同一批次不能更换浏览器会话配置")
         report_path, error_path = Path(request["report"]), Path(request["error"])
@@ -86,11 +96,18 @@ class BrowserSession:
                     if callable(reset):
                         reset()
                     print(f"browser_session=shared reused={int(reused)} stock={args.stock}", file=sys.stderr, flush=True)
-                    result = self.execute(args, transport=BorrowedTransport(self, args.min_interval))
+                    interval = getattr(args, "min_interval", getattr(args, "min_delay", 3.0))
+                    result = self.execute(args, transport=BorrowedTransport(self, interval))
                     result["browser_session"] = {"shared": True, "reused": reused}
                 json.dump(result, report_file, ensure_ascii=False, indent=2, default=_json_default)
                 report_file.write("\n")
-                self.halted = result.get("status") != "SUCCESS"
+                if is_enrich:
+                    # execute_detail_enrichment reports stopped/failed rather than
+                    # a backfill status; a stop is an operator decision, not a
+                    # reason to halt the batch.
+                    self.halted = bool(result.get("stopped")) or int(result.get("failed") or 0) > 0
+                else:
+                    self.halted = result.get("status") != "SUCCESS"
                 return {"exit_code": 1 if self.halted else 0}
             except Exception as exc:
                 self.halted = True

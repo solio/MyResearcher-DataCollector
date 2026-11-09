@@ -328,6 +328,45 @@ if [ -n "$PROFILE_BUSY_PID" ]; then
   exit 3
 fi
 
+# One owned browser for the whole batch, same pattern as backfill_all_stocks.sh:
+# without it every stock pays a managed-chromium cold start and re-warms the
+# visitor identity, which is what the driver was trying to avoid.
+ENRICH_BROWSER_REUSE=${ENRICH_BROWSER_REUSE:-1}
+SESSION_PID=""
+SESSION_DIR=""
+cleanup_enrich_session() {
+  if [ -n "$SESSION_PID" ]; then
+    kill -TERM "$SESSION_PID" 2>/dev/null || true
+    wait "$SESSION_PID" 2>/dev/null || true
+  fi
+  if [ -n "$SESSION_DIR" ]; then
+    rm -f "$SESSION_DIR/browser.sock"
+    rmdir "$SESSION_DIR" 2>/dev/null || true
+  fi
+}
+trap cleanup_enrich_session EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+ENRICH_COMMAND=("$PY" -m myresearcher_collector.cli.main)
+ENRICH_ACQ_MODE="$ACQ_MODE"
+SESSION_REPORT_FLAGS=()
+if [ "$ENRICH_BROWSER_REUSE" = "1" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+  SESSION_DIR=$(mktemp -d /tmp/enrich-session.XXXXXX) || exit 3
+  PYTHONPATH=src "$PY" scripts/ops/backfill_session.py serve --socket "$SESSION_DIR/browser.sock" &
+  SESSION_PID=$!
+  for _ready in {1..100}; do
+    [ -S "$SESSION_DIR/browser.sock" ] && break
+    kill -0 "$SESSION_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [ ! -S "$SESSION_DIR/browser.sock" ]; then
+    echo "HALT_ON_BROWSER_SESSION_START_FAILED"
+    exit 1
+  fi
+  ENRICH_COMMAND=("$PY" scripts/ops/backfill_session.py call --socket "$SESSION_DIR/browser.sock")
+  ENRICH_ACQ_MODE="browser-socket"
+fi
+
 for s in "${stocks[@]}"; do
   pend=$(pending_count "$s")
   if [ "${pend:-0}" -eq 0 ]; then
@@ -338,9 +377,12 @@ for s in "${stocks[@]}"; do
   # Drop any stale/empty report from a previously interrupted invocation so the
   # post-run read can only ever see this invocation's result.
   rm -f "$RUNLOG_DIR/$s.json"
-  PYTHONPATH=src "$PY" -m myresearcher_collector.cli.main enrich-details \
+  if [ "$ENRICH_BROWSER_REUSE" = "1" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+    SESSION_REPORT_FLAGS=(--report "$RUNLOG_DIR/$s.json" --error "$RUNLOG_DIR/$s.err" --)
+  fi
+  PYTHONPATH=src "${ENRICH_COMMAND[@]}" "${SESSION_REPORT_FLAGS[@]}" enrich-details \
     --source eastmoney_guba --stock "$s" --data-dir data \
-    --acquisition-mode "$ACQ_MODE" --confirm-live \
+    --acquisition-mode "$ENRICH_ACQ_MODE" --confirm-live \
     --min-delay "$MIN_DELAY" --max-delay "$MAX_DELAY" \
     --challenge-wait "$CHALLENGE_WAIT" --challenge-retries "$CHALLENGE_RETRIES" \
     --enrich-order "$ENRICH_ORDER" \

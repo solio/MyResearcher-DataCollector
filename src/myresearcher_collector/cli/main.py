@@ -378,8 +378,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly enrich titles shorter than 40 characters; default is length >= 40 only",
     )
     enrich.add_argument("--profile-dir", type=Path, default=None)
+    _add_browser_socket_argument(enrich)
     enrich.add_argument("--acquisition-mode", choices=("existing-chrome", "chrome-clean",
-                                                        "managed-chromium", "chrome-cdp"),
+                                                        "managed-chromium", "chrome-cdp",
+                                                        "browser-socket"),
                         default="managed-chromium")
     enrich.add_argument(
         "--detail-referer-from-list",
@@ -948,6 +950,67 @@ def execute_xueqiu_run(
     )
 
 
+def execute_enrich_cli(
+    args: argparse.Namespace,
+    *,
+    transport: Transport | None = None,
+) -> dict[str, object]:
+    """Run one stock's detail enrichment, optionally on a borrowed transport.
+
+    ``transport`` is injected by the browser session host so consecutive stocks
+    share one browser instead of paying a managed-chromium cold start each time.
+    """
+    if args.source != "eastmoney_guba":
+        raise ValueError("detail enrichment requires Eastmoney")
+    if len(args.stock) != 6 or not args.stock.isdigit():
+        raise ValueError("stock must be six decimal digits")
+    if args.min_delay < 3.0 or args.max_delay < args.min_delay:
+        raise ValueError("delay must be 3..10 seconds")
+    if args.challenge_wait < 0 or args.challenge_retries < 0:
+        raise ValueError("challenge wait/retries must be non-negative")
+    mode = args.acquisition_mode
+    profile = args.profile_dir
+    # The pause is part of the referer scheme, not an independent knob: it
+    # is a pause *on the list page*, and without that scheme the run never
+    # opens one. Asking for it alone is a mistake worth naming rather than
+    # silently ignoring.
+    dwell = (
+        (args.detail_dwell_min, args.detail_dwell_max)
+        if args.detail_dwell_max > 0 else None
+    )
+    if dwell is not None and not args.detail_referer_from_list:
+        raise ValueError(
+            "--detail-dwell-min/--detail-dwell-max require "
+            "--detail-referer-from-list: there is no list page to pause on"
+        )
+    if transport is None:
+        if mode == "browser-socket":
+            # Borrow the browser a sibling backfill/enrich call already owns
+            # instead of paying a cold managed-chromium start per stock.
+            transport = create_eastmoney_transport(
+                "browser-socket", browser_socket=args.browser_socket)
+        else:
+            transport = create_eastmoney_transport(
+                mode,
+                profile_dir=profile,
+                detail_referer_from_list=args.detail_referer_from_list,
+                detail_dwell_seconds=dwell,
+            )
+    resolved_profile = getattr(transport, "profile_dir", None)
+    return execute_detail_enrichment(
+        db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
+        transport=transport, raw_data_dir=args.data_dir.expanduser().resolve(),
+        min_delay=args.min_delay, max_delay=args.max_delay,
+        challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
+        enrich_order=args.enrich_order,
+        pace_model=args.pace_model,
+        read_every=args.read_every, read_min=args.read_min, read_max=args.read_max,
+        log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
+        include_short_titles=args.include_short_titles,
+        acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None,
+        profile_mode=getattr(transport, "profile_mode", None))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "eastmoney-browser-host":
@@ -1007,10 +1070,6 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("detail enrichment requires Eastmoney")
             if len(args.stock) != 6 or not args.stock.isdigit():
                 raise ValueError("stock must be six decimal digits")
-            if args.min_delay < 3.0 or args.max_delay < args.min_delay:
-                raise ValueError("delay must be 3..10 seconds")
-            if args.challenge_wait < 0 or args.challenge_retries < 0:
-                raise ValueError("challenge wait/retries must be non-negative")
             if args.plan_only:
                 print(json.dumps({"mode":"PLAN_ONLY","source":args.source,"stock":args.stock,
                                   "data_dir":str(args.data_dir.expanduser().resolve()),
@@ -1020,40 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
                                       else "length_gte_40_suspected_truncation"
                                   )}, indent=2))
                 return 0
-            mode = args.acquisition_mode
-            profile = args.profile_dir
-            # The pause is part of the referer scheme, not an independent knob: it
-            # is a pause *on the list page*, and without that scheme the run never
-            # opens one. Asking for it alone is a mistake worth naming rather than
-            # silently ignoring.
-            dwell = (
-                (args.detail_dwell_min, args.detail_dwell_max)
-                if args.detail_dwell_max > 0 else None
-            )
-            if dwell is not None and not args.detail_referer_from_list:
-                raise ValueError(
-                    "--detail-dwell-min/--detail-dwell-max require "
-                    "--detail-referer-from-list: there is no list page to pause on"
-                )
-            transport = create_eastmoney_transport(
-                mode,
-                profile_dir=profile,
-                detail_referer_from_list=args.detail_referer_from_list,
-                detail_dwell_seconds=dwell,
-            )
-            resolved_profile = getattr(transport, "profile_dir", None)
-            report = execute_detail_enrichment(
-                db_path=args.data_dir.expanduser().resolve() / "collector.db", stock_code=args.stock,
-                transport=transport, raw_data_dir=args.data_dir.expanduser().resolve(),
-                min_delay=args.min_delay, max_delay=args.max_delay,
-                challenge_wait_seconds=args.challenge_wait, challenge_retries=args.challenge_retries,
-                enrich_order=args.enrich_order,
-                pace_model=args.pace_model,
-                read_every=args.read_every, read_min=args.read_min, read_max=args.read_max,
-                log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
-                include_short_titles=args.include_short_titles,
-                acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None,
-                profile_mode=getattr(transport, "profile_mode", None))
+            report = execute_enrich_cli(args)
         except (LookupError, OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             print(f"detail enrichment error: {exc}", file=sys.stderr)
             return 2
