@@ -432,8 +432,12 @@ class FleetManager:
 
     @staticmethod
     def _identity(status):
-        if not isinstance(status, dict) or status.get("version") not in SUPPORTED_NODE_VERSIONS:
-            raise FleetError(409, "节点须升级到 http-backfill.v4/v5，旧版没有可验证增量导出接口")
+        if not isinstance(status, dict) or "version" not in status:
+            # A node that is still starting (or answered with an error page) has no version yet.
+            # Reporting that as "please upgrade" sent people chasing a version that was fine.
+            raise FleetError(503, "节点状态暂时不可用（可能正在启动或重启），请稍后重试")
+        if status.get("version") not in SUPPORTED_NODE_VERSIONS:
+            raise FleetError(409, "节点版本 " + str(status.get("version")) + " 不在支持范围，需 http-backfill.v4/v5")
         value = status.get("instance_id")
         try:
             if not isinstance(value, str) or str(uuid.UUID(value)) != value:
@@ -605,11 +609,12 @@ class FleetManager:
                     or type(body.get("page")) is not int or not 1 <= body["page"] <= 2 ** 53 - 1):
                 raise ValueError("设置起始页需要正整数 page 和可选 job_id")
         try:
-            if method != "GET" or path == "api/mihomo/config":
+            needs_identity = not path.startswith("api/mihomo/")
+            if needs_identity and (method != "GET" or path == "api/mihomo/config"):
                 checked = self._check_status(node)  # Pin verification immediately before the only mutation attempt.
-                if path.startswith("api/stocks/") and checked.get("runtime_scope") != "stock":
+                if needs_identity and path.startswith("api/stocks/") and checked.get("runtime_scope") != "stock":
                     raise FleetError(409, "此采集节点尚未支持逐股控制，请先更新节点代码")
-                if path.endswith("/start-page") and not checked.get("navigation_controls", {}).get("manual_start_page"):
+                if needs_identity and path.endswith("/start-page") and not checked.get("navigation_controls", {}).get("manual_start_page"):
                     raise FleetError(409, "此采集节点尚未支持设置起始页，请先更新节点代码")
             if node["id"] != "local":
                 payload = self._remote(node, method, path, body, query)
