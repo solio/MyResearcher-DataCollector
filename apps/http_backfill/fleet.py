@@ -475,7 +475,12 @@ class FleetManager:
             # Node-side mihomo latency sweeps take tens of seconds, and a busy node's status
             # snapshot can take several seconds on a multi-gigabyte ledger; the ordinary 3 s
             # budget made such a node look offline between polls.
-            wait = 120 if path.startswith("api/mihomo/") else 15 if path == "api/status" else None
+            # Node-side mihomo sweeps take tens of seconds, a busy status snapshot a few, and a
+            # federation export page has to ship bodies over a WAN link; the ordinary 3 s budget
+            # made a healthy but distant node look like it timed out.
+            wait = (120 if path.startswith("api/mihomo/")
+                    else 30 if path.startswith("api/federation/")
+                    else 15 if path == "api/status" else None)
             result = self.client.request(method, url, node["token"], body, timeout=wait)
             return self._redact(result, (node["token"],))
         except FleetError as exc:
