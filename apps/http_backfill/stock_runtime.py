@@ -18,7 +18,7 @@ STOCK_KEYS = frozenset({
     "halted_task_id", "halt_task_id", "halted_config", "halt_config",
     "halted_probe_only", "network_retry", "resume_recovery", "last_success",
     "segment_id", "proxy_auto_suspended", "proxy_auto_probe",
-    "proxy_control_generation", "last_proxy_error",
+    "proxy_control_generation", "last_proxy_error", "attention",
 })
 BLOCKED_KINDS = frozenset({"challenge", "http_401", "http_403", "http_407", "http_429"})
 SOURCE_AUTH_KINDS = frozenset({"challenge", "http_401", "http_403", "http_407"})
@@ -194,7 +194,7 @@ class StockRuntimeMixin:
                 "resume_recovery": False, "last_success": None,
                 "segment_id": None, "proxy_auto_suspended": True,
                 "proxy_auto_probe": False, "proxy_control_generation": 0,
-                "last_proxy_error": None}
+                "last_proxy_error": None, "attention": None}
 
     def _stock_runtime(self, job, stock):
         row = self.db.execute("SELECT payload FROM stock_runtime WHERE job=? AND stock=?", (job, stock)).fetchone()

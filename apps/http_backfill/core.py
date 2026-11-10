@@ -61,6 +61,9 @@ NETWORK_RETRY_KINDS = {"network_timeout", "tls_error", "network_connect", "netwo
 ORDINARY_RECHECKS = {"list_delay_recheck", "manual_resume", "process_restart", "config_updated", "periodic_recheck"}
 MAX_RECOVERY_REQUESTS, MAX_RECOVERY_PASSES = 64, 6
 NEXT_PAGE_MAX_GAP = 30 * 60
+# Consecutive transport failures (timeout/tls/connect/io) on one target before the stock is
+# paused for attention instead of retrying forever.
+MAX_NETWORK_RETRIES = 5
 
 
 class RecoveryLimitError(ValueError):
@@ -515,6 +518,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 self.db.execute("DELETE FROM frontiers WHERE job=? AND stock=?", (job, stock))
                 self.db.execute("DELETE FROM recoveries WHERE job=? AND stock=?", (job, stock))
                 self._set("network_retry", None)
+                self._set("attention", None)
                 self._begin_manual_entry(job, stock, page)
                 self._suspend_proxy_recovery()
                 self._set("probe", False)
@@ -2117,6 +2121,21 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return
         previous = self._get("network_retry") or {}
         attempt = previous.get("attempt", 0) + 1 if previous.get("task_id") == task["id"] else 1
+        if attempt >= MAX_NETWORK_RETRIES:
+            # Repeated transport failures mean the exit path is down, not that the source
+            # blocked us. Pause without a halt: a plain start resumes the original target
+            # once the operator has checked the proxy/network.
+            self._set("network_retry", None)
+            self._set("attention", {"kind": "network_timeout", "task_id": task["id"],
+                                    "request_id": rid, "attempt": attempt, "error": error})
+            self._outcome(rid, "transport_error", error, facts | {"automatic_retry": False})
+            self._set("state", "paused")
+            self._set("reason", f"连续 {attempt} 次网络故障；已暂停，请检查代理或网络后点击继续")
+            self._end_segment("network_retry_exhausted")
+            self._event("network_retry_exhausted", "连续网络故障已暂停采集；原目标保留，处理后再继续",
+                        {"request_id": rid, "task_id": task["id"], "stock": task["stock"],
+                         "attempt": attempt, **facts})
+            return
         delay = max(config["interval_seconds"], min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
         due = max(self._get("next_due", 0), self.clock() + delay, self._retry_after(response.headers.get("retry-after")))
         retry = {"kind": response.transient_error, "attempt": attempt, "task_id": task["id"],
@@ -2135,6 +2154,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def _halt(self, state, kind, reason, rid):
         self._set("network_retry", None)
+        # A source block supersedes a pending transport-failure notice; the halt itself
+        # is what the operator must see.
+        self._set("attention", None)
         if kind not in {"challenge", "http_403", "http_429", "proxy_error"}:
             self._suspend_proxy_recovery()
         self._set("state", state)
@@ -2157,6 +2179,8 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
     def _after_success(self, rid, probe):
         self._clear_node_auth_after_manual_success(rid, probe)
         self._set("network_retry", None)
+        # One successful source request is the proof that the exit path recovered.
+        self._set("attention", None)
         self._set("last_success", self.clock())
         if probe:
             if self._get("active_halt") == "calibration_limit":

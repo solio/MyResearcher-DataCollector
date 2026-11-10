@@ -75,6 +75,49 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(item["title"], "代理认证失败")
         self.assertFalse(item["can_verify"])
 
+    def attention_node(self):
+        row = {"job": 1, "stock": "002648", "state": "paused", "active_halt": None,
+               "attention": {"kind": "network_timeout", "task_id": 12, "request_id": 30, "attempt": 5}}
+        self.nodes[0]["status"] = {"instance_id": "instance-a", "job": {"id": 1, "revision": 3},
+                                   "state": "paused", "stock_runtimes": [row],
+                                   "node_source_auth_barrier": None}
+        return row
+
+    def test_attention_paused_stock_needs_processing_without_verify(self):
+        row = self.attention_node()
+        self.store.reconcile(self.nodes)
+        items = self.store.inbox(self.nodes)
+        self.assertEqual([i["kind"] for i in items], ["network_timeout"])
+        self.assertEqual(items[0]["title"], "连续网络超时，需要处理")
+        self.assertFalse(items[0]["can_verify"])
+        self.assertEqual(self.store.incident(items[0]["id"])["target"]["task"], 12)
+        self.assertEqual(len(self.store.notifications()), 1)  # push is queued like other kinds
+        ident = items[0]["id"]
+        # Reconciling again must not duplicate the item.
+        self.store.reconcile(self.nodes)
+        self.assertEqual([i["id"] for i in self.store.inbox(self.nodes)], [ident])
+        # Resuming the stock clears it.
+        row["state"], row["attention"] = "running", None
+        self.store.reconcile(self.nodes)
+        self.assertEqual(self.store.inbox(self.nodes), [])
+        self.assertEqual(self.store.notifications(), [])
+
+    def test_live_halt_supersedes_pending_attention(self):
+        row = self.attention_node()
+        self.store.reconcile(self.nodes)
+        self.assertEqual(self.store.inbox(self.nodes)[0]["kind"], "network_timeout")
+        row["state"], row["active_halt"] = "blocked", "challenge"
+        row["halt_task_id"], row["block_evidence"] = 12, {"id": 20}
+        self.nodes[0]["status"]["state"] = "blocked"
+        self.nodes[0]["status"]["node_source_auth_barrier"] = {"job": 1, "stock": "002648",
+                                                               "task_id": 12, "request_id": 19}
+        self.store.reconcile(self.nodes)
+        items = self.store.inbox(self.nodes)
+        # Same owner (node/instance/job/stock/task) dedups in place: the attention notice
+        # becomes the challenge instead of lingering beside it.
+        self.assertEqual([i["kind"] for i in items], ["challenge"])
+        self.assertEqual(self.store.incident(items[0]["id"])["target"]["request_id"], 20)
+
     def test_notification_acceptance_no_repeat_and_explicit_reminder_new_id(self):
         self.store.reconcile(self.nodes)
         item = self.store.notifications()[0]

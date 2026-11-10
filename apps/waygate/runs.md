@@ -2676,3 +2676,45 @@ App：ArkWeb，持久 cookie，且没有关闭 QUIC 的开关。
 
 **未验证**：换 UA 后验证码是否仍会弹出、尺寸是否正常——本轮没有执行验证流程。
 注意：安装会重启 App，正在进行的验证会被中断。
+
+### 2026-11-10 / Windows / 第四十九轮：连续 5 次网络故障暂停采集并上报「需要处理」
+
+需求：采集器连续 5 次传输类失败（超时/TLS/连接/IO 合并计数，用户确认）即暂停该股票，
+不再无限退避重试；并在手机 App 出现「需要处理」（收件箱 + 华为推送，用户确认）。
+
+**改前行为**：`_record_network_retry()` 对传输失败按 `max(interval, min(900, interval·2^n))`
+无限退避，状态保持 running，只有 reason 变化；hub 收件箱只认
+challenge/401/403/407/429，网络故障永远不上手机。
+
+**采集器（collector，需重建节点镜像才生效）**
+
+- [core.py](../../http_backfill/core.py)：新增 `MAX_NETWORK_RETRIES = 5`；同一目标第 5 次
+  传输失败时不再安排自动重试——该股票 `paused`（**不设 active_halt**：超时不是来源阻断，
+  点「开始/继续」即可恢复，无需单次探测），事件 `network_retry_exhausted`，
+  outcome `transport_error + automatic_retry:false`，原任务保持 pending 不丢断点。
+- 新增股票运行时标记 `attention`（进 `STOCK_KEYS`，随 `/api/status` 的 `stock_runtimes`
+  透出）：`{kind:"network_timeout", task_id, request_id, attempt, error}`。
+  清除时机：任一来源请求成功（`_after_success`）、发生任何 `_halt`（阻断优先展示）、
+  `set_start_page`、`update_job`（操作者介入即销项）。
+
+**hub（waygate，重建 waygate 容器生效）**
+
+- [hub/store.py](hub/store.py)：`KINDS` 增加 `network_timeout: "连续网络超时，需要处理"`；
+  `reconcile` 在无 live halt 时识别 `attention` 股票，按同一 owner 结构建/更新 incident，
+  推送走既有 outbox（自动带华为推送）；恢复后 owner 消失自动 `cleared`。
+  验证通道安全：`verification_target` 本就只放行 `challenge`，该事项点「现在处理」
+  会得到「此事项不需要滑动验证，请查看控制台」。
+- App 零改动（标题由 hub 下发；同 owner 去重使 attention 事项在出现验证码时
+  原地升级为 challenge，不重复占位）。
+
+**测试（WSL Ubuntu-26.04 + 临时 venv，Windows 原生无 fcntl 跑不了 collector 测试）**
+
+- 新增：core 两条（5 次暂停+事件+attention+暂停后不再发请求；设起始页/成功后清零、
+  正文继续）+ hub 两条（attention 建项/推送/恢复销项；live halt 同 owner 原地升级）。
+- 基线对比：干净克隆 42e5625 与「克隆+本改动」各跑全量
+  `apps/http_backfill/tests apps/waygate/tests`——失败集**逐条相同（48 条，均为本环境
+  既有失败），新增失败 0**；通过数 251 → 255（即新增 4 条测试）。
+- `/mnt/d` 直跑会多出 ~52 条 DrvFs 相关失败（symlink/chmod 类），与改动无关。
+
+**未部署**：collector 与 hub 改动均未重建任何服务器容器；按授权流程另行执行。
+另：fzz-002 线上 collector 仍是未提交的工作区代码（见第四十七轮记录），本轮未处理。

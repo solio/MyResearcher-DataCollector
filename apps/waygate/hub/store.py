@@ -14,6 +14,7 @@ KINDS = {
     "http_403": "来源拒绝访问",
     "http_407": "代理认证失败",
     "http_429": "来源限流",
+    "network_timeout": "连续网络超时，需要处理",
 }
 
 
@@ -29,6 +30,19 @@ def live_target(status):
     if owner:
         return owner
     return max(candidates, key=lambda r: (r.get("block_evidence") or {}).get("id", 0), default=None)
+
+
+def attention_target(status):
+    """A stock the node paused after repeated transport failures.
+
+    It needs operator attention (check proxy/network, then resume), never the verify
+    channel: that stays reserved for the live halt family.
+    """
+    job = (status.get("job") or {}).get("id")
+    rows = [r for r in status.get("stock_runtimes", [])
+            if r.get("state") == "paused" and (r.get("attention") or {}).get("kind") == "network_timeout"]
+    own = [r for r in rows if r.get("job") == job] or rows
+    return max(own, key=lambda r: (r.get("attention") or {}).get("request_id") or 0, default=None)
 
 
 def fresh(node, now):
@@ -76,25 +90,38 @@ class Store:
             for node in nodes:
                 if not fresh(node, now):
                     continue  # stale/offline is UNKNOWN, never resolution
-                status, row = node["status"], live_target(node["status"])
-                owner = None
+                status = node["status"]
+                row, kind, target = live_target(status), None, None
                 if row:
                     task = row.get("halt_task_id") or row.get("halted_task_id")
                     evidence = row.get("block_evidence") or {}
                     if not task or not evidence.get("id") or not status.get("instance_id"):
                         continue
-                    owner = json.dumps([node["id"], status["instance_id"], row["job"], row["stock"], task])
+                    kind = row["active_halt"]
                     target = {"instance_id": status["instance_id"], "job": row["job"],
                               "stock": row["stock"], "task": task, "request_id": evidence["id"],
                               "revision": (status.get("job") or {}).get("revision")}
+                else:
+                    row = attention_target(status)
+                    facts = (row or {}).get("attention") or {}
+                    if row and facts.get("task_id") and status.get("instance_id"):
+                        kind = "network_timeout"
+                        target = {"instance_id": status["instance_id"], "job": row["job"],
+                                  "stock": row["stock"], "task": facts["task_id"],
+                                  "request_id": facts.get("request_id"),
+                                  "revision": (status.get("job") or {}).get("revision")}
+                owner = None
+                if target:
+                    owner = json.dumps([node["id"], target["instance_id"], target["job"],
+                                        target["stock"], target["task"]])
                     active = self.db.execute("SELECT id FROM incidents WHERE owner=? AND state='pending'", (owner,)).fetchone()
                     if active:
                         self.db.execute("UPDATE incidents SET target=?,seen=?,kind=?,name=? WHERE id=?",
-                                        (json.dumps(target), now, row["active_halt"], node["name"], active[0]))
+                                        (json.dumps(target), now, kind, node["name"], active[0]))
                     else:
                         self.db.execute("INSERT INTO incidents(id,owner,node,name,stock,kind,target,created,seen) VALUES(?,?,?,?,?,?,?,?,?)",
-                                        (uuid.uuid4().hex, owner, node["id"], node["name"], row["stock"],
-                                         row["active_halt"], json.dumps(target), now, now))
+                                        (uuid.uuid4().hex, owner, node["id"], node["name"], target["stock"],
+                                         kind, json.dumps(target), now, now))
                 # Replaced/cleared is distinct from our own successfully verified result.
                 self.db.execute("UPDATE incidents SET state='cleared' WHERE node=? AND state='pending' AND owner IS NOT ?",
                                 (node["id"], owner))

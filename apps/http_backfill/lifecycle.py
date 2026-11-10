@@ -352,6 +352,9 @@ class LifecycleMixin:
                 with self._stock_context(runtime["stock"], job):
                     self._suspend_proxy_recovery()
                     self._set("probe", False)
+                    # Reconfiguring is an operator action; a pending transport-failure
+                    # notice belongs to the replaced collection round.
+                    self._set("attention", None)
                     if not runtime["active_halt"]:
                         self._set("state", "paused")
                         self._set("reason", "配置已更新，等待开始")
