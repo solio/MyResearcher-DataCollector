@@ -10,7 +10,7 @@ import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, _launch: AbilityConstant.LaunchParam): void {
     crashLog.init(this.context.filesDir, 'crash.log', 400);
-    faultLog.init(this.context.filesDir, 'fault.log', 700);
+    faultLog.init(this.context.filesDir, 'fault.log', 3000);
     this.watchCrashes();
     this.watchFaults();
     AppStorage.setOrCreate('foreground', true);

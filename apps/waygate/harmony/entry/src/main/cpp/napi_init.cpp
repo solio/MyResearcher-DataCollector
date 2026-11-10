@@ -27,6 +27,8 @@
 #include <atomic>
 #include <functional>
 #include <map>
+#include <set>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -570,6 +572,12 @@ struct Forward {
     std::mutex lock;
     std::atomic<bool> stopped{false};
     std::thread acceptor;
+    // Pump threads and their client sockets. They must be joined before the session is freed:
+    // a detached pump used to call libssh2_channel_free() after the session was gone, which is
+    // the use-after-free that killed the app inside _libssh2_list_remove.
+    std::mutex pumpLock;
+    std::vector<std::thread> pumps;
+    std::set<int> clients;
 };
 
 std::map<int, Forward*> gForwards;
@@ -651,6 +659,10 @@ void PumpConnection(Forward* forward, int clientFd) {
         std::lock_guard<std::mutex> guard(forward->lock);
         libssh2_channel_close(channel);
         libssh2_channel_free(channel);
+    }
+    {
+        std::lock_guard<std::mutex> guard(forward->pumpLock);
+        forward->clients.erase(clientFd);
     }
     close(clientFd);
 }
@@ -777,7 +789,9 @@ static napi_value ForwardStart(napi_env env, napi_callback_info info) {
                 if (select(entry->listenFd + 1, &readSet, nullptr, nullptr, &wait) <= 0) continue;
                 int clientFd = accept(entry->listenFd, nullptr, nullptr);
                 if (clientFd < 0) continue;
-                std::thread(PumpConnection, entry, clientFd).detach();
+                std::lock_guard<std::mutex> guard(entry->pumpLock);
+                entry->clients.insert(clientFd);
+                entry->pumps.emplace_back(PumpConnection, entry, clientFd);
             }
         });
     };
@@ -821,6 +835,20 @@ static napi_value StopForward(napi_env env, napi_callback_info info) {
             entry->listenFd = -1;
         }
         if (entry->acceptor.joinable()) entry->acceptor.join();
+        // Let every pump leave its libssh2 call before the session disappears, otherwise the
+        // channel it is still holding points into freed memory.
+        std::vector<std::thread> pending;
+        {
+            std::lock_guard<std::mutex> guard(entry->pumpLock);
+            for (int clientFd : entry->clients) {
+                shutdown(clientFd, SHUT_RDWR);
+            }
+            pending.swap(entry->pumps);
+        }
+        if (entry->sshFd >= 0) shutdown(entry->sshFd, SHUT_RDWR);
+        for (auto& pump : pending) {
+            if (pump.joinable()) pump.join();
+        }
         {
             std::lock_guard<std::mutex> guard(entry->lock);
             if (entry->session != nullptr) {
