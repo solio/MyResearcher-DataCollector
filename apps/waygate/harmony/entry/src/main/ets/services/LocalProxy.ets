@@ -88,13 +88,15 @@ class Pipe {
   private lastActive: number = Date.now();
   private toUpstream: Promise<void> = Promise.resolve();
   private toClient: Promise<void> = Promise.resolve();
+  private resolve: ((host: string) => Promise<number>) | undefined = undefined;
   private upOutstanding: number = 0;
   private downOutstanding: number = 0;
 
   constructor(client: socket.TCPSocketConnection, port: number, domains: string[], ready: ReadyFlag,
-    onClose: (id: number) => void) {
+    onClose: (id: number) => void, resolve: ((host: string) => Promise<number>) | undefined = undefined) {
     this.client = client;
     this.port = port;
+    this.resolve = resolve;
     this.domains = domains;
     this.ready = ready;
     this.onClose = onClose;
@@ -151,9 +153,14 @@ class Pipe {
     upstream.on('close', () => this.close());
     upstream.on('error', (_: BusinessError) => this.close());
     try {
-      await upstream.connect({ address: { address: '127.0.0.1', port: this.port, family: 1 }, timeout: HEAD_TIMEOUT });
+      // direct 出口：本地代理自己就是终点，先把 CONNECT 目标换成一条直达通道的本地端口，
+      // 再把这层 CONNECT 丢掉——远端已经没有 mihomo 需要它了。
+      const upstreamPort = this.resolve === undefined ? this.port : await this.resolve(host);
+      await upstream.connect({ address: { address: '127.0.0.1', port: upstreamPort, family: 1 }, timeout: HEAD_TIMEOUT });
       if (this.closed) { return; }
-      await upstream.send({ data: ascii('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n') });
+      if (this.resolve === undefined) {
+        await upstream.send({ data: ascii('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n') });
+      }
       if (rest.byteLength > 0) { await upstream.send({ data: rest }); }
       hilog.info(LOG_DOMAIN, LOG_TAG, 'upstream tunnel ready host=%{public}s rest=%{public}d',
         host, rest.byteLength);
@@ -209,7 +216,8 @@ export class LocalProxy {
   private pipes: Map<number, Pipe> = new Map();
   private ready: ReadyFlag = new ReadyFlag();
 
-  async start(forwardPort: number, domains: string[]): Promise<string> {
+  async start(forwardPort: number, domains: string[],
+    resolve: ((host: string) => Promise<number>) | undefined = undefined): Promise<string> {
     await this.stop();
     this.ready = new ReadyFlag();
     const server = socket.constructTCPSocketServerInstance();
@@ -226,7 +234,7 @@ export class LocalProxy {
           return;
         }
         const pipe = new Pipe(client, forwardPort, domains, this.ready,
-          (id: number) => { this.pipes.delete(id); });
+          (id: number) => { this.pipes.delete(id); }, resolve);
         this.pipes.set(client.clientId, pipe);
       });
       return 'http://127.0.0.1:' + local.port;

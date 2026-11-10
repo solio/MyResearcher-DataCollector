@@ -1,7 +1,7 @@
 import { LocalProxy } from './LocalProxy';
 import { Api } from './Api';
 import { DirectTarget, NodeProfile, VerificationDescriptor } from './Models';
-import { close, stopForward } from 'libwaygate_ssh.so';
+import { close, forward, SshForwardOptions, stopForward } from 'libwaygate_ssh.so';
 
 class SessionRuntime {
   proxy: LocalProxy = new LocalProxy();
@@ -21,10 +21,47 @@ class SessionRuntime {
   descriptor: VerificationDescriptor | undefined = undefined;
   profile: NodeProfile | undefined = undefined;
 
+  // direct 出口没有固定的 mihomo 监听口：每个目标主机各开一条转发，按 host:port 复用，
+  // 否则一页验证码会反复握手几十次。
+  private hostForwards: Map<string, number> = new Map();
+  forwardIds: number[] = [];
+
+  async forwardFor(host: string, port: number): Promise<number> {
+    const key = host + ':' + port;
+    const cached = this.hostForwards.get(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const profile = this.profile;
+    if (!profile) {
+      throw new Error('缺少节点凭据，无法建立直连通道');
+    }
+    const options: SshForwardOptions = { host: profile.host, port: profile.port, user: profile.user,
+      knownHostBase64: profile.knownHostBase64, remoteHost: host, remotePort: port };
+    if (profile.authType === 'password') {
+      options.password = profile.secret;
+    } else {
+      options.privateKey = profile.secret;
+    }
+    if (profile.passphrase) {
+      options.passphrase = profile.passphrase;
+    }
+    const tunnel = await forward(options);
+    this.hostForwards.set(key, tunnel.port);
+    this.forwardIds.push(tunnel.id);
+    return tunnel.port;
+  }
+
   async stopForwarding(): Promise<void> {
     if (this.forwardId >= 0) {
       const id = this.forwardId;
       this.forwardId = -1;
+      await stopForward(id).catch(() => {});
+    }
+    const ids = this.forwardIds.slice();
+    this.forwardIds = [];
+    this.hostForwards.clear();
+    for (const id of ids) {
       await stopForward(id).catch(() => {});
     }
   }
@@ -48,6 +85,8 @@ class SessionRuntime {
     this.target = undefined;
     this.descriptor = undefined;
     this.profile = undefined;
+    this.hostForwards.clear();
+    this.forwardIds = [];
   }
 }
 export const runtime = new SessionRuntime();

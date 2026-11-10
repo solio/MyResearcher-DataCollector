@@ -697,23 +697,37 @@ struct Index {
       await runAction<PrepareValue>(session.id, descriptor.worker_command, JSON.stringify({ action: 'prepare', target: target }));
       if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在核对节点出口';
+      // direct 出口（worker 裸 IP）没有代理配置可言，exit 显式要走裸 IP，且不比对配置路由签名；
+      // 实例/修订/原请求仍由 prepare/probe 侧钉住。
+      const direct = target.route !== undefined && target.route.mode === 'direct';
       const exitInfo = await runAction<ExitValue>(session.id, descriptor.worker_command,
-        JSON.stringify({ action: 'exit', stock: target.stock, job: target.job }));
-      if (!target.route || exitInfo.route.signature !== target.route.signature) {
+        JSON.stringify({ action: 'exit', stock: target.stock, job: target.job, direct: direct }));
+      if (!target.route) {
+        throw new Error('节点未返回该任务的出口信息，请稍后重试');
+      }
+      if (!direct && exitInfo.route.signature !== target.route.signature) {
         throw new Error('节点出口已变化，已停止验证');
       }
       target.exit_ip = exitInfo.exit_ip;
       runtime.target = target;
       if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在建立应用内 SSH 通道';
-      const forwarding: SshForwardOptions = { host: profile.host, port: profile.port, user: profile.user,
-        knownHostBase64: profile.knownHostBase64, remoteHost: target.route.host, remotePort: target.route.port };
-      if (profile.authType === 'password') { forwarding.password = profile.secret; } else { forwarding.privateKey = profile.secret; }
-      if (profile.passphrase) { forwarding.passphrase = profile.passphrase; }
-      const tunnel = await forward(forwarding);
-      runtime.forwardId = tunnel.id;
-      this.message = '正在绑定本地转发端口';
-      const endpoint = await runtime.proxy.start(tunnel.port, descriptor.source_domains);
+      let endpoint = '';
+      if (direct) {
+        // 裸 IP 出口：每条目标主机各开一条转发（复用），本地代理逐连接直达源站 443。
+        this.message = '正在按目标建立直连通道';
+        endpoint = await runtime.proxy.start(0, descriptor.source_domains,
+          (host: string): Promise<number> => runtime.forwardFor(host, 443));
+      } else {
+        const forwarding: SshForwardOptions = { host: profile.host, port: profile.port, user: profile.user,
+          knownHostBase64: profile.knownHostBase64, remoteHost: target.route.host, remotePort: target.route.port };
+        if (profile.authType === 'password') { forwarding.password = profile.secret; } else { forwarding.privateKey = profile.secret; }
+        if (profile.passphrase) { forwarding.passphrase = profile.passphrase; }
+        const tunnel = await forward(forwarding);
+        runtime.forwardId = tunnel.id;
+        this.message = '正在绑定本地转发端口';
+        endpoint = await runtime.proxy.start(tunnel.port, descriptor.source_domains);
+      }
       this.message = '正在应用浏览器代理';
       const config = new webview.ProxyConfig();
       config.insertProxyRule(endpoint);
