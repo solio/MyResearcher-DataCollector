@@ -2348,6 +2348,66 @@ Android 版仍未同步。
 需要按 `deploy/update-node.sh` 重建/更新节点镜像后才生效；按 `apps/waygate/AGENTS.md` 的限制，
 升级 36/43 采集器需要用户明确授权，本轮未执行。浏览器内的实际面板行为也未点验。
 
+### 2026-11-02 / Windows / 第四十二轮：hk「保存不上」取证；切换节点的回读是旧值
+
+用户报「hk 更新了也一样，保存都保存不上」。先取证，再看是保存链路还是回读显示。
+
+**已部署事实（与上一轮「未部署」不同）**
+
+- hk（`43.132.206.172`，主控别名 `tokenSeller`）容器内
+  `/opt/collector/apps/http_backfill/static/app.js` 含 `resetMihomoNodes`、`mihomoNode`，
+  `core.py` 含 `node_default`；主机 `HEAD=440bc6e`。上一轮的代码确实已生效。
+- 主控（`8.148.251.114`）`HEAD=440bc6e`；公网 `/collector/app.js` 与容器内同为
+  178,097 B，含同一批标记。页面 JS 也是新版。
+
+**保存链路是通的（不是「保存不上」）**
+
+- hk 事件：09:52（CST）`proxy_configured` `mode=direct` ×2，09:57 `mode=http` ×4；
+  说明这几次保存都到达服务端并落库。
+- 直接复现 `POST /api/proxy/config`：节点 `state=running` 时 HTTP 409
+  「请先暂停并等待当前请求结束」；先 `POST /api/control {"action":"pause"}`
+  （与页面 `pauseFirst` 相同）后同一 payload 返回 **200**，随后 `GET /api/proxy`
+  回读 `mode=http`、`endpoint=http://172.18.0.1:7891`，与写入一致。
+- 走主控页面实际使用的路由 `POST /api/nodes/tokenSeller/proxy/config` 也是 **200**。
+  ⇒ 服务端、fleet 路由、回读都正常；页面若只看到「没保存」，要看它显示的是哪个对象。
+
+**真正对不上的：Mihomo「当前节点」读的是旧缓存**
+
+- hk 的 `/data/mihomo-nodes.json`：`now = 37. 商务·荷兰NL…`（测速时间 09:56:07）。
+- 同一时刻控制器 `/proxies/WW` 的实时 `now = 12. IEPL·日本JP·A155…`。
+- `nodes()` 只回缓存；`select()` 切换后**不更新缓存里的 `now`**。
+  ⇒ 切换其实成功了，但下次打开面板 `loadMihomoNodes()` 把下拉框和「当前」拨回旧节点，
+  再点「切换节点」还会把控制器切回去，表现就是「设几次都对不上 / 保存不上」。
+
+**改法**
+
+- [mihomo_control.py](apps/http_backfill/mihomo_control.py)：`nodes()` 在返回缓存前用
+  `_current_now(timeout=2.5)` 覆盖 `now`；控制器不可达时保留缓存值，测速时间与 `age` 不变。
+- [app.js](apps/http_backfill/static/app.js)：`switchMihomoNode()` 成功后立即
+  `loadMihomoNodes(true)`，下拉框与「当前」从同一实时来源刷新，而不是只信 POST 返回值。
+
+**验证**：`python -m py_compile mihomo_control.py` 通过；本机没有 Node，未跑 `node --check`。
+
+**已在 hk 生效**
+
+- 本机访问 GitHub 失败（`curl github.com` 超时，`git push` 连接被重置），无法直接推送；
+  改用 `git bundle` 把同一提交（`0a6ca7c`）快进到 hk 仓库，再跑
+  `deploy/update-node.sh --skip-sweep` 重建容器。
+- 结果：容器 `Up (healthy)`；容器内已是新代码；`/api/mihomo/nodes` 返回
+  `当前: 12. IEPL·日本JP·A155…`（改造前同一接口返回缓存里的 `37. 荷兰NL…`），
+  40 个节点的测速缓存和 `age` 保留。`/api/proxy` 仍为 `mode=http`、
+  `scope=node`、`endpoint=http://172.18.0.1:7891`。
+- 测试期间为复现保存先暂停了该节点；重建后状态为 `paused`，没有自动开始采集。
+
+**未生效 / 未验证**
+
+- 主控（`8.148.251.114`）仍是 `440bc6e`，未重建；因此页面上「切换后立即刷新节点列表」
+  这一项要等主控更新后才生效（`nodes()` 的实时 `now` 修复已在 hk 生效，
+  重开面板即可看到正确节点）。
+- 浏览器内的切换、保存、回读未点验。
+- origin 仍是 `440bc6e`：两个提交（`440bc6e` 已在 origin，`0a6ca7c` 仅本地与 hk）
+  待 GitHub 可达后补推。
+
 
 
 
@@ -2616,3 +2676,45 @@ App：ArkWeb，持久 cookie，且没有关闭 QUIC 的开关。
 
 **未验证**：换 UA 后验证码是否仍会弹出、尺寸是否正常——本轮没有执行验证流程。
 注意：安装会重启 App，正在进行的验证会被中断。
+
+### 2026-11-10 / Windows / 第四十九轮：连续 5 次网络故障暂停采集并上报「需要处理」
+
+需求：采集器连续 5 次传输类失败（超时/TLS/连接/IO 合并计数，用户确认）即暂停该股票，
+不再无限退避重试；并在手机 App 出现「需要处理」（收件箱 + 华为推送，用户确认）。
+
+**改前行为**：`_record_network_retry()` 对传输失败按 `max(interval, min(900, interval·2^n))`
+无限退避，状态保持 running，只有 reason 变化；hub 收件箱只认
+challenge/401/403/407/429，网络故障永远不上手机。
+
+**采集器（collector，需重建节点镜像才生效）**
+
+- [core.py](../../http_backfill/core.py)：新增 `MAX_NETWORK_RETRIES = 5`；同一目标第 5 次
+  传输失败时不再安排自动重试——该股票 `paused`（**不设 active_halt**：超时不是来源阻断，
+  点「开始/继续」即可恢复，无需单次探测），事件 `network_retry_exhausted`，
+  outcome `transport_error + automatic_retry:false`，原任务保持 pending 不丢断点。
+- 新增股票运行时标记 `attention`（进 `STOCK_KEYS`，随 `/api/status` 的 `stock_runtimes`
+  透出）：`{kind:"network_timeout", task_id, request_id, attempt, error}`。
+  清除时机：任一来源请求成功（`_after_success`）、发生任何 `_halt`（阻断优先展示）、
+  `set_start_page`、`update_job`（操作者介入即销项）。
+
+**hub（waygate，重建 waygate 容器生效）**
+
+- [hub/store.py](hub/store.py)：`KINDS` 增加 `network_timeout: "连续网络超时，需要处理"`；
+  `reconcile` 在无 live halt 时识别 `attention` 股票，按同一 owner 结构建/更新 incident，
+  推送走既有 outbox（自动带华为推送）；恢复后 owner 消失自动 `cleared`。
+  验证通道安全：`verification_target` 本就只放行 `challenge`，该事项点「现在处理」
+  会得到「此事项不需要滑动验证，请查看控制台」。
+- App 零改动（标题由 hub 下发；同 owner 去重使 attention 事项在出现验证码时
+  原地升级为 challenge，不重复占位）。
+
+**测试（WSL Ubuntu-26.04 + 临时 venv，Windows 原生无 fcntl 跑不了 collector 测试）**
+
+- 新增：core 两条（5 次暂停+事件+attention+暂停后不再发请求；设起始页/成功后清零、
+  正文继续）+ hub 两条（attention 建项/推送/恢复销项；live halt 同 owner 原地升级）。
+- 基线对比：干净克隆 42e5625 与「克隆+本改动」各跑全量
+  `apps/http_backfill/tests apps/waygate/tests`——失败集**逐条相同（48 条，均为本环境
+  既有失败），新增失败 0**；通过数 251 → 255（即新增 4 条测试）。
+- `/mnt/d` 直跑会多出 ~52 条 DrvFs 相关失败（symlink/chmod 类），与改动无关。
+
+**未部署**：collector 与 hub 改动均未重建任何服务器容器；按授权流程另行执行。
+另：fzz-002 线上 collector 仍是未提交的工作区代码（见第四十七轮记录），本轮未处理。

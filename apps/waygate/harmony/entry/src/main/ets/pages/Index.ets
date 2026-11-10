@@ -1,13 +1,14 @@
 import { webview } from '@kit.ArkWeb';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { crashLog } from '../services/CrashLog';
 import { util } from '@kit.ArkTS';
 import { connection, http } from '@kit.NetworkKit';
 import { Api, readableError } from '../services/Api';
 import { Vault } from '../services/Vault';
 import { registerPush } from '../services/Push';
 import { runtime } from '../services/SessionRuntime';
-import { AuditView, BuiltinNode, BuiltinConfig, Credentials, DirectClaim, DirectTarget, EmptyReply, ExitValue, Inbox, Incident, Link, NodeProfile, NodeState, PrepareValue, ProbeValue, ResultValue, ResumeValue, StockState, VerificationDescriptor } from '../services/Models';
+import { AuditView, BuiltinNode, BuiltinConfig, Credentials, DirectClaim, DirectTarget, EmptyReply, ExitValue, Inbox, Incident, Link, NodeProfile, NodeState, PrepareValue, ProbeValue, ResultValue, ResumeValue, StockState, VerificationDescriptor, readInbox } from '../services/Models';
 import { NodeSsh, runAction } from '../services/NodeSsh';
 import { screenOn } from '../services/ScreenOn';
 import { close, connect, exec, forward, probeHostKey, SshConnectOptions, SshForwardOptions } from 'libwaygate_ssh.so';
@@ -56,7 +57,7 @@ function bounded(work: Promise<void>, ms: number = CALLBACK_WAIT_MS): Promise<vo
 @Entry
 @Component
 struct Index {
-  @State screen: string = 'loading';
+  @State @Watch('onScreenChanged') screen: string = 'loading';
   @State items: Incident[] = [];
   @State nodes: NodeState[] = [];
   @State message: string = '';
@@ -237,6 +238,17 @@ struct Index {
     this.otherNodeNotes = others;
   }
 
+  // Breadcrumb only: a screen name and nothing from the page, so the journal stays tiny and
+  // carries no captcha or token content.
+  private briefUrl(url: string): string {
+    const cut = url.split('?')[0];
+    return cut.length > 80 ? cut.slice(0, 80) : cut;
+  }
+
+  private onScreenChanged(): void {
+    crashLog.append('screen', this.screen);
+  }
+
   private syncFailed(message: string, details: string): void {
     const safeMessage = message.split(this.credentials.token).join('[已隐藏]').slice(0, 400);
     this.syncMessage = readableError(safeMessage);
@@ -250,7 +262,11 @@ struct Index {
       '\ncollector 最近同步：' + (this.lastCollectorSync || '尚无') +
       '\n\n最近一次同步故障' + (this.syncMessage ? '：\n' : '（当前无同步故障）：\n') +
       (this.lastSyncFailure || '无') +
-      '\n\n最近一次接口失败：\n' + (this.api && this.api.lastFailureDetails ? this.api.lastFailureDetails : '无');
+      '\n\n最近一次接口失败：\n' + (this.api && this.api.lastFailureDetails ? this.api.lastFailureDetails : '无') +
+      '\n\n崩溃日志（最近 4 条，' + String(AppStorage.get<number>('crashBytes') || 0) + ' 字节）：\n' +
+      (AppStorage.get<string>('crashTail') || '无') +
+      '\n\n系统故障（' + String(AppStorage.get<number>('faultBytes') || 0) + ' 字节）：\n' +
+      (AppStorage.get<string>('faultTail') || '无');
     this.screen = 'diagnostics';
   }
 
@@ -332,7 +348,7 @@ struct Index {
     if (!this.api || this.polling || !this.foreground) { return; }
     this.polling = true;
     try {
-      const feed = await this.api.request<Inbox>('/v1/inbox', http.RequestMethod.GET, '', 2);
+      const feed: Inbox = readInbox(await this.api.request<Object>('/v1/inbox', http.RequestMethod.GET, '', 2));
       this.items = feed.items; this.nodes = feed.nodes;
       // Only the actionable state decides the cadence: an incident appearing or clearing,
       // or a node going offline. Post counters move constantly while the fleet collects,
@@ -1545,9 +1561,17 @@ struct Index {
           .userAgent(VERIFY_UA)
           .javaScriptAccess(true).domStorageAccess(true)
           .mixedMode(MixedMode.None).fileAccess(false)
+          .onPageBegin((event) => { if (event) { crashLog.append('web', 'begin ' + this.briefUrl(event.url)); } })
           .onPageEnd((event) => { if (event) { this.pageEnded(event.url); } })
           .onErrorReceive((event) => {
-            if (event && event.request.isMainFrame()) { this.message = '页面未加载：' + event.error.getErrorInfo(); }
+            if (event && event.request.isMainFrame()) {
+              this.message = '页面未加载：' + event.error.getErrorInfo();
+              crashLog.append('web-error', event.error.getErrorInfo());
+            }
+          })
+          .onRenderExited((event) => {
+            // The renderer dying is invisible to JS try/catch; this is the only trace we get.
+            crashLog.append('web-exit', String(event ? event.renderExitReason : 'unknown'));
           })
           .onSslErrorEventReceive((event) => { if (event) { event.handler.handleCancel(); } })
           .onDisAppear(() => {

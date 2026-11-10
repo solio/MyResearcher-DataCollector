@@ -105,9 +105,9 @@ def _write_cache(payload) -> None:
         pass
 
 
-def _current_now():
+def _current_now(timeout: float = 8.0):
     try:
-        return (_get("/proxies/" + urllib.parse.quote(_group(), safe="")) or {}).get("now")
+        return (_get("/proxies/" + urllib.parse.quote(_group(), safe=""), timeout=timeout) or {}).get("now")
     except Exception:
         return None
 
@@ -151,6 +151,10 @@ def nodes():
     """Return the last sweep immediately; start one in the background if none exists."""
     cached = _read_cache()
     if cached:
+        # Latency is a point-in-time measurement, but the selected node can change after the
+        # sweep (the console's switch never rewrites this file). Report the controller's live
+        # selection so opening the panel cannot show a node that is no longer in use.
+        cached["now"] = _current_now(timeout=2.5) or cached.get("now")
         return cached
     started = refresh_async().get("started", False)
     return {"now": _current_now(), "group": _group(), "test_url": _test_url(),

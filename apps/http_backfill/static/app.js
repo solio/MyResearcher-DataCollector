@@ -1816,7 +1816,13 @@
     if (!name) return;
     const button = $("mihomo-switch"), note = $("mihomo-state");
     button.disabled = true; note.textContent = `切换到 ${name}…`;
-    try { const data = await api("mihomo/select", "POST", { name }, selectedNode); note.textContent = `已切换：${data?.now || name}`; }
+    try {
+      const data = await api("mihomo/select", "POST", { name }, selectedNode);
+      // Re-read instead of trusting the POST response: the selector and the cached "current"
+      // must come from the same live source, otherwise the next open looks like a failed switch.
+      await loadMihomoNodes(true);
+      note.textContent = `已切换：${data?.now || name}`;
+    }
     catch (error) { note.textContent = error.message || "切换失败"; }
     finally { button.disabled = false; }
   }

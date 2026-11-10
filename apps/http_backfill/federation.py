@@ -124,10 +124,34 @@ def export_page(engine, after=0, limit=100, snapshot=None):
         snapshot = maximum if snapshot is None else snapshot
         if snapshot > maximum or after > snapshot:
             raise ValueError("export 游标/快照超出已提交序列")
-        rows = engine.db.execute("SELECT seq,payload,payload_sha256 FROM export_journal WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
-                                 (after, snapshot, limit))
-        items, byte_count = [], 1024
+        # A journal row without a payload carries no facts. Declaring the gap keeps the sequence
+        # provable, and finding the first non-empty row first lets one page step over the whole
+        # empty prefix instead of crawling it twenty rows at a time.
+        first = engine.db.execute("SELECT seq FROM export_journal WHERE seq>? AND seq<=? AND payload<>'' "
+                                  "ORDER BY seq LIMIT 1", (after, snapshot)).fetchone()
+        skipped = []
+        if first is None:
+            next_after = snapshot if snapshot > after else after
+            if next_after > after:
+                skipped.append([after + 1, next_after])
+            return {"schema_version": SCHEMA_VERSION, "instance_id": engine._get("instance_id"), "after": after,
+                    "snapshot": snapshot, "next_after": next_after, "has_more": next_after < snapshot,
+                    "items": [], "skipped": skipped}
+        first = first[0]
+        if first > after + 1:
+            skipped.append([after + 1, first - 1])
+        rows = engine.db.execute("SELECT seq,payload,payload_sha256 FROM export_journal "
+                                 "WHERE seq>=? AND seq<=? ORDER BY seq LIMIT ?",
+                                 (first, snapshot, limit)).fetchall()
+        items, byte_count, last = [], 1024, first - 1
         for row in rows:
+            if not row["payload"]:
+                if skipped and skipped[-1][1] == row["seq"] - 1:
+                    skipped[-1] = [skipped[-1][0], row["seq"]]
+                else:
+                    skipped.append([row["seq"], row["seq"]])
+                last = row["seq"]
+                continue
             size = len(row["payload"].encode()) + 200
             if items and byte_count + size > 8 * 1024 * 1024:
                 break
@@ -137,9 +161,11 @@ def export_page(engine, after=0, limit=100, snapshot=None):
                 raise FederationError("单条导出证据超出可传输上限")
             items.append(dict(json.loads(row["payload"]), seq=row["seq"], evidence_sha256=row["payload_sha256"]))
             byte_count += size
-        next_after = items[-1]["seq"] if items else after
+            last = row["seq"]
+        next_after = last if last >= first else after
         return {"schema_version": SCHEMA_VERSION, "instance_id": engine._get("instance_id"), "after": after,
-                "snapshot": snapshot, "next_after": next_after, "has_more": next_after < snapshot, "items": items}
+                "snapshot": snapshot, "next_after": next_after, "has_more": next_after < snapshot,
+                "items": items, "skipped": skipped}
 
 
 def export_raw(engine, request_id):
@@ -470,8 +496,19 @@ class MergeStore:
         items = page["items"]
         if not isinstance(items, list) or len(items) > 200 or type(page["has_more"]) is not bool:
             raise FederationError("导出页格式无效")
-        expected = list(range(after + 1, after + len(items) + 1))
-        if [r.get("seq") for r in items] != expected or any(type(r.get("seq")) is not int for r in items) or next_after != (expected[-1] if expected else after) or next_after > snapshot:
+        emitted = [r.get("seq") for r in items]
+        if any(type(seq) is not int for seq in emitted) or emitted != sorted(emitted) or len(set(emitted)) != len(emitted):
+            raise FederationError("导出序列存在间隙/次序错误")
+        skipped = page.get("skipped") or []
+        if not isinstance(skipped, list):
+            raise FederationError("导出跳过区间声明无效")
+        covered = set(emitted)
+        for pair in skipped:
+            if (not isinstance(pair, list) or len(pair) != 2 or type(pair[0]) is not int or type(pair[1]) is not int
+                    or pair[0] > pair[1]):
+                raise FederationError("导出跳过区间声明无效")
+            covered.update(range(pair[0], pair[1] + 1))
+        if covered != set(range(after + 1, next_after + 1)) or next_after > snapshot:
             raise FederationError("导出序列存在间隙/次序错误")
         if page["has_more"] != (next_after < snapshot):
             raise FederationError("导出快照存在未声明的数据间隙")

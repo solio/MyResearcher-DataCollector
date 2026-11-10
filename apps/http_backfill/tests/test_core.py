@@ -174,6 +174,44 @@ class CoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "worker"):
             Engine(self.tmp.name, transport=Wire(), clock=self.clock)
 
+    def test_five_transport_failures_pause_stock_for_attention(self):
+        timeout = lambda: Response(None, b"", {}, error="TimeoutError: timed out", transient_error="network_timeout")
+        wire = Wire(timeout(), timeout(), timeout(), timeout())
+        e = self.started(wire)
+        for _ in range(4):
+            self.tick_due(e)
+        self.assertEqual(e.status()["state"], "running")
+        self.assertIsNone(e.status()["stock_runtimes"][0]["attention"])
+        wire.responses.append(timeout())
+        self.tick_due(e)
+        status = e.status()
+        runtime = status["stock_runtimes"][0]
+        self.assertEqual(runtime["state"], "paused")
+        self.assertIn("连续 5 次网络故障", runtime["reason"])
+        attention = runtime["attention"]
+        self.assertEqual(attention["kind"], "network_timeout")
+        self.assertEqual(attention["attempt"], 5)
+        self.assertEqual(len([r for r in e.events(100) if r["kind"] == "network_retry_exhausted"]), 1)
+        # Paused means paused: no further source requests until a human resumes.
+        self.tick_due(e)
+        self.assertEqual(len(wire.calls), 5)
+
+    def test_manual_recovery_paths_clear_attention(self):
+        a = row()
+        wire = Wire(*[Response(None, b"", {}, error="TimeoutError: timed out", transient_error="network_timeout")
+                      for _ in range(5)], ok(list_html([a])), ok(detail_html(a)))
+        e = self.started(wire)
+        for _ in range(5):
+            self.tick_due(e)
+        self.assertEqual(e.status()["stock_runtimes"][0]["attention"]["attempt"], 5)
+        e.set_start_page("601012", 1)
+        self.assertIsNone(e.status()["stock_runtimes"][0]["attention"])
+        e.start()
+        self.tick_due(e)  # manual entry page 1 succeeds
+        self.tick_due(e)  # detail for the observed post
+        self.assertIsNone(e.status()["stock_runtimes"][0]["attention"])
+        self.assertEqual(e.status()["aggregate"]["body_complete"], 1)
+
     def test_payload_cannot_mask_challenge_retry_is_one_probe(self):
         a = row()
         wire = Wire(ok(list_html([a], extra=CHALLENGE)), ok(list_html([a])), ok(detail_html(a)))
