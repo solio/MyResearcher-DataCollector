@@ -2718,3 +2718,49 @@ challenge/401/403/407/429，网络故障永远不上手机。
 
 **未部署**：collector 与 hub 改动均未重建任何服务器容器；按授权流程另行执行。
 另：fzz-002 线上 collector 仍是未提交的工作区代码（见第四十七轮记录），本轮未处理。
+
+### 2026-11-10 / Windows / 第五十轮：主控（fzz-002）部署 964046d；收编未提交的分页漂移工作
+
+用户授权先部署主控节点。fzz-002 线上 collector 是**未提交的工作区代码**（第四十九轮遗留），
+直接重建会丢功能，因此先收编再部署。
+
+**发现并收编的分叉工作**
+
+- fzz-002 工作区 core.py 相对基线 440bc6e 有 188 行未提交改动：「分页漂移自动重定基」
+  （`source_count_decrease` 入 ORDINARY_RECHECKS、`RecoveryLimitError(kind)`、
+  `manual_restart_required` 门控、`_complete_recovery_from_latest_pass()`、
+  `_auto_rebase_legacy_drift_stop()`、回滚逐页后退）。
+- 该文件是从**更老的基线**改出来的，同时回退了三个较新修复：
+  `proxy_status()` 的 scope/node_default（440bc6e）、`on_change` 快照通知（531612d）、
+  `clean_shutdown` 水位标记（4a99b67）。
+- 收编方式：本地分支 `fzz-console`（基于 440bc6e）提交服务器 core.py（7e6a93d）→
+  merge main（cd21c6b，零冲突但 git 采纳了服务器侧的三处删除）→ 手工恢复
+  `on_change`/`_notify_change`/`clean_shutdown`/`proxy_status` 四个块（964046d）。
+- **测试中立性验证**：WSL 原生盘干净克隆分别全量跑 c6501c5 与 964046d——失败集
+  **逐条相同**（该 venv 下存在测试间 env 泄漏，同一提交两次全量失败数在 48↔99 波动，
+  与代码无关；同条件对比下合并新增失败为 0）。
+
+**部署步骤（fzz-002 = 8.148.251.114）**
+
+1. 部署前 diff 已存服务器 `/tmp/fzz002-deployed-state.diff`；确认 4 个非 core 脏文件
+  与目标一致；`content_policy_version=3` 无迁移；本机 collector `blocked/challenge`
+  （本就停止，无需暂停；challenge 阻断按设计跨重启保留）。
+2. `git checkout --` 5 个脏文件 → bundle 快进至 `964046d`，工作区 clean。
+3. `deploy/update-node.sh --skip-sweep` 重建 collector 容器。
+4. `deploy/start.sh --public-url https://testapi.zuzurent.com.cn/collector` 重建 hub 容器。
+
+**部署后验证（实测输出）**
+
+- collector 容器 healthy；容器内 core.py：`MAX_NETWORK_RETRIES=2`、
+  `node_default=1`、`on_change=2`、漂移重定基=3 —— 新功能与三个保留修复都在。
+- hub 容器 healthy；`network_timeout=3`、`asyncio.sleep(2)`；`/health` 200；
+  启动输出「节点：5；待处理：1」（既有 challenge 待办保留）。
+- `/api/fleet` 5 节点全部 online；本机 collector 部署后仍为 `blocked/challenge`，未自动开始。
+- git 状态：服务器仓库 clean，HEAD=964046d。
+
+**未做 / 注意**
+
+- hk/sg/03/02/WSL 节点未重建（本次仅主控）；hk 仓库另行快进到 964046d（容器未动）。
+- origin 推送仍被本机网络阻断，待恢复后补推（964046d）。
+- 「分页漂移自动重定基」此前从未进过 Git、也没有任何测试覆盖；本轮只保证收编完整、
+  与既有修复并存、全量套件失败集不变。其行为正确性由线上运检验证。
