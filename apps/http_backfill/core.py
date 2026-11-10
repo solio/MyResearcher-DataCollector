@@ -377,6 +377,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self._lock_file.close()
             raise RuntimeError("该实验目录已有运行中的 worker，不能启动第二个进程") from exc
         self._mutex = threading.RLock()
+        # Set by the HTTP layer: tells it the state may have changed so its snapshot is rebuilt
+        # before the next poll instead of waiting out the TTL.
+        self.on_change = None
         self._inflight = False
         self._inflight_stock = None
         self._inflight_probe = False
@@ -446,6 +449,14 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 if self._get("job_id") and self._get("state") != "completed":
                     self._mark_recovery_needed("process_restart")
         self.compatible_store = CompatibleDataStore(self.data_dir, self._get("instance_id"))
+        # Mark the process as running before the startup pass, so a crash during it still forces
+        # a full verification next time. Committed on its own: if the process dies mid-sync the
+        # flag must stay 0 rather than roll back with the interrupted transaction.
+        with self.db:
+            # Remember whether the previous process closed cleanly before overwriting the flag:
+            # the startup pass itself must read the old value, not the one we just wrote.
+            self._set_global("storage_sync_clean", self._get_global("clean_shutdown") == 1)
+            self._set_global("clean_shutdown", 0)
         self._sync_storage()
         from task_proxy import TaskProxyRoutes
         self.task_proxies = TaskProxyRoutes(self.data_dir, self.proxy, clock=self.clock)
@@ -1810,7 +1821,18 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def proxy_status(self):
         with self._mutex:
-            result = self._proxy_for_stock().status()
+            manager = self._proxy_for_stock()
+            result = manager.status()
+            # The console panel edits the node default, but this status describes the stock
+            # that is currently running. Both are returned so a write and the following read
+            # are about the same object instead of silently different scopes.
+            if manager is not self.proxy:
+                scope = self._stock_scope()
+                result["scope"] = "stock"
+                result["scope_stock"] = str(scope[1]) if scope else ""
+                result["node_default"] = self.proxy.status()
+            else:
+                result["scope"] = "node"
             result["auto_suspended"] = self._get("proxy_auto_suspended", True)
             if (not result["auto_suspended"] and result["settings"]["auto_recover"]
                     and self._get("state") in {"blocked", "error"}):
@@ -1948,6 +1970,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         with self._mutex:
             try:
                 self._record_response(rid, task, response, config, probe, probe_only)
+                self._notify_change()
                 try:
                     outcome = self.db.execute("SELECT outcome FROM requests WHERE id=?", (rid,)).fetchone()[0]
                     manager.observe(response, outcome, self._get("next_due", 0))
@@ -2025,6 +2048,15 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return task
         self._begin_recovery(task["job"], task["stock"], frontier, "list_delay_recheck", force_first=True)
         return self._target()
+
+    def _notify_change(self):
+        callback = self.on_change
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            pass
 
     def _record_response(self, rid, task, response, config, probe, probe_only=False):
         if not isinstance(response.body, bytes):
