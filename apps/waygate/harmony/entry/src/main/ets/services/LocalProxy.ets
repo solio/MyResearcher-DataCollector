@@ -155,11 +155,16 @@ class Pipe {
     try {
       // direct 出口：本地代理自己就是终点，先把 CONNECT 目标换成一条直达通道的本地端口，
       // 再把这层 CONNECT 丢掉——远端已经没有 mihomo 需要它了。
-      const upstreamPort = this.resolve === undefined ? this.port : await this.resolve(host);
+      const resolver = this.resolve;
+      const upstreamPort = resolver === undefined ? this.port : await resolver(host);
       await upstream.connect({ address: { address: '127.0.0.1', port: upstreamPort, family: 1 }, timeout: HEAD_TIMEOUT });
       if (this.closed) { return; }
-      if (this.resolve === undefined) {
+      if (resolver === undefined) {
         await upstream.send({ data: ascii('CONNECT ' + host + ':443 HTTP/1.1\r\nHost: ' + host + ':443\r\n\r\n') });
+      } else {
+        // 没有 mihomo 代答了：这一句必须由本地代理自己回给浏览器，否则它永远停在握手前，
+        // TLS 一个字节都不会发出来（表现为“未能读取手机出口地址”）。
+        await this.client.send({ data: ascii('HTTP/1.1 200 Connection Established\r\n\r\n') });
       }
       if (rest.byteLength > 0) { await upstream.send({ data: rest }); }
       hilog.info(LOG_DOMAIN, LOG_TAG, 'upstream tunnel ready host=%{public}s rest=%{public}d',
