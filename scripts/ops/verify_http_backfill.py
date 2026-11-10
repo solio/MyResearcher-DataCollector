@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 from contextlib import nullcontext
+import hashlib
 import ipaddress
 import json
 from pathlib import Path
@@ -85,6 +86,11 @@ def route(status, stock=None, job=None):
         settings = selected.get("settings") or {}
     endpoint = settings.get("endpoint") or ""
     u = urllib.parse.urlsplit(endpoint)
+    if settings.get("mode") == "direct":
+        result = {"mode": "direct", "host": "", "port": 0, "endpoint": "",
+                  "selectors": {}, "outbound": "DIRECT"}
+        result["signature"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+        return result
     if (settings.get("mode") not in {"http", "mihomo"} or u.scheme != "http"
             or not u.hostname or not u.port or u.username or u.password
             or u.path not in ("", "/") or u.query or u.fragment or selected.get("has_auth")):
@@ -156,6 +162,10 @@ def unchanged(view, expected):
         raise RuntimeError("节点或任务配置已变更，未提交新的来源请求")
     for target in view["targets"]:
         if all(target[k] == expected[k] for k in ("job", "stock", "task", "request_id", "url")):
+            if expected["route"].get("mode") == "direct":
+                # 裸 IP 验证钉住的是实例/修订/原请求；运行时可能已回退直连，
+                # 配置路由的签名不参与比对。
+                return target
             if target["route"]["signature"] != expected["route"]["signature"]:
                 raise RuntimeError("代理出口选择已变更，未提交新的来源请求")
             return target
@@ -169,8 +179,15 @@ def execute(payload):
     if action == "audit":
         return view
     if action == "exit":
-        selected = route(status, payload.get("stock"), payload.get("job"))
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": selected["endpoint"]}))
+        if payload.get("direct"):
+            selected = {"mode": "direct", "host": "", "port": 0, "endpoint": "",
+                        "selectors": {}, "outbound": "DIRECT"}
+            selected["signature"] = hashlib.sha256(json.dumps(selected, sort_keys=True).encode()).hexdigest()
+            proxies = {}
+        else:
+            selected = route(status, payload.get("stock"), payload.get("job"))
+            proxies = {} if selected.get("mode") == "direct" else {"https": selected["endpoint"]}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
         with opener.open("https://api.ipify.org", timeout=15) as response:
             ip = response.read(100).decode().strip()
         return {"route": selected, "exit_ip": ip}
@@ -195,7 +212,8 @@ def execute(payload):
                 raise RuntimeError("已暂停后续采集，正在执行的请求尚未结束；未打开验证浏览器")
             unchanged(snapshot(current), expected)
             return {"paused_stocks": paused}
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": expected["route"]["endpoint"]}))
+        proxies = {} if expected["route"].get("mode") == "direct" else {"https": expected["route"]["endpoint"]}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
         with opener.open("https://api.ipify.org", timeout=15) as response:
             if response.read(100).decode().strip() != expected["exit_ip"]:
                 raise RuntimeError("验证后服务器出口IP已经变化，未提交来源探测")
@@ -217,7 +235,9 @@ def execute(payload):
                 or not active or active.get("active_halt") or active.get("state") != "paused"
                 or status.get("node_source_auth_barrier") or status.get("legacy_stock_halt_barrier")
                 or status.get("storage_halt") or view["inflight"] or view["probe_pending"]
-                or route(status, expected["stock"], expected["job"])["signature"] != expected["route"]["signature"]):
+                or (expected["route"].get("mode") != "direct"
+                    and route(status, expected["stock"], expected["job"])["signature"]
+                    != expected["route"]["signature"])):
             raise RuntimeError("任务或出口状态已变更，未自动继续；请在控制台查看")
         api(base, data, "stocks/" + expected["stock"] + "/control",
             {"action": "start", "job_id": expected["job"]})
@@ -289,6 +309,14 @@ def ssh_destination(node):
     return node.get("user", "root") + "@" + node["host"]
 
 
+def direct_route():
+    """Desktop-side twin of REMOTE_WORKER's direct descriptor; must stay identical."""
+    result = {"mode": "direct", "host": "", "port": 0, "endpoint": "",
+              "selectors": {}, "outbound": "DIRECT"}
+    result["signature"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+    return result
+
+
 def remote(node, action, **payload):
     source = "PAYLOAD = " + repr(dict(action=action, **payload)) + "\n" + REMOTE_WORKER
     proc = subprocess.run(ssh_args(node) + [ssh_destination(node), "python3 -"],
@@ -336,12 +364,15 @@ class Tunnel:
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
-        host = self.route["host"]
-        if ":" in host:
-            host = "[" + host + "]"
-        forward = f"127.0.0.1:{self.port}:{host}:{self.route['port']}"
+        if self.route.get("mode") == "direct":
+            forward_args = ["-D", f"127.0.0.1:{self.port}"]
+        else:
+            host = self.route["host"]
+            if ":" in host:
+                host = "[" + host + "]"
+            forward_args = ["-L", f"127.0.0.1:{self.port}:{host}:{self.route['port']}"]
         command = ssh_args(self.node) + ["-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3", "-L", forward, ssh_destination(self.node),
+            "-o", "ServerAliveCountMax=3"] + forward_args + [ssh_destination(self.node),
             "python3 -c 'import sys; sys.stdin.buffer.read()'"]
         self.errors = tempfile.TemporaryFile()
         try:
@@ -363,7 +394,8 @@ class Tunnel:
 
     @property
     def endpoint(self):
-        return f"http://127.0.0.1:{self.port}"
+        scheme = "socks5" if self.route.get("mode") == "direct" else "http"
+        return f"{scheme}://127.0.0.1:{self.port}"
 
     def close(self):
         if self.process:
@@ -413,12 +445,12 @@ def wait_operator(page, context, tunnel):
             page.wait_for_timeout(200)
 
 
-def browser_session(node, expected, *, check_exit=False):
+def browser_session(node, expected, *, check_exit=False, direct=False):
     from playwright.sync_api import sync_playwright, Error
     target = expected.get("target")
     stock = target["stock"] if target else None
     job = target["job"] if target else None
-    exit_check = remote(node, "exit", stock=stock, job=job)
+    exit_check = remote(node, "exit", stock=stock, job=job, direct=direct)
     if target and exit_check["route"]["signature"] != target["route"]["signature"]:
         raise RuntimeError("服务器出口配置已变化，请重新运行")
     profile_root = (REPO / ".runtime/browser-profiles").resolve()
@@ -468,27 +500,33 @@ def browser_session(node, expected, *, check_exit=False):
 
 def run(node, args):
     view = remote(node, "audit")
+    direct = bool(getattr(args, "direct", False))
     if args.check:
         print(json.dumps(view, ensure_ascii=False, indent=2))
         return 0
     target = choose_target(view, args.stock)
     if args.check_exit:
-        if target and target.get("route_error"):
+        if target and target.get("route_error") and not direct:
             raise RuntimeError(target["route_error"])
         try:
-            browser_session(node, {"target": target}, check_exit=True)
+            browser_session(node, {"target": target}, check_exit=True, direct=direct)
         finally:
             print("本机测试浏览器和临时代理通道已清理。", flush=True)
         return 0
     if target is None:
         print("该节点目前没有验证码/身份核验阻断，无需开启验证浏览器。")
         return 0
-    if target.get("route_error"):
+    if direct:
+        target = dict(target, route=direct_route())
+        target.pop("route_error", None)
+        print("已指定 --direct：验证出口 = worker 裸 IP（SSH -D/SOCKS5）；单次探测仍按任务当前路由执行。",
+              flush=True)
+    elif target.get("route_error"):
         raise RuntimeError(target["route_error"])
     print(f"{node['host']} · {target['stock']} · 原阻断请求 #{target['request_id']}", flush=True)
     remote(node, "prepare", target=target)
     try:
-        confirmed = browser_session(node, {"target": target})
+        confirmed = browser_session(node, {"target": target}, direct=direct)
     finally:
         print("本机专用浏览器和临时代理通道已清理，日常代理规则保持原样。", flush=True)
     if not confirmed:
@@ -521,6 +559,9 @@ def main(argv=None):
     parser.add_argument("node", nargs="?", help="36、43、251、252 或已配置的服务器 IP")
     parser.add_argument("--stock", help="指定验证股票；默认自动选择当前阻断任务")
     parser.add_argument("--resume", action="store_true", help="探测通过后继续该股票")
+    parser.add_argument("--direct", action="store_true",
+                        help="验证出口改走 worker 裸 IP（SSH -D/SOCKS5）；用于运行时已回退直连、"
+                             "配置路由异常，或需要先行验证裸 IP 是否干净的场景")
     checks = parser.add_mutually_exclusive_group()
     checks.add_argument("--check", action="store_true", help="只检查服务器当前状态")
     checks.add_argument("--check-exit", action="store_true", help="只验证共同出口并清理，不访问股吧")

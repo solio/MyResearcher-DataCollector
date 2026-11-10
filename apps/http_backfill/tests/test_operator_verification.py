@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 import sqlite3
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -262,6 +264,229 @@ class VerificationTests(unittest.TestCase):
             s["coverage"] = []
             s["detached_stock_runtimes"][0]["job"] = 3
             self.assertEqual(scope["route"](s,"002648",3)["port"],7992)
+
+
+    def test_direct_effective_route_returns_verifiable_descriptor(self):
+        w = worker()
+        s = status()
+        s["proxy"] = {"settings": {"mode": "direct", "endpoint": ""}, "has_auth": False}
+        target = w["snapshot"](s)["targets"][0]
+        self.assertIsNone(target.get("route_error"))
+        self.assertEqual(target["route"]["mode"], "direct")
+        self.assertEqual(target["route"]["outbound"], "DIRECT")
+        self.assertTrue(target["route"]["signature"])
+        s2 = status()
+        s2["coverage"] = [{"stock": "002648",
+                           "task_proxy": {"settings": {"mode": "direct", "endpoint": ""}}}]
+        self.assertEqual(w["snapshot"](s2)["targets"][0]["route"]["mode"], "direct")
+
+    def test_exit_action_direct_egress_uses_no_proxy(self):
+        w = worker()
+        s = status()
+        s["proxy"] = {"settings": {"mode": "direct", "endpoint": ""}, "has_auth": False}
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self, _n): return b"203.0.113.7"
+        opener = Mock(); opener.open.return_value = _Resp()
+        w["locate"] = lambda: (Path("/tmp"), "http://local")
+        w["api"] = lambda *args: s
+        with patch("urllib.request.build_opener", return_value=opener) as build:
+            result = w["execute"]({"action": "exit", "stock": "002648", "job": 3})
+        self.assertEqual(build.call_args[0][0].proxies, {})
+        self.assertEqual(result["exit_ip"], "203.0.113.7")
+        self.assertEqual(result["route"]["mode"], "direct")
+
+    def test_probe_direct_recheck_compares_worker_egress_without_proxy(self):
+        w = worker()
+        s = status()
+        s["proxy"] = {"settings": {"mode": "direct", "endpoint": ""}, "has_auth": False}
+        target = w["snapshot"](s)["targets"][0]
+        target["exit_ip"] = "203.0.113.7"
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self, _n): return b"203.0.113.7"
+        opener = Mock(); opener.open.return_value = _Resp()
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            db = sqlite3.connect(data / "collector.db")
+            with db:
+                db.execute("CREATE TABLE requests(id,job,stock,task,probe,outcome,http_status,error,finished)")
+            db.close()
+            w["locate"] = lambda: (data, "http://local")
+            calls = []
+            def api(base, data_, path="status", body=None):
+                calls.append((path, body)); return s
+            w["api"] = api
+            with patch("urllib.request.build_opener", return_value=opener) as build:
+                result = w["execute"]({"action": "probe", "target": target})
+        self.assertEqual(build.call_args[0][0].proxies, {})
+        self.assertEqual(result["before_request_id"], 0)
+        self.assertEqual(calls[-1], ("stocks/002648/control",
+                                     {"action": "retry", "job_id": 3, "retry_request_id": 10}))
+
+    def test_chromium_socks5_sends_hostname_to_proxy_not_local_dns(self):
+        """实测 Chromium socks5:// 是否把域名交给代理远端解析（ATYP=domain）。
+
+        不访问任何真实来源：目标是 .invalid 保留 TLD，SOCKS5 mock 用固定 200 应答。
+        mock 带缓冲精确解析（问候与 CONNECT 可能合段到达）、接受多条连接
+        （Chromium 会并发开多条）——固定 recv 单连接的 mock 会假报代理连接失败。
+        """
+        if importlib.util.find_spec("playwright") is None:
+            self.skipTest("本机未安装 playwright")
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        port = srv.getsockname()[1]
+        handshakes = []
+        stop = threading.Event()
+
+        def recv_exact(conn, count, buffer):
+            while len(buffer) < count:
+                chunk = conn.recv(count - len(buffer))
+                if not chunk:
+                    raise OSError("对端提前关闭")
+                buffer += chunk
+            return buffer[:count], buffer[count:]
+
+        def handle(conn):
+            with conn:
+                try:
+                    conn.settimeout(5)
+                    buffer = b""
+                    greeting, buffer = recv_exact(conn, 2, buffer)
+                    methods, buffer = recv_exact(conn, greeting[1], buffer)
+                    conn.sendall(b"\x05\x00")
+                    head, buffer = recv_exact(conn, 4, buffer)
+                    entry = {"atyp": head[3]}
+                    if entry["atyp"] == 3:
+                        raw, buffer = recv_exact(conn, 1, buffer)
+                        host_raw, buffer = recv_exact(conn, raw[0], buffer)
+                        entry["host"] = host_raw.decode()
+                    elif entry["atyp"] == 1:
+                        host_raw, buffer = recv_exact(conn, 4, buffer)
+                        entry["host"] = socket.inet_ntoa(host_raw)
+                    elif entry["atyp"] == 4:
+                        host_raw, buffer = recv_exact(conn, 16, buffer)
+                        entry["host"] = socket.inet_ntop(socket.AF_INET6, host_raw)
+                    else:
+                        entry["host"] = None
+                        with lock:
+                            handshakes.append(entry)
+                        return
+                    port_raw, buffer = recv_exact(conn, 2, buffer)
+                    entry["port"] = (port_raw[0] << 8) | port_raw[1]
+                    conn.sendall(b"\x05\x00\x00\x01" + b"\x00" * 6)
+                    while b"\r\n\r\n" not in buffer:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        buffer += chunk
+                    entry["request_head"] = buffer[:32]
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    with lock:
+                        handshakes.append(entry)
+                except OSError:
+                    return
+
+        def serve():
+            srv.settimeout(0.3)
+            while not stop.is_set():
+                try:
+                    conn, _ = srv.accept()
+                except (socket.timeout, OSError):
+                    if stop.is_set():
+                        break
+                    continue
+                threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+        lock = threading.Lock()
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        from playwright.sync_api import sync_playwright, Error
+        try:
+            with tempfile.TemporaryDirectory() as td, sync_playwright() as p:
+                browser = p.chromium.launch(headless=True, channel="chrome",
+                                            proxy={"server": f"socks5://127.0.0.1:{port}"},
+                                            args=["--disable-quic"])
+                try:
+                    page = browser.new_page()
+                    page.goto("http://socks-dns-probe.invalid/", wait_until="commit", timeout=20000)
+                finally:
+                    browser.close()
+        except Error as exc:
+            srv.close()
+            self.fail(f"经 SOCKS5 mock 加载页面失败（handshakes={handshakes}）：{str(exc)[:200]}")
+        stop.set()
+        srv.close()
+        main = [h for h in handshakes if h.get("host") == "socks-dns-probe.invalid"]
+        self.assertTrue(main, f"未捕获目标域名的握手：{handshakes}")
+        self.assertEqual(main[0]["atyp"], 3,
+                         f"Chromium 未把域名交给 SOCKS5 远端解析：{main}")
+        self.assertEqual(main[0]["port"], 80)
+
+
+    def test_direct_route_signature_matches_worker_descriptor(self):
+        w = worker()
+        s = status()
+        s["proxy"] = {"settings": {"mode": "direct", "endpoint": ""}, "has_auth": False}
+        self.assertEqual(helper.direct_route()["signature"], w["route"](s, "002648", 3)["signature"])
+
+    def test_exit_direct_flag_bypasses_task_route_and_returns_bare_ip(self):
+        w = worker()
+        s = status()
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self, _n): return b"203.0.113.7"
+        opener = Mock(); opener.open.return_value = _Resp()
+        w["locate"] = lambda: (Path("/tmp"), "http://local")
+        w["api"] = lambda *args: s
+        with patch("urllib.request.build_opener", return_value=opener) as build:
+            result = w["execute"]({"action": "exit", "stock": "002648", "job": 3, "direct": True})
+        self.assertEqual(build.call_args[0][0].proxies, {})
+        self.assertEqual(result["route"]["mode"], "direct")
+        self.assertEqual(result["exit_ip"], "203.0.113.7")
+
+    def test_unchanged_direct_expected_skips_route_signature_but_pins_request(self):
+        altered = copy.deepcopy(self.view)
+        altered["targets"][0]["route"]["signature"] = "new-proxy"
+        with self.assertRaisesRegex(RuntimeError, "代理出口"):
+            self.w["unchanged"](altered, self.target)
+        direct_expected = dict(self.target, route=helper.direct_route())
+        self.assertEqual(self.w["unchanged"](altered, direct_expected)["stock"], "002648")
+        drifted = copy.deepcopy(altered)
+        drifted["targets"][0]["request_id"] += 1
+        with self.assertRaisesRegex(RuntimeError, "原阻断"):
+            self.w["unchanged"](drifted, direct_expected)
+
+    def test_resume_direct_expected_skips_route_signature(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.w["locate"] = lambda: (Path(tmp), "http://local")
+            self.s["stock_runtimes"][0].update(state="paused", active_halt=None)
+            self.s["node_source_auth_barrier"] = None
+            self.w["api"] = Mock(return_value=self.s)
+            direct_target = dict(self.target, route=helper.direct_route())
+            self.assertTrue(self.w["execute"]({"action": "resume", "target": direct_target})["started"])
+
+    def test_run_direct_override_passes_direct_target_to_prepare(self):
+        fake = Mock(side_effect=[self.view, {"paused_stocks": []}])
+        args = SimpleNamespace(check=False, check_exit=False, stock=None, direct=False)
+        direct_args = SimpleNamespace(check=False, check_exit=False, stock=None, direct=True)
+        with patch.object(helper, "remote", fake), \
+             patch.object(helper, "browser_session", return_value=False) as browser:
+            self.assertEqual(helper.run({"host": "node"}, direct_args), 0)
+            self.assertEqual(browser.call_args.kwargs["direct"], True)
+            prepared = fake.call_args_list[1].kwargs["target"]
+            self.assertEqual(prepared["route"]["mode"], "direct")
+            self.assertNotIn("route_error", prepared)
+            args.direct = False
+            fake2 = Mock(side_effect=[self.view, {"paused_stocks": []}])
+            with patch.object(helper, "remote", fake2):
+                helper.run({"host": "node"}, args)
+            self.assertEqual(fake2.call_args_list[1].kwargs["target"]["route"].get("mode"), None)
+            self.assertEqual(fake2.call_args_list[1].kwargs["target"]["route"]["signature"], "fixed")
 
 
 if __name__ == "__main__":

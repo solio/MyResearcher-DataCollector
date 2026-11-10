@@ -4,6 +4,8 @@
 Windows 上执行 Developer / Tester 工作。仓库：`solio/MyResearcher-DataCollector`，
 开发目录 `apps/waygate`，分支 `main`。不需要读取原会话。
 
+> ⚠️ **本文件为文末追加式日志**：下方「当前优先处理」等状态块是历史快照（2026-10-15 前后），**最新状态以文末为准**（2026-11-10 Mac 侧只读核对时曾因只读顶部而误判"真机未跑通"，实际第 48 轮已真机运行）。2026-11-10 新增交接：**direct 出口的同出口验证变体**，见文末 2026-11-10 节。
+
 ## 当前优先处理：手机直接复用 verify_backfill.command
 
 **依赖审查纠正：不要直接按 libssh2 + mbedTLS 能沿用全部密钥开工。** 2026-10-15
@@ -2801,3 +2803,178 @@ PowerShell 下 `A..B` 形式报空 bundle，等价 `^A B` 正常）→ ff-merge 
   服务器工作区不再承载代码差异。
 - `--skip-sweep` 用于全部四台：既有测速缓存保留（hk 27 / sg 23 / 03 2 / 02 5 个节点），
   面板打开会实时读取当前选中节点（0a6ca7c）。
+## 2026-11-10 / 新交接：direct 出口的同出口验证变体（含下一环境提示词）
+
+> **【2026-11-10 15:00 进度更新，App agent 只需做剩余范围】**
+> - ✅ 已完成（见下文第二/三轮）：桌面 `--direct` 旗标 + `ssh -D`/SOCKS5 隧道 + GUI 真窗出口比对、
+>   REMOTE_WORKER 的 direct 分支（exit 跳任务路由 / unchanged+resume 跳配置路由签名）、
+>   Chromium SOCKS5 远端解析实测、全部离线测试（61 passed）与负对照。**参考实现在
+>   `verify_http_backfill.py`，参考测试在同目录 operator_verification 新增 9 个用例。**
+> - ⬜ **App agent 剩余范围**：
+>   1. hub：`direct_descriptor`/`verification` 描述接口为 direct halt 增加变体字段
+>      （建议 `egress_mode:"direct"` + worker 裸出口期望值），非 direct 返回一字不变；
+>      对应 `test_hub.py` 新用例 + 负对照。
+>   2. App（harmony + android 同步）：verify() 状态机加 direct 分支——exit 调用 payload 带
+>      `"direct": true`；**跳过配置路由签名比对**（对齐桌面 unchanged/resume 的新语义，
+>      钉住实例/修订/原请求 ID）；LocalProxy direct 分支 channel 直开源站 host:443；
+>      白名单流程不变（先 ipify=worker 裸 IP，markReady 后 source_domains）。
+>   3. 移植注意（打样踩坑结论）：Chromium 对 socks5:// 把域名交代理远端解析（ATYP=domain，
+>      ArkWeb 同源大概率一致，真机仍需实测一次）；Chrome/WebView 会并发开连接且第一条可能
+>      是厂商服务流量——白名单必须保留；SSH channel 只搬 TCP，ArkWeb 不能关 QUIC 的边界照旧。
+
+来源：2026-11-10 用户在 Mac 侧发起调研「通过 PC/手机浏览器直接使用服务端的 IP 过验证码」。
+排查确认：mihomo 借用路径（桌面 + App）已实现且真机已跑通；**缺口是 `mode=direct`
+（裸 IP 出口）的被拦股票没有任何同出口验证手段**——`verify_http_backfill.py` 对无代理
+路由的 halt 严格拒绝（HANDOFF 2026-10-19），而 direct 是真实运行态（`task_proxy.py`
+MODES 含 direct；动态代理提取耗尽也会 fallback 直连）。用户确认这就是"提过、值得尝试、
+当时没执行"的那个方向。**本节即交接，下面围栏块可整段复制给下一环境的新会话。**
+
+**已核对的事实（勿重复排查）**：
+- 桌面脚本 `scripts/ops/verify_http_backfill.py`：`REMOTE_WORKER` 常量为 worker 侧编排
+  （stdin JSON，action=audit/prepare/exit/probe/result/resume）；`Tunnel` = subprocess
+  `ssh -L 127.0.0.1:<随机端口>:<route.host>:<route.port> -o ExitOnForwardFailure=yes`；
+  出口核对两侧均访问 `api.ipify.org`（worker 侧 :172/:197，浏览器侧 :390）；Chrome 用
+  playwright 专用 profile（:431-432）。
+- hub：`GET /v1/incidents/{id}/verification`（`hub/service.py direct_verification`）返回
+  `waygate.direct-ssh.v1` 描述（`hub/collector.py direct_descriptor`）。**此 "direct" 指
+  "手机直连 worker SSH"，与 "直连出口(mode=direct)" 无关，不要混淆。**
+- App：`verify()` 已走描述接口 + 手机 SSH 编排（M3，真机已跑通，见第 48 轮及之前）；
+  LocalProxy 对每个浏览器连接直接开 direct-tcpip；白名单：出口核对前只放
+  `api.ipify.org`，`markReady()` 后放 `source_domains`。
+- 已知边界：SSH channel 只搬 TCP；ArkWeb 不能关 QUIC（第 46 轮记录），页面若逃逸 QUIC
+  会绕开管道——direct 变体同样受此约束。
+
+```text
+【提示词：direct 出口的同出口人工验证变体（桌面 + App）】
+
+角色：MyResearcher-DataCollector 的 Developer，先读 apps/waygate/runs.md 文末
+2026-11-10 节与 apps/http_backfill/HANDOFF.md，再动手。plan-first：实施方案先以
+新条目追加到 runs.md 文末，等用户点头再改代码。
+
+目标：mode=direct（worker 裸 IP 出口）的股票被验证码/身份核验拦截时，操作者能用
+浏览器经 worker 的同一出口人工过验证，随后走既有的单次探测 + resume 编排。
+三层都要支持，且必须复用现有编排原语，不新造路径：
+  A. 服务端（scripts/ops/verify_http_backfill.py 的 REMOTE_WORKER + apps/waygate/hub/）：
+     audit 识别 halt 的 effective route 为 direct（无代理路由）时，不再拒绝，改产出
+     direct 变体编排：无 mihomo 转发步骤；exit 期望值 = worker 自身公网出口
+     （worker 本机访问 api.ipify.org，与现有 :172/:197 逻辑一致）；probe 沿 direct
+     路由对原失败目标单次探测。hub 的 verification 描述接口为 direct halt 增加变体
+     字段（如 egress_mode:"direct"、exit 期望值、无 route）；非 direct halt 的返回
+     一字不变（回归红线）。
+  B. 桌面：Tunnel 增加 -D 动态转发形态（ssh -D 127.0.0.1:<随机端口>，沿用现有
+     ssh_args/ExitOnForwardFailure/ServerAlive* 参数），Chrome 侧
+     --proxy-server=socks5://127.0.0.1:<port>，专用 profile 照旧。实测并记录
+     Chrome+SOCKS5 的 DNS 解析位置（应为 worker 侧，验证方法：出口核对 + 一个仅
+     worker 可解析的域名），结论写进 runs.md，不臆断。verify_backfill.command 对
+     direct halt 自动识别走 direct 变体。
+  C. App（harmony/ 与 android/ 同步）：LocalProxy 支持 direct 编排——channel 目标
+     = 描述接口下发的源站 host:443（不再连 mihomo listener）；白名单流程不变
+     （先 ipify 核出口，期望值=worker 裸 IP，markReady 后放 source_domains）；
+     verify() 状态机与文案加 direct 分支。ArkWeb 不能关 QUIC 的已知边界照抄。
+
+验收（缺一不收）：
+  1) 离线：python -m pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py
+     （现基线 50 passed）+ 新增 direct 用例；负对照——撤掉 direct 支持新用例必须变红。
+  2) 桌面：对一只真实 direct 出口被拦的股票走通 verify_backfill.command 全流程
+     （用 --check 盘点 effective route 为空的 halt；没有现成的不要去打生产造 halt）。
+  3) 真机：direct 股票全流程走通一次（描述接口 → 手机 SSH → 出口核对 → 人工过滑块
+     → 单次探测 → resume）。evidence 多为 gitignore：runs.md 必须记「结论 + 可复现
+     命令 + 证据文件路径（ignored 目录也写全路径）」，避免下一个环境只读 git 再次误判。
+
+纪律：runs.md 文末追加、每轮分「已验证 / 未验证（不声称完成）」；不改服务器部署方式、
+SSH 登录与凭据；不动现有 mihomo listener 端口；SSH 凭据/token 不入 runs.md 与代码；
+非 direct 路径行为零变化。
+```
+
+**Mac 侧未做**：本轮仅只读核对 + 写此交接，未改任何脚本/服务端/App 代码（本机无
+App 开发环境；桌面脚本改动也留给同一环境统一做，便于一套测试覆盖）。
+
+## 2026-11-10 / 第二轮：direct 变体 PC 端打样完成（用户授权"先打个样，把坑踩一遍"）
+
+**改动（工作区未提交，3 文件 +253/−8）**：
+- `scripts/ops/verify_http_backfill.py`（5 处，+27/−8）：
+  ①`route()` 对 mode=direct 早返回描述符 `{mode:"direct",host:"",port:0,endpoint:"",
+  selectors:{},outbound:"DIRECT"}` + 同法 signature（http/mihomo 的既有拒绝路径一字未动）；
+  ②exit 动作 direct 时 `ProxyHandler({})`；③probe 出口复核同上；④`Tunnel` 按
+  `route["mode"]=="direct"` 走 `ssh -D 127.0.0.1:<随机端口>`（ExitOnForwardFailure/
+  ServerAlive* 参数不变），否则原 `-L`；⑤`Tunnel.endpoint` direct 返回
+  `socks5://127.0.0.1:<port>`，否则 http。`verify_backfill.command` 零改动（自动识别
+  经 run() 流转）。REMOTE_WORKER 经 SSH stdin 管道执行，**无需服务器部署**。
+- `apps/http_backfill/tests/test_operator_verification.py`（+163）：新增 4 测试——
+  direct 节点级/股票级描述符、exit 无代理解析、probe direct 复核、
+  Chromium SOCKS5 DNS 实测（本机无 playwright 时 skip）。
+
+**已验证（本机，2026-11-10）**：
+- 全量 `pytest -q apps/waygate/tests apps/http_backfill/tests/test_operator_verification.py`
+  = **56 passed, 0 failed, 0 skipped**（基线 52 + 新增 4）。
+- 负对照：换入原版脚本，3 个 direct 用例全部红在 `route()` 的"无入口认证 HTTP/mixed
+  代理"拒绝行；换回后 md5 一致（`3efa556d…`）。（第一次 pre-change 运行 exit 用例红在
+  locate 缺 patch，属歪打；已按左述换入复测修正，负对照红在正确位置。）
+- ★ **DNS 实测结论**：Chromium 对 `--proxy-server=socks5://` 把**域名原样交给代理**
+  （实测 ATYP=3/domain、`socks-dns-probe.invalid`、port 80，目标为 .invalid 保留 TLD +
+  本机 mock，未触任何真实来源）→ DNS 在 worker 侧解析，`ssh -D` 形态**无本地 DNS 泄漏**，
+  不需要 `--host-resolver-rules`。playwright `proxy={"server":"socks5://…"}` 直接可用。
+- QUIC：桌面 Chrome 原代码已带 `--disable-quic`，direct 形态沿用，无需额外处理。
+
+**踩过的坑（App 侧移植注意）**：
+1. **Chrome 穿代理的第一条连接不是目标页**，实测是 `clients2.google.com/time/1/current`
+   （自身时间同步）且并发开多条连接。桌面无白名单所以 Google 流量也过隧道（临时窗口可接受）；
+   **印证了手机 LocalProxy 白名单（ipify→source_domains）设计的必要性**，direct 变体在
+   App 端必须沿用同一白名单，不能因为"直连"就放开。
+2. SOCKS5 mock 两坑：固定字节数 recv 会把"问候+CONNECT 合段"一起吞掉（死等→浏览器报
+   假 PROXY_CONNECTION_FAILED）；手动重组缓冲错位 1 字节（ATYP 读成 0）。正确姿势 =
+   缓冲精确解析 + 每连接独立线程。App 端若写集成测试照此办理。
+
+**已验证（本机，2026-11-10，续）**：
+- ★★ **真实节点线上验证（用户指令：不必等验证码，只比出口 IP）**：对 43.160.196.129
+  （无现成 halt，正在采集 300442，全程未受影响）——
+  ①`verify_backfill.command 43.160.196.129 --check-exit` 通过（"已确认共同出口：
+  216.128.177.34"），但该节点默认与 300442 的任务出口均为 mode=http（mihomo listener
+  172.20.0.1:7891 → 上游"44. 商务·加拿大CA·台湾隧道2"），**这次走的是原 -L 路径**，
+  证明的是重构后旧路径无回归；
+  ②direct 分支单独验证：worker 侧裸 IP（ssh 执行 curl ipify）= `43.160.196.129`，
+  `Tunnel(node, direct_descriptor)` 实际建立 `-D` 通道（端点 `socks5://127.0.0.1:65352`），
+  临时 profile headless Chrome 经其访问 api.ipify.org = `43.160.196.129`，**一致**。
+  → 「浏览器借 worker 裸 IP 出口」的核心机制在真实节点成立，TLS/远程 DNS/出口比对全链路通，
+  全程零碰股吧、零碰采集。
+
+**未验证（不声称完成）**：
+- direct halt 端到端（滑块 → 单次探测 → resume）仍需等线上出现真实 direct 阻断才可验；
+  机制层（-D 通道 + 出口一致）已如上闭环。
+
+## 2026-11-10 / 第三轮：`--direct` 旗标落地 + 可见浏览器（GUI）演示通过
+
+用户纠偏：验证的本质是人在**可见窗口**里过滑块，headless 探针只验了管道不算数；并要求把
+direct 出口做成脚本旗标而不是隐式行为。
+
+**改动（`verify_http_backfill.py`，累计 +45/−10 左右）**：
+- REMOTE_WORKER：exit 动作接受 `direct:true` → 跳过任务路由，返回 worker 裸 IP + direct
+  描述符；`unchanged()` 与 `resume()` 对 `expected.route.mode=="direct"` 跳过配置路由签名
+  比对（运行时回退直连时配置签名无意义），实例/修订/原请求 ID 的钉住逻辑不变。
+- 桌面：新增 `direct_route()`（与 REMOTE_WORKER 描述符逐字段一致，测试钉住 signature 相等）；
+  `run()` 支持 `--direct`（getattr 兜底，不破坏既有调用方）——覆盖 target 路由为 direct、
+  清除 route_error（带认证代理的 halt 也可裸 IP 验证）、打印"单次探测仍按任务当前路由"的
+  明示提示；`browser_session(..., direct=)` 传递到 exit 调用。`verify_backfill.command`
+  参数透传，`./scripts/ops/verify_backfill.command <节点> --direct [--resume]` 即用。
+
+**已验证（本机，2026-11-10）**：
+- 全量 61 passed（56 + 新增 5：旗标 exit 分支、unchanged/resume 的 direct 跳过、
+  run 覆盖传递、桌面/worker 描述符签名一致）。
+- 既有用例零改动全绿（run() 用 `getattr(args,"direct",False)` 兜底，老 SimpleNamespace
+  fixture 不受影响）；测试中发现并修掉两个自伤：run() 直引 args.direct 破坏旧 fixture、
+  unchanged 新测试没先改签名就断言 raise。
+- ★ **GUI 真窗演示**：43.160.196.129 上以 `headless=False` + channel="chrome" +
+  专用 profile（`.runtime/browser-profiles/direct-demo-…`）弹出**可见 Chrome 窗口**，
+  经 `-D` 通道（socks5://127.0.0.1:54632）访问 api.ipify.org：窗口内出口 =
+  worker 裸 IP = `43.160.196.129`，**一致 True**；8 秒后自动关闭，临时清理无残留。
+
+**语义与边界（务必知道）**：
+- `--direct` 验证的是**裸 IP 出口**；单次探测仍按任务当前路由执行。若任务配置路由不是
+  direct（如回退直连的运行态、或验证后打算在控制台把本股出口改为直连），探测/后续采集的
+  出口与验证出口不一致时，解封可能不迁移——控制台先把本股出口改为直连再验证/探测才是同出口。
+- `--check-exit --direct` 组合可用（中性比裸 IP，headless 保持不变）。
+
+**未验证（不声称完成）**：direct halt 端到端（真实滑块）仍等线上出现；hub/App 侧未动。
+- hub 描述接口（`direct_descriptor`）对 direct halt 的字段扩展未做——App 端接线前必须补，
+  属 2026-11-10 交接提示词 A 部分的 hub 半边；REMOTE_WORKER 半边已由本打样覆盖。
+- App 端（harmony/android LocalProxy direct 分支）未动，见上文提示词 C 部分。
