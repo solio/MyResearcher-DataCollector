@@ -69,7 +69,8 @@ function connectTarget(head: ArrayBuffer): string {
 // gbfek.dfcfw.com, a dfcfw static host, refused with allowed=no while ready=yes,
 // which left the operator looking at raw unstyled HTML).
 function permitted(host: string, ready: boolean): boolean {
-  if (host === 'api.ipify.org') { return true; }
+  // direct 出口的节点可能连不上 ipify（02 就是），回显改用 ipip；两者都只在核对阶段放行。
+  if (host === 'api.ipify.org' || host === 'myip.ipip.net') { return true; }
   if (!ready) { return false; }
   return true;
 }
