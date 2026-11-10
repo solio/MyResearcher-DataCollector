@@ -22,14 +22,7 @@ def direct_descriptor(config, fleet_node, target):
     if host:
         try:
             address = ipaddress.ip_address(host)
-            # A hint is only useful if the phone can actually dial it. Loopback and the
-            # RFC1918 ranges are the hub's own network (02 is registered as 172.21.x on
-            # purpose, to keep fleet polling on the internal link), so hand those back as
-            # "no hint" instead of pre-filling an address that is guaranteed to be refused.
-            unreachable = (ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"),
-                           ipaddress.ip_network("192.168.0.0/16"), ipaddress.ip_network("100.64.0.0/10"),
-                           ipaddress.ip_network("169.254.0.0/16"))
-            if address.is_loopback or address.is_unspecified or any(address in net for net in unreachable):
+            if address.is_loopback or address.is_unspecified:
                 host = None
         except ValueError:
             if host.rstrip(".").lower() == "localhost":
