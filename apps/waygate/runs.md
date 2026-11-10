@@ -2764,3 +2764,40 @@ challenge/401/403/407/429，网络故障永远不上手机。
 - origin 推送仍被本机网络阻断，待恢复后补推（964046d）。
 - 「分页漂移自动重定基」此前从未进过 Git、也没有任何测试覆盖；本轮只保证收编完整、
   与既有修复并存、全量套件失败集不变。其行为正确性由线上运检验证。
+
+### 2026-11-10 / Windows / 第五十一轮：hk / sg / 03 / 02 四节点部署 eb6c7c0
+
+用户授权四节点部署（用户侧已 push origin，origin/main=eb6c7c0）。
+
+**部署前脏文件收编判断（逐台取证）**
+
+- hk（43.132.206.172）：HEAD=eb6c7c0 已就绪；仅 compose.yml 本地改（BASE_IMAGE 公共镜像，
+  节点必需配置，保留）。
+- sg（43.160.196.129）：HEAD=6eeee08；core.py **与 fzz-002 收编前那份逐字节相同**
+  （同一批未提交工作铺了两台），federation.py 与 b1f2157 只差文件头 UTF-8 BOM，
+  compose.yml 为节点必需的 BASE_IMAGE 改动（保留）。core/federation 安全丢弃。
+- 03（36.138.125.17）：HEAD=6eeee08，工作区干净。
+- 02（8.148.252.117 = FZZ-003，fleet 内网地址 172.21.153.222）：HEAD=85ca2e4；
+  5 个脏文件全部安全——core.py 仅 +14 行即 a1c77c0/531612d 的 `on_change` 快照通知
+  （已在 Git），其余 4 文件只差 BOM。全部丢弃。
+
+**统一流程**：部署前 `git diff` 留档到服务器 `/tmp/*-deployed-state.diff` →
+API 暂停（四台部署时 hk/sg/03/02 均 running）→ bundle（`^基线 main` 语法；
+PowerShell 下 `A..B` 形式报空 bundle，等价 `^A B` 正常）→ ff-merge 到 eb6c7c0 →
+`update-node.sh --skip-sweep` → 验证。
+
+**部署后验证（全部实测）**
+
+- 四台容器 rebuilt，collector 容器内 core.py 均含
+  `MAX_NETWORK_RETRIES=2` + 漂移重定基=3；02 另验 `on_change=2`。
+- 主控 `/api/fleet`：5 节点全部 online；hub `/health` 200。
+- 采集状态：sg/03/02 部署后保持 paused 等待操作者继续；hk 与主控本机随后被
+  （用户侧）恢复为 running——该状态变化非本轮 agent 操作。
+
+**注意事项**
+
+- sg 的 core.py 与 fzz-002 收编前文件逐字节相同这一事实说明：那批未提交改动至少
+  铺过 fzz-002/sg 两台。03/02 仓库干净或改动已收编。当前 Git（eb6c7c0）是唯一权威版本，
+  服务器工作区不再承载代码差异。
+- `--skip-sweep` 用于全部四台：既有测速缓存保留（hk 27 / sg 23 / 03 2 / 02 5 个节点），
+  面板打开会实时读取当前选中节点（0a6ca7c）。
