@@ -1216,11 +1216,14 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         keys = ("anchor_page", "anchor_ids", "auxiliary_anchor_ids", "target_ids", "anchor_min", "anchor_max",
                 "target_time", "forward_page", "time_order_verified", "time_fallback")
         rec["boundary_original"] = {key: rec.get(key) for key in keys}
-        rec.update(strategy="boundary_two_pass", phase="seek", anchor_page=page,
+        # 旧锚点页在这几十秒里可能已经把上端点挤到了更深的页；从刚抓到的新页起步，
+        # 让按时间方向的 seek 自己往回/往前找到端点，而不是从过期页码硬扫。
+        start = candidate["page"] if candidate and type(candidate.get("page")) is int else page
+        rec.update(strategy="boundary_two_pass", phase="seek", anchor_page=start,
                    anchor_ids=[str(upper["post_id"])], auxiliary_anchor_ids=[str(upper["post_id"])],
                    target_ids=[str(lower["post_id"])], anchor_min=upper["post_publish_time"],
                    anchor_max=upper["post_publish_time"], target_time=lower["post_publish_time"],
-                   time_order_verified=True, time_fallback=False, current_page=page,
+                   time_order_verified=True, time_fallback=False, current_page=start,
                    passes=0, last_signature=None, pass_members=[], pass_pages=[], pass_new_posts=0,
                    visited={}, anchor_seen=False,
                    boundary_endpoints=[(str(upper["post_id"]), upper["post_publish_time"]),
@@ -1231,15 +1234,6 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             rec["forward_page"] = candidate["page"]
         self._event("boundary_recovery_started", "仅核对固定分页交界；仍需两轮独立匹配观察",
                     {"stock": rec["stock"], "anchor_page": page, "boundary_endpoints": rec["boundary_endpoints"]})
-
-    def _fallback_boundary_recovery(self, rec, message):
-        self._recovery_gap(rec, "boundary_anchor_missing", message)
-        rec.update(rec["boundary_original"])
-        rec.update(strategy="two_pass", phase="seek", passes=0, last_signature=None, pass_members=[],
-                   pass_pages=[], pass_new_posts=0, visited={}, anchor_seen=False, fallback_reason=message,
-                   candidate_reuse_pending=False)
-        self._enqueue_recovery(rec, rec["anchor_page"])
-        return {"phase": "seek", "boundary_check": False}
 
     def _boundary_candidate_verified(self, rec, candidate):
         rid = candidate["stats"]["request_id"]
@@ -1584,6 +1578,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         rec["pass_members"].extend(members)
         rec["pass_pages"].append({"page": task["page"], "request_id": stats["request_id"], "sha256": stats["ordered_id_sha256"], "source_count": stats["source_count"]})
         reached_target = min(times) <= rec["target_time"] if temporal else bool({str(r["post_id"]) for r in items} & set(rec.get("target_ids", rec["anchor_ids"])))
+        if rec["strategy"] == "boundary_two_pass" and not seen_anchor and not rec.get("anchor_seen"):
+            # 交界校准必须亲眼看到上端点才算数；先碰到下界只是说明起点太深。
+            reached_target = False
         if not reached_target:
             candidate = rec.get("boundary_candidate")
             if (rec["strategy"] == "boundary_two_pass" and rec["passes"] == 0 and rec.get("candidate_reuse_pending")
@@ -1597,11 +1594,20 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 reused_task = {**task, "page": candidate["page"]}
                 reused_stats = {**candidate["stats"], "new_eligible_posts": 0, "new_ids": 0}
                 return self._advance_recovery(reused_task, candidate["rows"], reused_stats)
-            self._enqueue_recovery(rec, task["page"] + 1)
-            return {"phase": "scan", "next_page": task["page"] + 1}
+            step = 1
+            if (rec["strategy"] == "boundary_two_pass" and not seen_anchor
+                    and not rec.get("anchor_seen") and max(times) < rec["anchor_min"] and task["page"] > 1):
+                step = -1
+            self._enqueue_recovery(rec, task["page"] + step)
+            return {"phase": "scan", "next_page": task["page"] + step}
         unique = sorted(set(map(tuple, rec["pass_members"])), key=lambda x: (x[1], x[0]), reverse=True)
         if rec["strategy"] == "boundary_two_pass" and (rec["time_fallback"] or not set(map(tuple, rec["boundary_endpoints"])) <= set(unique)):
-            return self._fallback_boundary_recovery(rec, "分页交界的原 ID／发布时间端点未核实；保留缺口并恢复原区间校准")
+            # 端点没核实就退回整段双遍，在活跃列表上必然再次不一致——只会把同一段
+            # 反复重扫。记下缺口，用这一遍的最新观察继续前进。
+            self._recovery_gap(rec, "boundary_anchor_missing", "分页交界的原 ID／发布时间端点未核实；保留缺口并按最新一页继续")
+            return self._complete_recovery_from_latest_pass(
+                rec, page=task["page"], rows=rows, request_id=stats["request_id"],
+                source_count=stats["source_count"], signature=signature)
         signature = hashlib.sha256(_dump(unique).encode()).hexdigest()
         rec["passes"] += 1
         rec["completed_passes"] = rec.get("completed_passes", rec["passes"] - 1) + 1
