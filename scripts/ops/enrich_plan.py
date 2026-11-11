@@ -55,8 +55,10 @@ replace cannot be torn.
 
 Eligibility mirrors the collector's own rule (trimmed list-title length >= 40,
 `content IS NULL`) minus ids already recorded in the sidecar skip ledger, i.e.
-exactly the same predicate the drivers use for their `pending=` count. The
-database is opened read-only.
+exactly the same predicate the drivers use for their `pending=` count. Since
+2026-11-11 it ALSO applies the daily age window: only posts published within
+`ENRICH_MAX_AGE_DAYS` (default 30, `0` = full backlog) are counted, using the
+same resolver as the `enrich-details` CLI. The database is opened read-only.
 
 The split is a longest-processing-time-first (LPT) assignment: stocks are handed
 to the currently lighter stream, largest backlog first. That balances the two
@@ -71,9 +73,14 @@ import os
 import sqlite3
 import sys
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
-from myresearcher_collector.detail_enrichment import FAILURE_RETRY_CAP
+from myresearcher_collector.detail_enrichment import (
+    FAILURE_RETRY_CAP,
+    enrich_published_from,
+    resolve_enrich_max_age_days,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 DB = REPO / "data" / "collector.db"
@@ -81,6 +88,22 @@ LEDGER = REPO / "data" / "collector.detail_enrichment_skips.db"
 
 SOURCE = "eastmoney_guba"
 MIN_TITLE_LEN = 40
+
+
+@lru_cache(maxsize=1)
+def age_predicate() -> tuple[str, tuple[str, ...], int, str | None]:
+    """Return (SQL fragment, extra params, resolved days, cutoff).
+
+    The daily job only counts posts published inside a rolling window; the
+    window is resolved from the SAME helper the collector CLI uses, so
+    `list` / `pending` / `write-plan` can never report a backlog that the
+    collector refuses to fetch (or vice versa).
+    """
+    days = resolve_enrich_max_age_days()
+    cutoff = enrich_published_from(days)
+    if cutoff is None:
+        return "", (), days, None
+    return " AND p.published_at >= ?", (cutoff,), days, cutoff
 
 
 def _connect(db_path: Path | None = None) -> sqlite3.Connection:
@@ -138,16 +161,18 @@ def pending_for(codes: list[str], db_path: Path | None = None) -> list[tuple[str
     try:
         exclude = _exclusion(con)
         placeholders = ",".join("?" * len(codes))
+        age_sql, age_params, _, _ = age_predicate()
         rows = con.execute(
             "SELECT p.stock_code, COUNT(*) AS n FROM posts p"
             " WHERE p.source = ?"
             f" AND p.stock_code IN ({placeholders})"
             " AND LENGTH(TRIM(COALESCE(p.title, ''))) >= ?"
             " AND p.content IS NULL"
+            f"{age_sql}"
             f"{exclude}"
             " GROUP BY p.stock_code"
             " HAVING COUNT(*) > 0",
-            (SOURCE, *codes, MIN_TITLE_LEN),
+            (SOURCE, *codes, MIN_TITLE_LEN, *age_params),
         ).fetchall()
     finally:
         con.close()
@@ -183,17 +208,19 @@ def backlog(db_path: Path | None = None) -> list[tuple[str, int]]:
     con = _connect(db_path)
     try:
         exclude = _exclusion(con)
+        age_sql, age_params, _, _ = age_predicate()
         rows = con.execute(
             "SELECT p.stock_code, COUNT(*) AS n FROM posts p"
             " WHERE p.source = ?"
             " AND LENGTH(TRIM(COALESCE(p.title, ''))) >= ?"
             " AND p.content IS NULL"
             " AND p.stock_code IS NOT NULL AND p.stock_code <> ''"
+            f"{age_sql}"
             f"{exclude}"
             " GROUP BY p.stock_code"
             " HAVING COUNT(*) > 0"
             " ORDER BY n DESC, p.stock_code ASC",
-            (SOURCE, MIN_TITLE_LEN),
+            (SOURCE, MIN_TITLE_LEN, *age_params),
         ).fetchall()
     finally:
         con.close()
@@ -251,6 +278,9 @@ def cmd_pick(role: str, plan: Path) -> int:
 
 def cmd_write_plan(outdir: Path, do_split: bool, *, per_stock: bool = True) -> int:
     work = backlog()
+    # Cached, so this is byte-identical to the cutoff the SQL above actually used.
+    _, _, age_days, cutoff = age_predicate()
+    print(f"PLAN_SCOPE max_age_days={age_days} published_from={cutoff or 'none'}")
     if do_split:
         driver, tail = split(work)
         mode = "split"

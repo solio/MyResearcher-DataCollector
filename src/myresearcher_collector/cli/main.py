@@ -22,7 +22,10 @@ from myresearcher_collector.integration import (
     execute_and_persist_xueqiu_collection,
     plan_backfill,
 )
-from myresearcher_collector.detail_enrichment import execute_detail_enrichment
+from myresearcher_collector.detail_enrichment import (
+    execute_detail_enrichment,
+    resolve_enrich_max_age_days,
+)
 from myresearcher_collector.backfill import (
     BackfillConfigError,
     range_as_dict,
@@ -372,6 +375,12 @@ def build_parser() -> argparse.ArgumentParser:
     enrich.add_argument("--challenge-retries", type=int, default=3)
     enrich.add_argument("--limit", type=int, default=None,
                         help="diagnostic bound on detail candidates")
+    enrich.add_argument(
+        "--enrich-max-age-days", type=int, default=None,
+        help="only consider posts published within the last N days; default 30 "
+        "(env ENRICH_MAX_AGE_DAYS overrides), 0 restores the full backlog. "
+        "The resolved window is recorded in the run report.",
+    )
     enrich.add_argument(
         "--include-short-titles",
         action="store_true",
@@ -1007,6 +1016,7 @@ def execute_enrich_cli(
         read_every=args.read_every, read_min=args.read_min, read_max=args.read_max,
         log_path=Path("runtime/logs/eastmoney-detail-enrichment.jsonl"), limit=args.limit,
         include_short_titles=args.include_short_titles,
+        max_age_days=resolve_enrich_max_age_days(args.enrich_max_age_days),
         acquisition_mode=mode, profile_path=str(resolved_profile) if resolved_profile else None,
         profile_mode=getattr(transport, "profile_mode", None))
 

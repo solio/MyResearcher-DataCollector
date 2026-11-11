@@ -10,7 +10,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -148,6 +148,76 @@ SKIP_REASON_NOT_FOUND = "detail_not_found"
 # Without a cap, a post that never parses stays a candidate forever and is
 # re-fetched every run: on 2026-10-16 two posts had 67 and 38 attempts.
 FAILURE_RETRY_CAP = max(1, int(os.environ.get("MYRESEARCHER_ENRICH_FAILURE_CAP", "5")))
+
+# ---------------------------------------------------------------------------
+# Daily-run age window (2026-11-11)
+#
+# The daily enrich used to consider EVERY post with a truncated list title and
+# no body, including posts published months ago whose detail pages are mostly
+# gone. Those old ids kept being re-requested (or retired into the skip ledger)
+# while the actual new posts waited behind them under `enrich_order=asc`.
+# The daily job now only looks at a rolling window of recent posts.
+#
+# This is a *candidate eligibility* rule, not a data migration: old rows stay in
+# `posts` with content NULL and are never written to the skip ledger. A one-off
+# full sweep is still possible with `ENRICH_MAX_AGE_DAYS=0`.
+#
+# `resolve_enrich_max_age_days()` is the single source of truth for the *daily
+# entry points* (CLI + enrich_plan.py); both read the same env var so the plan
+# and the collector can never disagree about which posts count as pending.
+# `execute_detail_enrichment()` itself defaults to NO window when called
+# directly -- library callers and the existing tests keep their old semantics.
+# ---------------------------------------------------------------------------
+DEFAULT_ENRICH_MAX_AGE_DAYS = 30
+ENRICH_AGE_ENV = "ENRICH_MAX_AGE_DAYS"
+_POSTS_TZ = timezone(timedelta(hours=8))
+_POSTS_TS_FORMAT = "%Y-%m-%dT%H:%M:%S+08:00"
+
+
+def resolve_enrich_max_age_days(value: int | str | None = None) -> int:
+    """Resolve the daily-run window: explicit value > env var > 30 days.
+
+    Returns 0 for "no limit", which restores the pre-2026-11-11 full backlog.
+    """
+    raw = value
+    if raw is None:
+        raw = os.environ.get(ENRICH_AGE_ENV)
+    if raw is None or raw == "":
+        return DEFAULT_ENRICH_MAX_AGE_DAYS
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{ENRICH_AGE_ENV} must be an integer, got {raw!r}") from exc
+
+
+def enrich_published_from(
+    max_age_days: int | None, *, now: datetime | None = None
+) -> str | None:
+    """Cutoff in the exact format stored in `posts.published_at`, or None.
+
+    Every stored timestamp carries a +08:00 offset (verified on 100k live rows
+    on 2026-11-11), so a lexicographic `>=` in SQL is chronological. Keeping
+    the cutoff as a string means the same value can be handed to both the SQL
+    predicate and the canonical-observation predicate without re-parsing.
+    """
+    if not max_age_days or max_age_days <= 0:
+        return None
+    current = now or datetime.now(_POSTS_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_POSTS_TZ)
+    local = current.astimezone(_POSTS_TZ)
+    return (local - timedelta(days=int(max_age_days))).strftime(_POSTS_TS_FORMAT)
+
+
+def _published_iso(value: datetime | str) -> str:
+    """Normalise a canonical observation's published_at for the age compare."""
+    if isinstance(value, str):
+        return value
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_POSTS_TZ)
+    return value.astimezone(_POSTS_TZ).strftime(_POSTS_TS_FORMAT)
+
+
 # Only a failure that is ABOUT this post may retire it. A block, a challenge or
 # a dropped connection is about the SESSION: counting those would drop innocent
 # posts after a few bad nights (2026-10-16: two posts were one cap away from
@@ -287,10 +357,13 @@ def _canonical_candidates(
     include_short_titles: bool,
     skipped: set[str] | frozenset[str] = frozenset(),
     order: str = "asc",
+    published_from: str | None = None,
 ) -> list[_Candidate]:
     result: list[_Candidate] = []
     for item in store.latest_observations(SOURCE, f"stock:{stock_code}").values():
         if item.source_metadata.get("content_source") != LIST_TITLE_CONTENT_SOURCE:
+            continue
+        if published_from is not None and _published_iso(item.published_at) < published_from:
             continue
         trigger = detail_enrichment_trigger(
             item.title, include_short_titles=include_short_titles
@@ -323,17 +396,20 @@ def _legacy_candidates(
     include_short_titles: bool,
     skipped: set[str] | frozenset[str] = frozenset(),
     order: str = "asc",
+    published_from: str | None = None,
 ) -> list[_Candidate]:
     # The direction is picked from a literal, never interpolated: `order` reaches
     # here from a CLI flag, and this string goes straight into SQL.
     direction = "DESC" if order == "desc" else "ASC"
-    rows = store.conn.execute(
-        """SELECT source_item_id,url,title,published_at FROM posts
+    sql = """SELECT source_item_id,url,title,published_at FROM posts
            WHERE source=? AND stock_code=? AND content IS NULL
-             AND url IS NOT NULL
-           ORDER BY published_at """ + direction,
-        (SOURCE, stock_code),
-    ).fetchall()
+             AND url IS NOT NULL"""
+    params: list[Any] = [SOURCE, stock_code]
+    if published_from is not None:
+        sql += " AND published_at >= ?"
+        params.append(published_from)
+    sql += " ORDER BY published_at " + direction
+    rows = store.conn.execute(sql, tuple(params)).fetchall()
     result: list[_Candidate] = []
     for item_id, url, title, _published_at in rows:
         trigger = detail_enrichment_trigger(
@@ -423,6 +499,10 @@ def execute_detail_enrichment(
     log_path: str | Path,
     limit: int | None = None,
     include_short_titles: bool = False,
+    # None = no age window (library default). Daily CLI callers pass the value
+    # resolved by `resolve_enrich_max_age_days()` so plan and collector agree.
+    max_age_days: int | None = None,
+    now: datetime | None = None,
     acquisition_mode: str = "existing-chrome",
     profile_path: str | None = None,
     profile_mode: str | None = None,
@@ -434,6 +514,7 @@ def execute_detail_enrichment(
     records the exact detail document as raw evidence.
     """
     rng = rng or random
+    published_from = enrich_published_from(max_age_days, now=now)
     if enrich_order not in ("asc", "desc"):
         raise ValueError(f"enrich_order must be 'asc' or 'desc', got {enrich_order!r}")
     if pace_model not in ("uniform", "longtail"):
@@ -498,6 +579,7 @@ def execute_detail_enrichment(
             include_short_titles=include_short_titles,
             skipped=known_missing,
             order=enrich_order,
+            published_from=published_from,
         )
         storage_mode = "canonical_observations"
     else:
@@ -508,6 +590,7 @@ def execute_detail_enrichment(
             include_short_titles=include_short_titles,
             skipped=known_missing,
             order=enrich_order,
+            published_from=published_from,
         )
         storage_mode = "legacy_posts"
     if limit is not None:
@@ -988,6 +1071,7 @@ def execute_detail_enrichment(
                     stock_code,
                     include_short_titles=include_short_titles,
                     skipped=refreshed_skips,
+                    published_from=published_from,
                 )
             )
         else:
@@ -997,6 +1081,7 @@ def execute_detail_enrichment(
                     stock_code,
                     include_short_titles=include_short_titles,
                     skipped=refreshed_skips,
+                    published_from=published_from,
                 )
             )
         if current_window is not None:
@@ -1008,6 +1093,11 @@ def execute_detail_enrichment(
         return {
             "run_id": run_id,
             "storage_mode": storage_mode,
+            # Candidate-scope evidence: without these two fields a report's
+            # `requested` / `candidates_remaining` cannot be interpreted, because
+            # the same database yields different counts under different windows.
+            "max_age_days": int(max_age_days or 0),
+            "published_from": published_from,
             "requested": requested,
             "success": success,
             "failed": len(failures),
