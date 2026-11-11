@@ -68,18 +68,30 @@ class ConsoleServer(ThreadingHTTPServer):
             self._status_refreshing = True
         self._refresh_status()
 
+    @staticmethod
+    def _stamped(payload):
+        """Serve the cached aggregation with a live clock.
+
+        Every field but the clock may be up to one TTL old, but server_time drives the console's
+        countdown: a stale value made "下一次源请求" drift and jump between refreshes."""
+        if not isinstance(payload, dict):
+            return payload
+        stamped = dict(payload)
+        stamped["server_time"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "+00:00"
+        return stamped
+
     def status_snapshot(self):
         with self._status_lock:
             fresh = self._status_cache is not None and time.time() - self._status_at <= self.status_ttl
             if fresh:
-                return self._status_cache
+                return self._stamped(self._status_cache)
             stale = self._status_cache
             if not self._status_refreshing:
                 self._status_refreshing = True
                 threading.Thread(target=self._refresh_status, daemon=True).start()
         if stale is None:
-            return self.engine.status()
-        return stale
+            return self._stamped(self.engine.status())
+        return self._stamped(stale)
 
     def invalidate_status(self):
         """A request just changed state; rebuild the snapshot now, not after the TTL."""
