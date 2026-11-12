@@ -43,7 +43,9 @@ def _provider() -> str:
 
 
 def _test_url() -> str:
-    return _env("MIHOMO_TEST_URL", "https://guba.eastmoney.com/")
+    # A list page weighs a fraction of the homepage, so a slow-but-working line is not dropped
+    # for pulling one heavy page inside the timeout.
+    return _env("MIHOMO_TEST_URL", "https://guba.eastmoney.com/list,600096,f.html")
 
 
 def _cache_path() -> str:
