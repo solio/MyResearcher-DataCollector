@@ -6,6 +6,7 @@ import argparse
 import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import collector_clean
 import fleet_strip
 import json
 import mimetypes
@@ -56,6 +57,9 @@ class ConsoleServer(ThreadingHTTPServer):
         self._status_at = 0.0
         self._status_lock = threading.Lock()
         self._status_refreshing = False
+        # Set while the database file is being replaced: handlers answer 503 instead of touching
+        # a connection that is about to be closed.
+        self.maintenance = False
         self.status_ttl = max(1.0, float(os.environ.get("BACKFILL_STATUS_TTL") or 30))
         # Warm the snapshot in the background so even the first caller after a restart does not
         # pay for the aggregation.
@@ -220,6 +224,11 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send(404, {"error": "接口不存在"})
                     return True
+            elif path.startswith("api/clean/"):
+                result = self.clean_route(method, path, obj)
+                if result is not None:
+                    self.send(200 if result.get("ok") else 409, result)
+                    return True
             elif path == "api/fleet/strip":
                 if method == "GET":
                     result = fleet_strip.state(self.server.engine.data_dir)
@@ -256,6 +265,41 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.send(409, _error_payload(exc))
         return True
+
+    def clean_route(self, method, path, obj):
+        """paused -> detached -> verified -> cleaned, mirroring the merge-ledger strip."""
+        data_dir = self.server.engine.data_dir
+        action = path[len("api/clean/"):]
+        if method == "GET" and action == "state":
+            return collector_clean.state(data_dir, running=self.server.engine.status().get("state") == "running")
+        if method != "POST":
+            return None
+        if action == "strip":
+            status = self.server.engine.status()
+            if status.get("state") == "running" or status.get("inflight"):
+                return {"ok": False, "stage": "running",
+                        "checks": [{"name": "采集已暂停", "ok": False, "detail": "先暂停采集并等当前请求结束"}]}
+            # Export first when needed; the strip itself then verifies the record, not a promise.
+            fresh, _ = collector_clean.export_is_current(data_dir)
+            if not fresh:
+                collector_clean.export_all(data_dir)
+            stamp = obj.get("stamp") or time.strftime("%Y%m%d-%H%M%S")
+            self.server.maintenance = True
+            try:
+                time.sleep(0.2)  # let short reads finish before the handle is closed
+                result = collector_clean.strip(data_dir, stamp, exported=True)
+                if result.get("ok"):
+                    self.server.engine.reopen_db()
+            finally:
+                self.server.maintenance = False
+            return result
+        if action == "verify":
+            stamp = obj.get("stamp") or collector_clean.state(data_dir).get("stamp", "")
+            return collector_clean.verify(data_dir, stamp)
+        if action == "cleanup":
+            stamp = obj.get("stamp") or collector_clean.state(data_dir).get("stamp", "")
+            return collector_clean.cleanup(data_dir, stamp)
+        return None
 
     def download_node_posts(self, alias, query):
         """Selected-node downloads remain on the hub's authenticated origin."""
@@ -379,6 +423,8 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path).lstrip("/")
         if path == "healthz":
             return self.send(200, {"ok": True})
+        if self.server.maintenance:
+            return self.send(503, {"error": "正在切换数据库，请稍后重试"})
         if self.server.api_only and (path == "api/session" or not path.startswith("api/")):
             return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})
         if path == "api/session":
@@ -433,6 +479,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = unquote(urlparse(self.path).path).lstrip("/")
+        if self.server.maintenance:
+            return self.send(503, {"error": "正在切换数据库，请稍后重试"})
         if self.server.api_only and (path == "api/session" or not path.startswith("api/")):
             return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})
         if not self.origin_valid():

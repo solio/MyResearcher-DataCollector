@@ -30,6 +30,7 @@
   let fleetLoading = false;
   let fleetData = null;
   let stripState = null;
+  let cleanState = null;
   let editingNode = null;
   let removingNode = null;
   let pendingSelection = null;
@@ -312,7 +313,7 @@
       const data = await api("fleet");
       if (!authenticated) return;
       if (!data || !Array.isArray(data.nodes)) throw new Error("多实例概览格式无效");
-      fleetData = data; renderFleet(data); void refreshStripState();
+      fleetData = data; renderFleet(data); void refreshStripState(); void refreshCleanState();
       $("fleet-error").hidden = true;
     } catch (error) {
       if (authenticated) { $("fleet-error").hidden = false; display("fleet-error", `中央概览暂时无法更新：${error.message}。已取得的其他实例状态保留。`); }
@@ -963,6 +964,13 @@
     $("toggle-merge").disabled = busy || !authenticated || !fleetData;
     const stage = stripState && stripState.stage;
     $("strip-export").disabled = busy || !authenticated || stage !== "paused";
+    const cleanStage = cleanState && cleanState.stage;
+    $("clean-strip").disabled = busy || !authenticated || cleanStage !== "paused";
+    $("clean-verify").disabled = busy || !authenticated || cleanStage !== "detached";
+    $("clean-cleanup").disabled = busy || !authenticated || cleanStage !== "verified";
+    display("clean-strip", "数据剥离");
+    display("clean-verify", cleanStage === "verified" ? "剥离校验（已通过）" : "剥离校验");
+    display("clean-cleanup", cleanStage === "cleaned" ? "清理数据（已清理）" : "清理数据");
     $("strip-verify").disabled = busy || !authenticated || stage !== "detached";
     $("strip-clean").disabled = busy || !authenticated || stage !== "verified";
     display("strip-export", "剥离数据");
@@ -2000,6 +2008,32 @@
     if (removed && id === selectedNode) await switchNode("local");
   });
   $("sync-fleet").addEventListener("click", () => { void fleetMutation("fleet/sync", { node_id: "all" }, "POST", "已安排后台增量同步。同步只传输已经采集的记录与证据，不请求来源。"); });
+  async function refreshCleanState() {
+    if (!authenticated) { cleanState = null; return; }
+    try { cleanState = await api("clean/state"); } catch (_) { cleanState = null; }
+    controls();
+  }
+  $("clean-strip").addEventListener("click", () => {
+    if (!window.confirm("剥离前会先导出 posts 与合并日志（若无最新导出），然后换成只含控制数据的新库。继续？")) { return; }
+    void (async () => {
+      const done = await fleetMutation("clean/strip", {}, "POST",
+        "已剥离：数据移到 tmp/clean-<时间戳>/，控制数据逐行保留。");
+      if (done) { await refreshCleanState(); }
+    })();
+  });
+  $("clean-verify").addEventListener("click", () => {
+    void (async () => {
+      const done = await fleetMutation("clean/verify", {}, "POST", "校验通过：控制表逐行一致、数据表为空。");
+      if (done) { await refreshCleanState(); }
+    })();
+  });
+  $("clean-cleanup").addEventListener("click", () => {
+    if (!window.confirm("清理会删除剥离副本与一致性快照，且不可恢复。确认继续？")) { return; }
+    void (async () => {
+      const done = await fleetMutation("clean/cleanup", {}, "POST", "已删除清理副本。");
+      if (done) { await refreshCleanState(); }
+    })();
+  });
   async function refreshStripState() {
     if (!authenticated) { stripState = null; return; }
     try { stripState = await api("fleet/strip"); } catch (_) { stripState = null; }

@@ -368,6 +368,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         db_path = guard_runtime_path(self.data_dir)
+        self.db_path = db_path
         self.raw_dir = self.data_dir / "raw"
         self.raw_dir.mkdir(exist_ok=True, mode=0o700)
         self._lock_file = open(self.data_dir / "worker.lock", "a+b")
@@ -3149,6 +3150,25 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                           "effective_to": _iso(self._get("effective_to_epoch"))})
                 result.append(d)
             return result
+
+    def reopen_db(self):
+        """Rebind the connection after the database file was replaced underneath us.
+
+        A sqlite connection follows its inode, so swapping the file only works if the handle is
+        closed first. The caller must have stopped the worker; this does not pause anything.
+        """
+        with self._mutex:
+            try:
+                self.db.close()
+            except sqlite3.Error:
+                pass
+            self.db = sqlite3.connect(self.db_path, check_same_thread=False)
+            self.db.row_factory = sqlite3.Row
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=FULL")
+            with self.db:
+                initialize_schema(self.db)
+            self._init_lifecycle_schema()
 
     def close(self):
         with self._mutex:
