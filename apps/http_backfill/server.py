@@ -220,7 +220,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.send(404, {"error": "接口不存在"})
                     return True
             elif method == "POST" and path == "api/fleet/sync":
-                result = fleet.request_sync(obj.get("node_id", "all"))
+                if type(obj.get("auto")) is bool:
+                    result = fleet.set_auto_sync(obj["auto"])
+                else:
+                    result = fleet.request_sync(obj.get("node_id", "all"))
             elif path.startswith("api/nodes/"):
                 parts = path.split("/", 3)
                 if len(parts) != 4 or not parts[2] or not parts[3]:

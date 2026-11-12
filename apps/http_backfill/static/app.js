@@ -359,7 +359,8 @@
     selector.value = selectedNode;
     display("selected-node-note", `下方任务、配置、控制、记录与当前节点导出属于 ${nodeName()}。切换只改变查看对象，不会开始或暂停采集。`);
     const merge = objectValue(data.merge), stats = objectValue(first(merge, ["aggregate", "counts", "summary"], merge));
-    display("merge-sync-note", data.auto_sync === false ? "自动同步已关闭，可手动立即同步已采记录。同步只传输数据和证据，不请求股吧。" : "服务端每 60 秒同步已采记录。同步只传输数据和证据，不请求股吧。");
+    display("merge-sync-note", data.auto_sync === false ? "自动合并已暂停：游标保留，可清理数据后点“恢复合并”。同步只传输数据和证据，不请求股吧。" : "服务端每 60 秒同步已采记录。同步只传输数据和证据，不请求股吧。");
+    display("toggle-merge", data.auto_sync === false ? "恢复合并" : "暂停合并");
     display("merge-posts", number(first(stats, ["posts", "unique_posts", "post_count"])));
     display("merge-bodies", number(first(stats, ["body_complete", "bodies", "detail_bodies", "body_count"])));
     display("merge-conflicts", number(first(stats, ["conflicts", "conflict_count"])));
@@ -958,6 +959,7 @@
     $("selected-node").disabled = busy;
     $("add-node").disabled = busy || !authenticated;
     $("sync-fleet").disabled = busy || !authenticated || !fleetData;
+    $("toggle-merge").disabled = busy || !authenticated || !fleetData;
     $("save-node").disabled = busy;
     $("proxy-fields").disabled = locked || proxySupported !== true;
     $("proxy-refresh").disabled = busy || !authenticated || proxyLoading;
@@ -1990,6 +1992,12 @@
     if (removed && id === selectedNode) await switchNode("local");
   });
   $("sync-fleet").addEventListener("click", () => { void fleetMutation("fleet/sync", { node_id: "all" }, "POST", "已安排后台增量同步。同步只传输已经采集的记录与证据，不请求来源。"); });
+  $("toggle-merge").addEventListener("click", () => {
+    const paused = fleetData && fleetData.auto_sync === false;
+    void fleetMutation("fleet/sync", { auto: paused }, "POST",
+      paused ? "已恢复自动合并；游标未变，从暂停时的位置继续。"
+             : "已暂停自动合并并等待本轮传输结束；可清理数据后点“恢复合并”，游标不会丢。");
+  });
   updateDownloadLinks();
   for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) {
     const link = $(`download-${scope}-${format}`);

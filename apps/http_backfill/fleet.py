@@ -401,12 +401,15 @@ class FleetManager:
             if not isinstance(generations, dict) or any(type(v) is not int or v < 0 for v in generations.values()):
                 raise ValueError
             generations = {k: v for k, v in generations.items() if k in {"local"} | set(nodes)}
+            if type(saved.get("auto_sync")) is bool:
+                self.auto_sync = saved["auto_sync"]
             return nodes, requested, generations
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError("私有实例注册表结构无效；保留原文件并检查配置") from exc
 
     def _save(self):
-        payload = {"version": 1, "nodes": list(self._nodes.values()), "sync_requested": sorted(self._requested), "sync_generation": self._generation}
+        payload = {"version": 1, "nodes": list(self._nodes.values()), "sync_requested": sorted(self._requested),
+                   "sync_generation": self._generation, "auto_sync": self.auto_sync}
         fd, name = tempfile.mkstemp(prefix=".registry-", dir=self.directory)
         try:
             with os.fdopen(fd, "w") as handle:
@@ -760,6 +763,41 @@ class FleetManager:
                                                    "last_error": cache.get("last_error"), "last_seen_at": cache.get("last_seen_at"),
                                                    "sync": cache.get("sync", {"state": "idle", "error": None})})
             return self._redact({"nodes": result, "merge": self._merge_summary, "auto_sync": self.auto_sync})
+
+    def _drain(self, timeout):
+        """Wait for in-flight rounds so a pause really means "nothing is writing the ledger"."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                busy = [key for key, future in self._futures.items() if not future.done()]
+            if not busy:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def set_auto_sync(self, enabled):
+        """Pause or resume the periodic merge.
+
+        Pausing stops scheduling new rounds and waits for the running ones to finish, so merged
+        data can be cleaned without a merge writing underneath it. The per-instance cursors live
+        in the ledger and are never touched here, so resuming continues from exactly the same
+        position: nothing is re-downloaded and nothing is skipped.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("实例管理器已关闭")
+            self.auto_sync = bool(enabled)
+            if self.auto_sync:
+                now = self.clock()
+                for key in ["local", *self._nodes]:
+                    self._sync_due[key] = now + 60
+            self._save()
+        drained = True
+        if not self.auto_sync:
+            drained = self._drain(30.0)
+        return {"auto_sync": self.auto_sync, "drained": drained,
+                "cursors": {self.local_id: self.merge_store.cursor(self.local_id)},
+                "scheduled": sorted(self._requested)}
 
     def request_sync(self, alias="all"):
         with self._lock:
