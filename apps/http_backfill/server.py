@@ -292,7 +292,8 @@ class Handler(BaseHTTPRequestHandler):
             self.server.maintenance = True
             try:
                 time.sleep(0.2)  # let short reads finish before the handle is closed
-                result = collector_clean.strip(data_dir, stamp, exported=True)
+                result = collector_clean.strip(data_dir, stamp, exported=True,
+                                           hub_cursor=obj.get("hub_cursor"))
                 if result.get("ok"):
                     try:
                         self.server.engine.reopen_db()

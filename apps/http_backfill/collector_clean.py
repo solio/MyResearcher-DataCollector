@@ -220,7 +220,7 @@ def export_is_current(root):
                          "detail": "；".join(stale) or "posts %d / journal %d" % (posts, record["journal_max"])}
 
 
-def strip(root, stamp, exported=None):
+def strip(root, stamp, exported=None, hub_cursor=None):
     """Move the data out and leave a control-only database. Returns the check report."""
     root = Path(root)
     db_path = root / "collector.db"
@@ -239,6 +239,13 @@ def strip(root, stamp, exported=None):
     check("控制表/数据表划分完整", not before.get("unknown_tables"), str(before.get("unknown_tables")))
     if not check("没有执行中的请求", before["inflight"] == 0, f"inflight={before['inflight']}"):
         return {"ok": False, "checks": checks}
+    # The journal is the hub's only source. Deleting it before the hub has consumed every seq
+    # silently strands the tail: the next export page comes back empty and the merge looks done.
+    if hub_cursor is not None:
+        lag = (before.get("journal_max") or 0) - int(hub_cursor)
+        if not check("主控已追平（未同步 %d 条）" % max(lag, 0), lag <= 0,
+                     "journal_max=%s hub_cursor=%s" % (before.get("journal_max"), hub_cursor)):
+            return {"ok": False, "checks": checks}
     fresh, detail = export_is_current(root)
     if not check(detail.get("name", "导出仍是最新"), fresh, detail.get("detail", "")):
         return {"ok": False, "checks": checks}

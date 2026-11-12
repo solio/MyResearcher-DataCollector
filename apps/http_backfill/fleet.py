@@ -629,6 +629,11 @@ class FleetManager:
                     raise FleetError(409, "此采集节点尚未支持逐股控制，请先更新节点代码")
                 if needs_identity and path.endswith("/start-page") and not checked.get("navigation_controls", {}).get("manual_start_page"):
                     raise FleetError(409, "此采集节点尚未支持设置起始页，请先更新节点代码")
+            if method == "POST" and path == "api/clean/strip":
+                # The node cannot know how far the hub has merged; hand it the cursor so the strip
+                # can refuse while any sequence is still unmerged.
+                body = dict(body or {})
+                body["hub_cursor"] = self._cursor(node["instance_id"])
             if node["id"] != "local":
                 payload = self._remote(node, method, path, body, query)
             elif method == "GET":
