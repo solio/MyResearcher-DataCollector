@@ -401,12 +401,15 @@ class FleetManager:
             if not isinstance(generations, dict) or any(type(v) is not int or v < 0 for v in generations.values()):
                 raise ValueError
             generations = {k: v for k, v in generations.items() if k in {"local"} | set(nodes)}
+            if type(saved.get("auto_sync")) is bool:
+                self.auto_sync = saved["auto_sync"]
             return nodes, requested, generations
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError("私有实例注册表结构无效；保留原文件并检查配置") from exc
 
     def _save(self):
-        payload = {"version": 1, "nodes": list(self._nodes.values()), "sync_requested": sorted(self._requested), "sync_generation": self._generation}
+        payload = {"version": 1, "nodes": list(self._nodes.values()), "sync_requested": sorted(self._requested),
+                   "sync_generation": self._generation, "auto_sync": self.auto_sync}
         fd, name = tempfile.mkstemp(prefix=".registry-", dir=self.directory)
         try:
             with os.fdopen(fd, "w") as handle:
@@ -630,6 +633,12 @@ class FleetManager:
                     self.engine.create_job(body)
                 elif method == "POST" and path == "api/proxy/config":
                     self.engine.configure_proxy(body)
+                elif method == "POST" and path == "api/mihomo/select":
+                    import mihomo_control
+                    mihomo_control.select(body.get("name"))
+                elif method == "POST" and path == "api/mihomo/nodes/refresh":
+                    import mihomo_control
+                    mihomo_control.refresh_async()
                 elif method == "POST" and path == "api/proxy/rotate":
                     if body:
                         raise ValueError("切换出口请求不接受额外参数")
@@ -660,7 +669,9 @@ class FleetManager:
             if path == "api/mihomo/config":
                 if self._identity(payload) != node["instance_id"]:
                     raise FleetError(409, "节点私密配置 UUID 与注册身份不一致")
-            if path == "api/status" or method != "GET":
+            # mihomo 路由只回节点清单/切换结果，本来就不携带 version；拿它做身份校验会把
+            # “切换节点”误判成“节点状态不可用”。
+            if (path == "api/status" or method != "GET") and not path.startswith("api/mihomo/"):
                 if self._identity(payload) != node["instance_id"]:
                     raise FleetError(409, "节点响应 UUID 与注册身份不一致", method != "GET")
                 with self._lock:
@@ -719,6 +730,9 @@ class FleetManager:
             return self.engine.proxy_status()
         if path == "api/mihomo/config":
             return self.engine.mihomo_config()
+        if path == "api/mihomo/nodes":
+            import mihomo_control
+            return mihomo_control.nodes()
         if path == "api/jobs":
             return self.engine.jobs()
         if path in {"api/requests", "api/events"} and "paged" in values:
@@ -760,6 +774,41 @@ class FleetManager:
                                                    "last_error": cache.get("last_error"), "last_seen_at": cache.get("last_seen_at"),
                                                    "sync": cache.get("sync", {"state": "idle", "error": None})})
             return self._redact({"nodes": result, "merge": self._merge_summary, "auto_sync": self.auto_sync})
+
+    def _drain(self, timeout):
+        """Wait for in-flight rounds so a pause really means "nothing is writing the ledger"."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                busy = [key for key, future in self._futures.items() if not future.done()]
+            if not busy:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def set_auto_sync(self, enabled):
+        """Pause or resume the periodic merge.
+
+        Pausing stops scheduling new rounds and waits for the running ones to finish, so merged
+        data can be cleaned without a merge writing underneath it. The per-instance cursors live
+        in the ledger and are never touched here, so resuming continues from exactly the same
+        position: nothing is re-downloaded and nothing is skipped.
+        """
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("实例管理器已关闭")
+            self.auto_sync = bool(enabled)
+            if self.auto_sync:
+                now = self.clock()
+                for key in ["local", *self._nodes]:
+                    self._sync_due[key] = now + 60
+            self._save()
+        drained = True
+        if not self.auto_sync:
+            drained = self._drain(30.0)
+        return {"auto_sync": self.auto_sync, "drained": drained,
+                "cursors": {self.local_id: self.merge_store.cursor(self.local_id)},
+                "scheduled": sorted(self._requested)}
 
     def request_sync(self, alias="all"):
         with self._lock:

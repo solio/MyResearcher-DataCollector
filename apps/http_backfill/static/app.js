@@ -29,6 +29,7 @@
   let fleetTimer = null;
   let fleetLoading = false;
   let fleetData = null;
+  let stripState = null;
   let editingNode = null;
   let removingNode = null;
   let pendingSelection = null;
@@ -311,7 +312,7 @@
       const data = await api("fleet");
       if (!authenticated) return;
       if (!data || !Array.isArray(data.nodes)) throw new Error("多实例概览格式无效");
-      fleetData = data; renderFleet(data);
+      fleetData = data; renderFleet(data); void refreshStripState();
       $("fleet-error").hidden = true;
     } catch (error) {
       if (authenticated) { $("fleet-error").hidden = false; display("fleet-error", `中央概览暂时无法更新：${error.message}。已取得的其他实例状态保留。`); }
@@ -359,7 +360,8 @@
     selector.value = selectedNode;
     display("selected-node-note", `下方任务、配置、控制、记录与当前节点导出属于 ${nodeName()}。切换只改变查看对象，不会开始或暂停采集。`);
     const merge = objectValue(data.merge), stats = objectValue(first(merge, ["aggregate", "counts", "summary"], merge));
-    display("merge-sync-note", data.auto_sync === false ? "自动同步已关闭，可手动立即同步已采记录。同步只传输数据和证据，不请求股吧。" : "服务端每 60 秒同步已采记录。同步只传输数据和证据，不请求股吧。");
+    display("merge-sync-note", data.auto_sync === false ? "自动合并已暂停：游标保留，可清理数据后点“恢复合并”。同步只传输数据和证据，不请求股吧。" : "服务端每 60 秒同步已采记录。同步只传输数据和证据，不请求股吧。");
+    display("toggle-merge", data.auto_sync === false ? "恢复合并" : "暂停合并");
     display("merge-posts", number(first(stats, ["posts", "unique_posts", "post_count"])));
     display("merge-bodies", number(first(stats, ["body_complete", "bodies", "detail_bodies", "body_count"])));
     display("merge-conflicts", number(first(stats, ["conflicts", "conflict_count"])));
@@ -958,6 +960,14 @@
     $("selected-node").disabled = busy;
     $("add-node").disabled = busy || !authenticated;
     $("sync-fleet").disabled = busy || !authenticated || !fleetData;
+    $("toggle-merge").disabled = busy || !authenticated || !fleetData;
+    const stage = stripState && stripState.stage;
+    $("strip-export").disabled = busy || !authenticated || stage !== "paused";
+    $("strip-verify").disabled = busy || !authenticated || stage !== "detached";
+    $("strip-clean").disabled = busy || !authenticated || stage !== "verified";
+    display("strip-export", stage === "exported" ? "剥离数据（已导出）" : "剥离数据");
+    display("strip-verify", stage === "verified" ? "剥离校验（已通过）" : "剥离校验");
+    display("strip-clean", stage === "cleaned" ? "清理数据（已清理）" : "清理数据");
     $("save-node").disabled = busy;
     $("proxy-fields").disabled = locked || proxySupported !== true;
     $("proxy-refresh").disabled = busy || !authenticated || proxyLoading;
@@ -1990,6 +2000,38 @@
     if (removed && id === selectedNode) await switchNode("local");
   });
   $("sync-fleet").addEventListener("click", () => { void fleetMutation("fleet/sync", { node_id: "all" }, "POST", "已安排后台增量同步。同步只传输已经采集的记录与证据，不请求来源。"); });
+  async function refreshStripState() {
+    if (!authenticated) { stripState = null; return; }
+    try { stripState = await api("fleet/strip"); } catch (_) { stripState = null; }
+    controls();
+  }
+  $("strip-export").addEventListener("click", () => {
+    void (async () => {
+      const done = await fleetMutation("fleet/strip", { action: "strip" }, "POST",
+        "已导出并搬到 tmp；游标已保留，可用“剥离校验”核对。");
+      if (done) { await refreshStripState(); }
+    })();
+  });
+  $("strip-verify").addEventListener("click", () => {
+    void (async () => {
+      const done = await fleetMutation("fleet/strip", { action: "verify" }, "POST",
+        "校验通过：新台账游标与剥离前一致、内容为空、副本齐全。");
+      if (done) { await refreshStripState(); }
+    })();
+  });
+  $("strip-clean").addEventListener("click", () => {
+    if (!window.confirm("清理会删除 tmp 下的剥离副本，且不可恢复。确认已核对导出文件？")) { return; }
+    void (async () => {
+      const done = await fleetMutation("fleet/strip", { action: "cleanup" }, "POST", "已删除剥离副本。");
+      if (done) { await refreshStripState(); }
+    })();
+  });
+  $("toggle-merge").addEventListener("click", () => {
+    const paused = fleetData && fleetData.auto_sync === false;
+    void fleetMutation("fleet/sync", { auto: paused }, "POST",
+      paused ? "已恢复自动合并；游标未变，从暂停时的位置继续。"
+             : "已暂停自动合并并等待本轮传输结束；可清理数据后点“恢复合并”，游标不会丢。");
+  });
   updateDownloadLinks();
   for (const scope of ["local", "fleet"]) for (const format of ["csv", "jsonl"]) {
     const link = $(`download-${scope}-${format}`);
