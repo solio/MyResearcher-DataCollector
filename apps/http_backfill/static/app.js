@@ -338,11 +338,25 @@
       const subsets = el("div", "post-subset-counts"); subsets.append(el("span", "subset-prefix", "其中"));
       for (const [label, value] of [["已补详情", counts.body_complete], ["待补详情", counts.pending], ["未触发补详情", counts.list_only]]) subsets.append(el("span", "", `${label} ${number(value)}`));
       if (Number(counts.skipped) > 0) subsets.append(el("span", "", `已跳过正文 ${number(counts.skipped)}`));
-      summary.append(subsets); card.append(summary, el("p", "node-sync", `${counts.source_attempts == null ? "请求台账（旧版）" : "实际来源请求"} ${number(first(counts, ["source_attempts", "attempts"]))} · 标题与详情属于同一条帖子`));
-      const audit = objectValue(state.rate_audit);
-      card.append(el("p", "node-sync", audit.confirmed_requests == null ? "源请求间隔审计：未可核验，需该实例实际台账。" : `近期网络尝试 ${number(audit.confirmed_requests)} · 已知间隔违规 ${number(audit.violations?.count)} · 仅此审计样本，帖子数不代表请求数`));
+      summary.append(subsets); card.append(summary);
+      const proxyInfo = objectValue(state.proxy), proxySettings = objectValue(proxyInfo.settings);
+      const selection = objectValue(proxyInfo.selection);
+      const proxyMode = proxySettings.mode ? textValue(proxySettings.mode) : "未启用";
+      const route = selection.now
+        ? `${textValue(selection.now)}${selection.delay ? " · " + number(selection.delay) + "ms" : ""}`
+        : "mihomo 节点尚未测速";
+      card.append(el("p", "node-sync", `代理 ${proxyMode}${proxyMode === "http" ? " · " + route : ""}`));
       const config = state.job?.config || state.config;
-      if (config) card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${config.to_date || "—"}`));
+      if (config) {
+        // 上界用实际进度而不是计划截止：卡片刻度应该回答“现在采到哪”，不是“计划采到哪”。
+        const covered = objectValue((Array.isArray(state.coverage) ? state.coverage : [])[0]);
+        const reached = covered.latest || config.to_date || "—";
+        const cursor = objectValue(state.current);
+        const where = cursor.page
+          ? ` · 第 ${number(cursor.page)} 页${cursor.kind === "detail" ? "（正文）" : cursor.purpose === "recovery" ? "（校准）" : ""}`
+          : "";
+        card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${reached}${where}`));
+      }
       if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复采集数据库写入。" : "保留来源阻断，需在该实例明确安排一次探测。"));
       if (node.last_error) card.append(el("p", "node-error", `主控到节点的连接错误：${textValue(node.last_error)}。请检查主控到采集机的网络、端口和安全组；这不等于来源采集失败。`));
       const sync = objectValue(node.sync), labels = { idle: "等待同步", syncing: "正在同步", error: "同步异常", ready: "已同步" };
@@ -586,6 +600,31 @@
     if (retryRequest != null) payload.retry_request_id = retryRequest;
     const messages = { start: `${stock} 已提交采集指令，其他股票状态不变。`, pause: `${stock} 已暂停后续采集，已有响应与队列保留。`, retry: `${stock} 已安排一次原目标探测，遵守全局间隔与本股冷却；成功后仍暂停。` };
     return post(`stocks/${encodeURIComponent(stock)}/control`, payload, action === "retry" && runtimeConflictRetry(runtime) ? `${stock} 已安排一次${stockRetryLabel(runtime)}；成功后仍暂停，由你决定继续采集。` : messages[action]);
+  }
+  function copyText(value) {
+    // 控制台大多跑在 http 的内网地址上，clipboard API 不可用时要退回到选区复制。
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(value).catch(() => fallbackCopy(value));
+      return;
+    }
+    fallbackCopy(value);
+  }
+  function fallbackCopy(value) {
+    const area = document.createElement("textarea");
+    area.value = value; area.setAttribute("readonly", ""); area.style.position = "fixed"; area.style.opacity = "0";
+    document.body.append(area); area.select();
+    try { document.execCommand("copy"); } catch (_) { /* 选区复制失败时也不阻断界面 */ }
+    area.remove();
+  }
+  function copyableUrl(url) {
+    const row = el("div", "activity-url");
+    row.append(el("span", "", url));
+    const button = el("button", "button secondary small", "复制");
+    button.type = "button";
+    button.title = "复制该 URL";
+    button.addEventListener("click", () => copyText(url));
+    row.append(button);
+    return row;
   }
   function stockTargetText(target) {
     if (!target || typeof target !== "object") return target ? textValue(target) : "等待下一项";
@@ -1637,7 +1676,7 @@
       if (details) main.append(el("div", "activity-detail", details));
       const url = first(request, ["url", "requested_url"], target.url);
       if (Object.keys(sourceError).length) appendSourceErrorURLs(main, sourceError);
-      else if (url) main.append(el("div", "activity-url", url));
+      else if (url) main.append(copyableUrl(url));
       const headers = objectValue(profile.request_headers);
       const originalOutcome = first(request, ["outcome", "result", "state"]);
       const reasonText = textValue(reason);

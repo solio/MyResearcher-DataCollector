@@ -163,6 +163,15 @@ def nodes():
             "nodes": [], "cached": False, "refreshing": started or _sweeping}
 
 
+def cached_selection():
+    """Current node and its last measured delay, from the sweep cache only (no network)."""
+    payload = _read_cache() or {}
+    nodes = payload.get("nodes") or []
+    now = payload.get("now")
+    delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
+    return {"now": now, "delay": delay, "measured_at": payload.get("measured_at")}
+
+
 def refresh_async():
     """Start one background sweep; a second caller joins the running one."""
     global _sweeping

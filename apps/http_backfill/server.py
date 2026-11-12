@@ -269,6 +269,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send(409, _error_payload(exc))
         return True
 
+    def _attach_proxy_selection(self, payload):
+        """A card should say which exit it uses; the sweep cache is free to read."""
+        try:
+            proxy = payload.get("proxy") or {}
+            if (proxy.get("settings") or {}).get("mode") != "http":
+                return
+            import mihomo_control
+            proxy["selection"] = mihomo_control.cached_selection()
+        except Exception:  # noqa: BLE001 - a missing cache must not break the status call
+            return
+
     def clean_route(self, method, path, obj):
         """paused -> detached -> verified -> cleaned, mirroring the merge-ledger strip."""
         data_dir = self.server.engine.data_dir
@@ -460,6 +471,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "api/status":
                     if "fresh" in query:
                         payload = self.server.engine.status()
+                        self._attach_proxy_selection(payload)
                         self.server.remember_status(payload)
                         return self.send(200, payload)
                     return self.send(200, self.server.status_snapshot())
