@@ -483,7 +483,10 @@ class FleetManager:
             # made a healthy but distant node look like it timed out.
             wait = (120 if path.startswith("api/mihomo/")
                     else 30 if path.startswith("api/federation/")
-                    else 15 if path == "api/status" else None)
+                    else 15 if path == "api/status"
+                    # Writes recompute the job state before answering; on a multi-gigabyte node
+                    # that takes seconds and used to surface as "node timeout" in the console.
+                    else 25 if method != "GET" or path.startswith("api/clean/") else None)
             result = self.client.request(method, url, node["token"], body, timeout=wait)
             return self._redact(result, (node["token"],))
         except FleetError as exc:

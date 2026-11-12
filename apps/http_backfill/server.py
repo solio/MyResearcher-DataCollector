@@ -280,7 +280,7 @@ class Handler(BaseHTTPRequestHandler):
         if method != "POST":
             return None
         if action == "strip":
-            status = self.server.engine.status()
+            status = self.server.status_snapshot()
             if status.get("state") == "running" or status.get("inflight"):
                 return {"ok": False, "stage": "running",
                         "checks": [{"name": "采集已暂停", "ok": False, "detail": "先暂停采集并等当前请求结束"}]}
