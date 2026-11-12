@@ -224,7 +224,8 @@ class Handler(BaseHTTPRequestHandler):
                 if method == "GET":
                     result = fleet_strip.state(self.server.engine.data_dir)
                 elif method == "POST":
-                    result = fleet_strip.run(self.server.engine.data_dir, obj.get("action", ""), obj.get("stamp", ""))
+                    result = fleet_strip.run(self.server.engine.data_dir, obj.get("action", ""), obj.get("stamp", ""),
+                                             obj.get("confirmed") is True)
                     if not result.get("ok"):
                         self.send(409, result)
                         return True

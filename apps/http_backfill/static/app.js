@@ -965,7 +965,7 @@
     $("strip-export").disabled = busy || !authenticated || stage !== "paused";
     $("strip-verify").disabled = busy || !authenticated || stage !== "detached";
     $("strip-clean").disabled = busy || !authenticated || stage !== "verified";
-    display("strip-export", stage === "exported" ? "剥离数据（已导出）" : "剥离数据");
+    display("strip-export", "剥离数据");
     display("strip-verify", stage === "verified" ? "剥离校验（已通过）" : "剥离校验");
     display("strip-clean", stage === "cleaned" ? "清理数据（已清理）" : "清理数据");
     $("save-node").disabled = busy;
@@ -2006,9 +2006,10 @@
     controls();
   }
   $("strip-export").addEventListener("click", () => {
+    if (!window.confirm("确认已经用下载按钮导出并核对过？剥离只会搬移台账文件，不会再导出。")) { return; }
     void (async () => {
-      const done = await fleetMutation("fleet/strip", { action: "strip" }, "POST",
-        "已导出并搬到 tmp；游标已保留，可用“剥离校验”核对。");
+      const done = await fleetMutation("fleet/strip", { action: "strip", confirmed: true }, "POST",
+        "已搬到 tmp 并建好空台账；游标已保留，可用“剥离校验”核对。");
       if (done) { await refreshStripState(); }
     })();
   });
