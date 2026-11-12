@@ -971,6 +971,9 @@
     display("clean-strip", "数据剥离");
     display("clean-verify", cleanStage === "verified" ? "剥离校验（已通过）" : "剥离校验");
     display("clean-cleanup", cleanStage === "cleaned" ? "清理数据（已清理）" : "清理数据");
+    if (cleanStage === "inconsistent") {
+      display("metric-note", "剥离记录与当前数据不一致（可能被回滚过），三个清理按钮已禁用");
+    }
     $("strip-verify").disabled = busy || !authenticated || stage !== "detached";
     $("strip-clean").disabled = busy || !authenticated || stage !== "verified";
     display("strip-export", "剥离数据");

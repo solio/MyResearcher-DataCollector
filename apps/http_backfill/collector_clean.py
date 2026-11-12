@@ -34,6 +34,9 @@ DATA_TABLES = (
     "posts", "http_post_state", "compatible_posts", "observations",
     "page_observations", "requests", "export_journal", "associations",
 )
+# The event log is an audit trail, not a history archive: the last few thousand rows answer
+# "what happened recently" and everything older is noise nobody reads.
+EVENTS_KEEP = 2000
 # Watermarks describe the old file's extent; the new file must not inherit them.
 RESET_META = ("storage_sync_rowid", "clean_shutdown", "storage_sync_at")
 
@@ -51,12 +54,19 @@ def _tables(db):
     return {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
+def _retained_rows(db, table):
+    """Rows the new database should inherit. Only `events` is trimmed."""
+    if table == "events":
+        return db.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (EVENTS_KEEP,)).fetchall()[::-1]
+    return db.execute(f"SELECT * FROM {table}").fetchall()
+
+
 def _digest(db, table):
-    """Stable fingerprint of one table: rows ordered by primary key, hashed as JSON."""
+    """Stable fingerprint of the rows we intend to keep, not of the whole table."""
     columns = [r[1] for r in db.execute(f"PRAGMA table_info({table})")]
     if not columns:
         return None
-    rows = db.execute(f"SELECT * FROM {table} ORDER BY " + ",".join(columns)).fetchall()
+    rows = _retained_rows(db, table)
     payload = json.dumps([{c: r[c] for c in columns} for r in rows], ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest(), len(rows)
 
@@ -103,7 +113,7 @@ def _copy_control(old_db, new_db):
     for table in CONTROL_TABLES:
         if table not in _tables(old_db):
             continue
-        rows = old_db.execute(f"SELECT * FROM {table}").fetchall()
+        rows = _retained_rows(old_db, table)
         columns = [r[1] for r in old_db.execute(f"PRAGMA table_info({table})")]
         if rows:
             new_db.executemany(
@@ -278,7 +288,12 @@ def strip(root, stamp, exported=None):
         os.replace(root / "raw", tmp / "raw")
     (root / "raw").mkdir(mode=0o700, exist_ok=True)
 
+    dropped_events = (before["counts"].get("events") or 0) - copied.get("events", 0)
+    (root / "clean-current.json").write_text(json.dumps(
+        {"stamp": stamp, "at": time.time(), "before_counts": before.get("counts", {})},
+        ensure_ascii=False, indent=2))
     marker = {"stamp": stamp, "at": time.time(), "before": before, "copied": copied,
+              "events_kept": copied.get("events", 0), "events_dropped": max(dropped_events, 0),
               "cancelled_detail_tasks": cancelled, "digests": {k: v for k, v in kept_digests.items() if v},
               "verified": False}
     (tmp / "marker.json").write_text(json.dumps(marker, ensure_ascii=False, indent=2))
@@ -295,6 +310,7 @@ def rollback(root, stamp):
     (root / "collector.db").unlink(missing_ok=True)
     for suffix in ("-wal", "-shm"):
         (root / ("collector.db" + suffix)).unlink(missing_ok=True)
+    (root / "clean-current.json").unlink(missing_ok=True)
     os.replace(original, root / "collector.db")
     if (tmp / "raw").is_dir():
         shutil.rmtree(root / "raw", ignore_errors=True)
@@ -347,6 +363,7 @@ def cleanup(root, stamp):
     if not str(tmp.resolve()).startswith(str(base) + os.sep):
         return {"ok": False, "checks": [{"name": "路径受控", "ok": False, "detail": str(tmp)}]}
     shutil.rmtree(tmp)
+    (root / "clean-current.json").unlink(missing_ok=True)
     checks.append({"name": "已删除", "ok": not tmp.exists(), "detail": str(tmp)})
     return {"ok": True, "checks": checks, "stage": "cleaned"}
 
@@ -363,19 +380,26 @@ def state(root, running=None):
         stage = "paused" if info.get("inflight") == 0 else "running"
     else:
         stage = "running" if running or info.get("inflight") else "paused"
+    # One file decides: a strip exists or it does not. Leftover directories and markers from an
+    # earlier or rolled-back attempt must never change what the buttons do.
+    current = root / "clean-current.json"
     stamp = ""
+    if current.is_file():
+        try:
+            stamp = json.loads(current.read_text()).get("stamp", "")
+        except ValueError:
+            stamp = ""
     has_data = any((info.get("counts") or {}).get(name) for name in DATA_TABLES)
-    dirs = [] if has_data else sorted((root / "tmp").glob("clean-*"))
-    if has_data:
-        # A leftover marker from a rolled-back strip must not claim the data is gone.
-        stage = "running" if running else "paused"
-    if dirs:
-        marker = dirs[-1] / "marker.json"
+    if current.is_file() and has_data:
+        # The ledger says stripped but rows are back: stopped half way, nothing may be deleted.
+        stage = "inconsistent"
+    elif current.is_file():
+        marker = root / "tmp" / ("clean-" + stamp) / "marker.json"
+        verified = False
         if marker.is_file():
-            data = json.loads(marker.read_text())
-            stamp = data.get("stamp", "")
-            stage = "verified" if data.get("verified") else "detached"
-    elif (root / "fleet" / "clean-journal.jsonl").is_file() and not dirs:
-        stage = "cleaned"
+            verified = json.loads(marker.read_text()).get("verified") is True
+        stage = "verified" if verified else "detached"
+    else:
+        stage = "running" if running else "paused"
     info.update({"stage": stage, "stamp": stamp})
     return info
