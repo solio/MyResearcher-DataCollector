@@ -228,7 +228,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith("api/clean/"):
                 result = self.clean_route(method, path, obj)
                 if result is not None:
-                    self.send(200 if result.get("ok") else 409, result)
+                    # A state read has no ok flag; only actions can fail.
+                    succeeded = True if method == "GET" else result.get("ok") is True
+                    self.send(200 if succeeded else 409, result)
                     return True
             elif path == "api/fleet/strip":
                 if method == "GET":
