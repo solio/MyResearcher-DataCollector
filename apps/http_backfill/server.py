@@ -274,7 +274,9 @@ class Handler(BaseHTTPRequestHandler):
         data_dir = self.server.engine.data_dir
         action = path[len("api/clean/"):]
         if method == "GET" and action == "state":
-            return collector_clean.state(data_dir, running=self.server.engine.status().get("state") == "running")
+            # status_snapshot() is the warmed copy the console already polls; engine.status()
+            # recomputes every metric and takes seconds on a big database.
+            return collector_clean.state(data_dir, running=self.server.status_snapshot().get("state") == "running")
         if method != "POST":
             return None
         if action == "strip":
