@@ -261,7 +261,7 @@
   async function api(path, method = "GET", payload, node = selectedNode) {
     const options = { method, credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" } };
     if (payload !== undefined) { options.headers["Content-Type"] = "application/json"; options.body = JSON.stringify(payload); }
-    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts|proxy|stocks|mihomo)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
+    const routed = node !== "local" && /^(status|jobs|control|requests|events|posts|proxy|stocks|mihomo|clean)(?:[/?]|$)/.test(path) ? `nodes/${encodeURIComponent(node)}/${path}` : path;
     const response = await fetch(new URL(`api/${routed}`, document.baseURI), options);
     const contentType = response.headers.get("content-type") || "";
     const data = contentType.includes("application/json") ? await response.json() : null;

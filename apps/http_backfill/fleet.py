@@ -578,6 +578,8 @@ class FleetManager:
         allowed = ((method == "GET" and path in {"api/status", "api/jobs", "api/requests", "api/events", "api/posts", "api/proxy", "api/mihomo/config", "api/mihomo/nodes"})
                    or (method == "POST" and path in {"api/jobs", "api/control", "api/proxy/config", "api/proxy/rotate", "api/mihomo/select", "api/mihomo/nodes/refresh"})
                    or (method == "POST" and re.fullmatch(r"api/stocks/[0-9]{6}/(?:control|proxy/config|start-page)", path))
+                   or (method == "GET" and path == "api/clean/state")
+                   or (method == "POST" and path in {"api/clean/strip", "api/clean/verify", "api/clean/cleanup"})
                    or (method == "PATCH" and path == "api/jobs/current")
                    or (method == "DELETE" and (path == "api/jobs/current" or re.fullmatch(r"api/jobs/current/stocks/[0-9]{6}", path))))
         if not allowed:

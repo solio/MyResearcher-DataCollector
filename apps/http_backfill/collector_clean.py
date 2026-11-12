@@ -176,6 +176,11 @@ def export_all(root, stamp=""):
               "posts_bytes": (out / "posts.jsonl.gz").stat().st_size,
               "journal_bytes": (out / "journal.jsonl.gz").stat().st_size}
     (out / "export.json").write_text(json.dumps(record, ensure_ascii=False, indent=2))
+    # Only the newest archive is kept: an older one is superseded the moment a strip consumes it,
+    # and leaving them behind quietly fills the disk.
+    for old_dir in (root / "tmp").glob("export-*"):
+        if old_dir.resolve() != out.resolve():
+            shutil.rmtree(old_dir, ignore_errors=True)
     return record
 
 
