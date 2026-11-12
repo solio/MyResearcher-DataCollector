@@ -118,18 +118,14 @@ def cmd_export(args):
         shutil.copyfile(args.offline_path, target)
         posts = sum(1 for line in target.read_text(encoding="utf-8").splitlines() if line.strip())
     else:
-        import urllib.request
-        token = (root / "console.token").read_text().strip()
-        request = urllib.request.Request(
-            "http://127.0.0.1:8790/api/download/posts?scope=fleet&format=jsonl",
-            headers={"Authorization": "Bearer " + token})
-        with urllib.request.urlopen(request, timeout=600) as response:
-            header = response.headers.get("X-Collector-Post-Count")
-            body = response.read()
-        target.write_bytes(body)
-        if header is None:
-            return check("导出接口返回计数头", False)
-        posts = int(header)
+        # In-process, not through our own HTTP endpoint: a self-request needs the download
+        # cookie and would hold the whole export in memory.
+        from data_export import export_posts
+        source = root / "fleet" / "collector.db"
+        if not check("汇总观察库存在", source.is_file(), str(source)):
+            return False
+        report = export_posts(source, target, "jsonl")
+        posts = report["posts"]
     lines = sum(1 for line in target.read_text(encoding="utf-8").splitlines() if line.strip())
     check("导出行数与接口计数一致", lines == posts, f"lines={lines} header={posts}")
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
@@ -173,13 +169,19 @@ def cmd_detach(args):
                  "先在控制台点“暂停合并”，等本轮传输结束"):
         return False
 
+    # The operator exports with the console's download button, so the archive usually lives on
+    # their machine, not on this disk. A recorded export is verified when present; otherwise the
+    # gate is an explicit confirmation, never a silent assumption.
     record_path = Path(args.export) if args.export else _latest_export(root)
-    if not check("存在导出产物", bool(record_path and Path(record_path).is_file()),
-                 str(record_path or "先运行 export")):
-        return False
-    record = json.loads(Path(record_path).read_text())
-    if not check("导出本身校验通过", record.get("ok") is True):
-        return False
+    record = None
+    if record_path and Path(record_path).is_file():
+        record = json.loads(Path(record_path).read_text())
+        if not check("导出本身校验通过", record.get("ok") is True):
+            return False
+    elif not getattr(args, "confirmed", False):
+        return check("已确认导出过", False, "先用下载按钮导出，再勾选确认；或用 export 生成记录")
+    else:
+        check("已确认导出过", True, "操作员确认")
 
     with open_ro(ledger) as db:
         ok = check("汇总台账契约", db.execute("SELECT value FROM merge_meta WHERE key='storage'").fetchone()[0] == MARK)
@@ -192,12 +194,13 @@ def cmd_detach(args):
     if not ok:
         return False
     print("  剥离前:", before, "游标:", cursors)
-    if not check("导出后台账没有变化（游标一致）", record.get("cursors") == cursors,
-                 f"export={record.get('cursors')} now={cursors}"):
-        return False
-    if not check("导出后行数没有变化", record.get("ledger_counts") == before,
-                 f"export={record.get('ledger_counts')} now={before}"):
-        return False
+    if record is not None:
+        if not check("导出后台账没有变化（游标一致）", record.get("cursors") == cursors,
+                     f"export={record.get('cursors')} now={cursors}"):
+            return False
+        if not check("导出后行数没有变化", record.get("ledger_counts") == before,
+                     f"export={record.get('ledger_counts')} now={before}"):
+            return False
     if pending:
         print("  在途页:", [(k[:8], v) for k, v in pending.items()])
 
@@ -211,6 +214,9 @@ def cmd_detach(args):
     if (fleet / "raw").is_dir():
         os.replace(fleet / "raw", tmp / "raw")
         moved.append(("raw", sum(p.stat().st_size for p in (tmp / "raw").rglob("*") if p.is_file())))
+    # The running server only creates raw/ at startup, so a merge that resumes right after a strip
+    # would write evidence into a missing directory. Leave an empty one behind every time.
+    (fleet / "raw").mkdir(mode=0o700, exist_ok=True)
     check("原始文件已改名为副本", all(not (fleet / n).exists() for n, _ in moved), str([n for n, _ in moved]))
 
     # Once the files move, every failure has to put them back: an operator who sees FAIL must be
@@ -356,27 +362,31 @@ def state(root="/data"):
         elif empty and cleaned:
             stage = "cleaned"
         elif export and export.get("ok") and export.get("cursors") == cursors and export.get("ledger_counts") == data:
-            stage, stamp = "exported", export.get("stamp", "")
+            stage, stamp = "paused", export.get("stamp", "")
     detail.update({"stage": stage, "stamp": stamp, "paused": paused})
     return detail
 
 
-def run(root, action, stamp=""):
+def run(root, action, stamp="", confirmed=False):
     """One entry point for both the CLI and the console; refuses any out-of-order transition."""
     root = Path(root)
     current = state(root)
+    # "strip" accepts both entry points: a fresh pause, or an export the operator already ran
+    # by hand. Refusing the second one left the UI with a grey button and no way forward.
     expected = {"export": "paused", "detach": "exported", "strip": "paused",
                 "verify": "detached", "cleanup": "verified"}
     if action not in expected:
         return {"ok": False, "stage": current["stage"], "error": "未知动作"}
-    if current["stage"] != expected[action]:
+    allowed = expected[action] if isinstance(expected[action], tuple) else (expected[action],)
+    if current["stage"] not in allowed:
         return {"ok": False, "stage": current["stage"],
-                "error": "当前阶段是 %s，%s 需要先完成 %s" % (current["stage"], action, expected[action])}
+                "error": "当前阶段是 %s，%s 需要先完成 %s" % (current["stage"], action, " 或 ".join(allowed))}
     if action == "strip":
-        # One button = "export, then move": a strip without an export is exactly what we refuse.
-        args = argparse.Namespace(data=str(root), stamp=stamp, export="", offline_path="")
+        # "剥离数据" only moves what is already exported; exporting is the operator's own step.
+        args = argparse.Namespace(data=str(root), stamp=stamp, export="", offline_path="",
+                                  confirmed=bool(confirmed))
         results.clear()
-        ok = cmd_export(args) and cmd_detach(args)
+        ok = cmd_detach(args)
         action = "detach"
     else:
         handlers = {"export": cmd_export, "detach": cmd_detach, "verify": cmd_verify, "cleanup": cmd_cleanup}
