@@ -349,13 +349,15 @@
       const config = state.job?.config || state.config;
       if (config) {
         // 上界用实际进度而不是计划截止：卡片刻度应该回答“现在采到哪”，不是“计划采到哪”。
+        // 窗口取“正在采集的这一页”的日期范围；没有该页记录时退回计划窗口。
+        const cursor = objectValue(state.current), window = objectValue(cursor.window);
         const covered = objectValue((Array.isArray(state.coverage) ? state.coverage : [])[0]);
-        const reached = covered.latest || config.to_date || "—";
-        const cursor = objectValue(state.current);
+        const lower = window.from || config.from_date || "—";
+        const upper = window.to || covered.latest || config.to_date || "—";
         const where = cursor.page
           ? ` · 第 ${number(cursor.page)} 页${cursor.kind === "detail" ? "（正文）" : cursor.purpose === "recovery" ? "（校准）" : ""}`
           : "";
-        card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${config.from_date || "—"} 至 ${reached}${where}`));
+        card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${lower} 至 ${upper}${where}`));
       }
       if (state.active_halt || state.storage_halt) card.append(el("p", "node-error", state.storage_halt ? "本地写入暂停，需修复采集数据库写入。" : "保留来源阻断，需在该实例明确安排一次探测。"));
       if (node.last_error) card.append(el("p", "node-error", `主控到节点的连接错误：${textValue(node.last_error)}。请检查主控到采集机的网络、端口和安全组；这不等于来源采集失败。`));
