@@ -6,6 +6,7 @@ import argparse
 import hashlib
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import fleet_strip
 import json
 import mimetypes
 import os
@@ -216,6 +217,17 @@ class Handler(BaseHTTPRequestHandler):
                     result = fleet.register({**obj, "id": alias})
                 elif method == "DELETE":
                     result = fleet.remove(alias)
+                else:
+                    self.send(404, {"error": "接口不存在"})
+                    return True
+            elif path == "api/fleet/strip":
+                if method == "GET":
+                    result = fleet_strip.state(self.server.engine.data_dir)
+                elif method == "POST":
+                    result = fleet_strip.run(self.server.engine.data_dir, obj.get("action", ""), obj.get("stamp", ""))
+                    if not result.get("ok"):
+                        self.send(409, result)
+                        return True
                 else:
                     self.send(404, {"error": "接口不存在"})
                     return True
