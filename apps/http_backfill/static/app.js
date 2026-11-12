@@ -967,10 +967,12 @@
     const cleanStage = cleanState && cleanState.stage;
     $("clean-strip").disabled = busy || !authenticated || cleanStage !== "paused";
     $("clean-verify").disabled = busy || !authenticated || cleanStage !== "detached";
-    $("clean-cleanup").disabled = busy || !authenticated || cleanStage !== "verified";
+    $("clean-cleanup").disabled = busy || !authenticated
+      || (cleanStage !== "verified" && cleanStage !== "leftovers");
     display("clean-strip", "数据剥离");
     display("clean-verify", cleanStage === "verified" ? "剥离校验（已通过）" : "剥离校验");
-    display("clean-cleanup", cleanStage === "cleaned" ? "清理数据（已清理）" : "清理数据");
+    display("clean-cleanup", cleanStage === "leftovers" ? "清理数据（有遗留副本）"
+      : cleanStage === "cleaned" ? "清理数据（已清理）" : "清理数据");
     if (cleanStage === "inconsistent") {
       display("metric-note", "剥离记录与当前数据不一致（可能被回滚过），三个清理按钮已禁用");
     }

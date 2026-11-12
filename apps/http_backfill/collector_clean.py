@@ -349,7 +349,33 @@ def verify(root, stamp):
     return {"ok": ok, "checks": checks, "stage": "verified" if ok else "detached"}
 
 
-def cleanup(root, stamp):
+def leftovers(root):
+    """Strip directories still on disk. They are backups, so they may only be removed while the
+    live database still has its data."""
+    return [p for p in sorted((Path(root) / "tmp").glob("clean-*")) if (p / "marker.json").is_file()]
+
+
+def cleanup(root, stamp=""):
+    """Delete this run's copy, or every leftover copy when no run is active."""
+    root = Path(root)
+    info = inspect(root)
+    has_data = any((info.get("counts") or {}).get(name) for name in DATA_TABLES)
+    if not stamp:
+        # No active strip: the operator is reclaiming space after a rollback. Only the copies are
+        # deleted; the live database must still hold the data, otherwise this is the last copy.
+        dirs = leftovers(root)
+        if not dirs:
+            return {"ok": False, "checks": [{"name": "存在可清理的副本", "ok": False}]}
+        if not has_data:
+            return {"ok": False, "checks": [{"name": "线上库有数据才允许删除副本", "ok": False,
+                                             "detail": "当前库为空，删除副本会丢失唯一副本"}]}
+        removed = []
+        for path in dirs:
+            shutil.rmtree(path)
+            removed.append(path.name)
+        (root / "clean-current.json").unlink(missing_ok=True)
+        return {"ok": True, "checks": [{"name": "已清理遗留副本", "ok": not leftovers(root),
+                                        "detail": ", ".join(removed)}], "stage": "paused"}
     root = Path(root)
     tmp = root / "tmp" / ("clean-" + stamp)
     marker_path = tmp / "marker.json"
@@ -399,6 +425,9 @@ def state(root, running=None):
         if marker.is_file():
             verified = json.loads(marker.read_text()).get("verified") is True
         stage = "verified" if verified else "detached"
+    elif has_data and leftovers(root):
+        # Copies from an earlier attempt or a rollback: the button must offer to clean them.
+        stage = "leftovers"
     else:
         stage = "running" if running else "paused"
     info.update({"stage": stage, "stamp": stamp})
