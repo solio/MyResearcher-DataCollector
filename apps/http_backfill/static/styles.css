@@ -48,3 +48,5 @@
 .mihomo-row select{flex:1 1 220px;min-width:0}
 .mihomo-row .button{flex:0 0 auto;white-space:nowrap}
 @media(max-width:720px){.field-row{grid-template-columns:1fr;gap:4px}.field-row>label{margin-bottom:2px}.mihomo-row{flex-wrap:wrap}.mihomo-row select{flex:1 1 100%}.proxy-grid.proxy-grid-wide{grid-template-columns:1fr}}
+.copy-url{display:inline-grid;place-items:center;width:16px;height:16px;min-height:0;padding:0;margin-left:6px;border:1px solid #cfd9cf;border-radius:4px;background:#fff;color:#8b9588;font-size:10px;line-height:1;vertical-align:middle}
+.copy-url:hover{background:#f2f6ef;color:#47624e}

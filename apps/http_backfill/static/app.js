@@ -623,9 +623,10 @@
   function copyableUrl(url) {
     const row = el("div", "activity-url");
     row.append(el("span", "", url));
-    const button = el("button", "button secondary small", "复制");
+    const button = el("button", "copy-url", "⧉");
     button.type = "button";
     button.title = "复制该 URL";
+    button.setAttribute("aria-label", "复制该 URL");
     button.addEventListener("click", () => copyText(url));
     row.append(button);
     return row;
