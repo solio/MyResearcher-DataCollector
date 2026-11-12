@@ -2796,20 +2796,36 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             effective_to = self._get("effective_to_epoch")
             lifecycle = self.db.execute("SELECT revision,archived FROM job_lifecycle WHERE job=?", (job_id,)).fetchone()
             current_json = self._target_json(self._target())
-            # 卡片要显示“正在采集的这一页是哪段日期”，page_observations 里正好记着这一页的
-            # earliest/latest；没有这一页的记录时保持原样，由前端回退到计划窗口。
-            if isinstance(current_json, dict) and current_json.get("page"):
+            # 卡片显示“已采到哪一段”：下界取前进页（最深处）的最早日期，上界取该股已采到的最新
+            # 日期。两者都来自库里的记录，不是任务配置的计划范围。
+            progress_json = None
+            stock = (current_json or {}).get("stock") or ((config or {}).get("stocks") or [None])[0]
+            frontier = self.db.execute(
+                "SELECT payload FROM frontiers WHERE job=? AND stock=?", (job_id, stock)).fetchone()
+            deepest = None
+            if frontier:
+                try:
+                    deepest = json.loads(frontier["payload"] or "{}").get("page")
+                except ValueError:
+                    deepest = None
+            window = {}
+            if deepest:
                 observed = self.db.execute(
                     "SELECT earliest, latest FROM page_observations WHERE job=? AND stock=? AND page=? "
-                    "ORDER BY request_id DESC LIMIT 1",
-                    (job_id, current_json.get("stock"), current_json["page"])).fetchone()
-                if observed and observed["earliest"] and observed["latest"]:
-                    current_json["window"] = {"from": observed["earliest"], "to": observed["latest"]}
+                    "ORDER BY request_id DESC LIMIT 1", (job_id, stock, deepest)).fetchone()
+                if observed and observed["earliest"]:
+                    window["from"] = observed["earliest"]
+            spanned = next((row for row in coverage if row.get("stock") == stock), None)
+            if spanned and spanned.get("latest"):
+                window["to"] = spanned["latest"]
+            if window.get("from") and window.get("to"):
+                # 独立成字段：任务暂停或阻断时 current 为空，卡片仍要显示已采范围。
+                    progress_json = {"stock": stock, "page": deepest, **window}
             result = {"version": VERSION, "instance_id": self._get("instance_id"), "state": self._get("state"), "reason": self._get("reason"),
                       "job": {"id": job_id, "config": config, "created_at": _iso(job["created"]), "started_at": _iso(started),
                               "effective_to": _iso(effective_to), "effective_to_shanghai": datetime.fromtimestamp(effective_to, guba.SHANGHAI).isoformat(),
                               "revision": lifecycle["revision"] if lifecycle else 1, "archived": bool(lifecycle and lifecycle["archived"] is not None)} if job else None,
-                      "config": config, "current": current_json, "aggregate": aggregate,
+                      "config": config, "current": current_json, "progress": progress_json, "aggregate": aggregate,
                       "next_request_at": _iso(self._get("next_due")) if self._get("next_due") else None,
                       "next_request_epoch": self._get("next_due", 0), "server_time": _iso(self.clock()),
                       "runtime_seconds": continuous, "continuous_run_seconds": continuous,

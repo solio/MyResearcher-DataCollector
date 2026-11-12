@@ -350,12 +350,14 @@
       if (config) {
         // 上界用实际进度而不是计划截止：卡片刻度应该回答“现在采到哪”，不是“计划采到哪”。
         // 窗口取“正在采集的这一页”的日期范围；没有该页记录时退回计划窗口。
-        const cursor = objectValue(state.current), window = objectValue(cursor.window);
+        const cursor = objectValue(state.current);
+        const window = objectValue(first(state, ["progress"], cursor.window));
         const covered = objectValue((Array.isArray(state.coverage) ? state.coverage : [])[0]);
         const lower = window.from || config.from_date || "—";
         const upper = window.to || covered.latest || config.to_date || "—";
-        const where = cursor.page
-          ? ` · 第 ${number(cursor.page)} 页${cursor.kind === "detail" ? "（正文）" : cursor.purpose === "recovery" ? "（校准）" : ""}`
+        const page = cursor.page || window.page;
+        const where = page
+          ? ` · 第 ${number(page)} 页${cursor.kind === "detail" ? "（正文）" : cursor.purpose === "recovery" ? "（校准）" : ""}`
           : "";
         card.append(el("p", "node-task", `${Array.isArray(config.stocks) ? config.stocks.join("，") : "—"} · ${lower} 至 ${upper}${where}`));
       }
