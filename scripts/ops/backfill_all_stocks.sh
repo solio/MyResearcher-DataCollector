@@ -121,13 +121,14 @@ RUN_TAG=$(date -u +%Y%m%d)
 # Picking the wrong source would silently drop a stock from collection, which is
 # worse than a literal list that currently matches reality. Until the registry
 # question is settled, coverage_drift_check() below fails loudly instead.
-all_stocks=(601012 002463 601888 300666 300054 603039 002648 002028 603179 605020 600312 002891 603806 688676 300487 603997
-            603129 002353 300124 600031
-            601966
-            603893 002352 603899
-            600096 601995
-            002230 002916 300604
-            002271 002597 300017 300442 300866 600563 603337)
+# 名单改为**从数据库派生**（2026-11-12）：posts ∪ observations ∪ coverage。
+# 旧硬编码数组的问题：新采的票只要忘了加数组，就永远不被覆盖（2026-10-12 已发生一次）。
+# 仍保留 STOCKS= 覆盖用于临时队列。
+all_stocks=($("$PY" scripts/ops/stock_roster.py))
+if [ ${#all_stocks[@]} -eq 0 ]; then
+  echo "ROSTER_EMPTY: stock_roster.py 没有从库里读到任何代码，拒绝空跑"
+  exit 1
+fi
 stocks=("${all_stocks[@]}")
 # STOCKS="300487 603806" runs an ad-hoc queue -- a second, disjoint one, or a
 # retry after a halt -- in whatever order it is given. The roster above stays
