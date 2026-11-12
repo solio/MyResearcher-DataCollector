@@ -104,7 +104,9 @@ def inspect(root, full=False):
         out["pending_detail"] = db.execute(
             "SELECT count(*) FROM tasks WHERE status='pending' AND kind='detail'").fetchone()[0]
     out["bytes"] = db_path.stat().st_size
-    out["raw_bytes"] = sum(p.stat().st_size for p in (root / "raw").rglob("*") if p.is_file()) if (root / "raw").is_dir() else 0
+    # Walking thousands of raw files takes seconds; only the strip report needs that number.
+    if full and (root / "raw").is_dir():
+        out["raw_bytes"] = sum(p.stat().st_size for p in (root / "raw").rglob("*") if p.is_file())
     return out
 
 
