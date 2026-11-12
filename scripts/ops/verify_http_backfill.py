@@ -59,6 +59,23 @@ def locate():
         raise RuntimeError("未找到采集器运行目录")
     return data, "http://127.0.0.1:8790"
 
+def read_exit_ip(opener, direct):
+    """Read the worker's own egress address.
+
+    api.ipify.org is refused from some domestic hosts (02 answers Connection refused while
+    myip.ipip.net still returns the address), so a bare-IP check asks ipip.net, whose reply is a
+    sentence and needs the address pulled out of it."""
+    if direct:
+        with opener.open("https://myip.ipip.net", timeout=15) as response:
+            text = response.read(200).decode("utf-8", "replace")
+        found = re.search(r"([0-9]{1,3}(?:\.[0-9]{1,3}){3})", text)
+        if not found:
+            raise RuntimeError("无法从 myip.ipip.net 的返回中解析出口地址")
+        return found.group(1)
+    with opener.open("https://api.ipify.org", timeout=15) as response:
+        return response.read(100).decode().strip()
+
+
 def api(base, data, path="status?fresh=1", body=None):
     # The console heartbeat is served from a snapshot (up to 30 s old). Verification must never
     # decide on a stale view, so every status read here asks the node to recompute.
@@ -188,9 +205,7 @@ def execute(payload):
             selected = route(status, payload.get("stock"), payload.get("job"))
             proxies = {} if selected.get("mode") == "direct" else {"https": selected["endpoint"]}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
-        with opener.open("https://api.ipify.org", timeout=15) as response:
-            ip = response.read(100).decode().strip()
-        return {"route": selected, "exit_ip": ip}
+        return {"route": selected, "exit_ip": read_exit_ip(opener, selected.get("mode") == "direct")}
     expected = payload["target"]
     if action in {"prepare", "probe"}:
         unchanged(view, expected)
@@ -214,9 +229,8 @@ def execute(payload):
             return {"paused_stocks": paused}
         proxies = {} if expected["route"].get("mode") == "direct" else {"https": expected["route"]["endpoint"]}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
-        with opener.open("https://api.ipify.org", timeout=15) as response:
-            if response.read(100).decode().strip() != expected["exit_ip"]:
-                raise RuntimeError("验证后服务器出口IP已经变化，未提交来源探测")
+        if read_exit_ip(opener, expected["route"].get("mode") == "direct") != expected["exit_ip"]:
+            raise RuntimeError("验证后服务器出口IP已经变化，未提交来源探测")
         with contextlib.closing(sqlite3.connect((data / "collector.db").as_uri() + "?mode=ro", uri=True)) as db:
             before = db.execute("SELECT COALESCE(MAX(id),0) FROM requests").fetchone()[0]
         api(base, data, "stocks/" + expected["stock"] + "/control",

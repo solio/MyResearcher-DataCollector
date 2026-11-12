@@ -224,6 +224,9 @@ struct Index {
   private error(err: Error): void {
     const context = this.stockTitle ? this.stockTitle + '：' : '';
     const text = readableError(context + (err.message || '操作未完成，请重试连接'));
+    // Every user-visible failure funnels through here; this is the only place guaranteed to
+    // see the real cause regardless of which screen prompted it.
+    crashLog.append('error', text.slice(0, 300));
     this.message = text;
     this.noteForNode(text);
   }
@@ -440,6 +443,7 @@ struct Index {
     this.retryDescriptor = descriptor;
     this.retryProfile = this.activeProfile;
     this.failure = '从后台回来时节点通道已断开；点“重试本步”重建，任务保持暂停，不会重发探测';
+    crashLog.append('channel-lost', 'audit did not answer within 8s');
     this.message = this.failure;
     await this.removeProxy();
     await bounded(this.detach());
@@ -600,6 +604,8 @@ struct Index {
   // Only the neutral endpoint is reachable before the exit check; the source
   // domains open after markReady(). The Web source is bound so the first load
   // happens on mount, later measurements navigate explicitly.
+  private exitUrl: string = 'https://api.ipify.org';
+
   private async measureExit(): Promise<string> {
     const measured = new Promise<string>((resolve) => { this.exitWaiter = resolve; });
     const guard = setTimeout(() => {
@@ -607,7 +613,7 @@ struct Index {
       if (waiter) { this.exitWaiter = undefined; waiter(''); }
     }, 45000);
     try {
-      if (this.measuredOnce) { this.browser.loadUrl('https://api.ipify.org'); }
+      if (this.measuredOnce) { this.browser.loadUrl(this.exitUrl); }
       return await measured;
     } finally { clearTimeout(guard); this.measuredOnce = true; }
   }
@@ -664,6 +670,8 @@ struct Index {
     } catch (err) {
       // The operator may have taken the console instead, which deliberately ends this
       // flow; that screen must not be knocked back to the home screen.
+      const reason = (err as Error)?.message ? (err as Error).message : String(err);
+      crashLog.append('verify-fail', reason.slice(0, 300));
       if (this.screen === 'console') { return; }
       await this.releaseAll();
       this.screen = 'home';
@@ -686,6 +694,7 @@ struct Index {
         knownHostBase64: profile.knownHostBase64 };
       if (profile.authType === 'password') { options.password = profile.secret; } else { options.privateKey = profile.secret; }
       if (profile.passphrase) { options.passphrase = profile.passphrase; }
+      crashLog.append('ssh-dial', profile.host + ':' + profile.port.toString() + ' user=' + profile.user);
       const session = await connect(options);
       runtime.sshId = session.id;
       if (generation !== this.generation) { throw new Error('验证已取消'); }
@@ -697,23 +706,37 @@ struct Index {
       await runAction<PrepareValue>(session.id, descriptor.worker_command, JSON.stringify({ action: 'prepare', target: target }));
       if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在核对节点出口';
+      // direct 出口（worker 裸 IP）没有代理配置可言，exit 显式要走裸 IP，且不比对配置路由签名；
+      // 实例/修订/原请求仍由 prepare/probe 侧钉住。
+      const direct = target.route !== undefined && target.route.mode === 'direct';
       const exitInfo = await runAction<ExitValue>(session.id, descriptor.worker_command,
-        JSON.stringify({ action: 'exit', stock: target.stock, job: target.job }));
-      if (!target.route || exitInfo.route.signature !== target.route.signature) {
+        JSON.stringify({ action: 'exit', stock: target.stock, job: target.job, direct: direct }));
+      if (!target.route) {
+        throw new Error('节点未返回该任务的出口信息，请稍后重试');
+      }
+      if (!direct && exitInfo.route.signature !== target.route.signature) {
         throw new Error('节点出口已变化，已停止验证');
       }
       target.exit_ip = exitInfo.exit_ip;
       runtime.target = target;
       if (generation !== this.generation) { throw new Error('验证已取消'); }
       this.message = '正在建立应用内 SSH 通道';
-      const forwarding: SshForwardOptions = { host: profile.host, port: profile.port, user: profile.user,
-        knownHostBase64: profile.knownHostBase64, remoteHost: target.route.host, remotePort: target.route.port };
-      if (profile.authType === 'password') { forwarding.password = profile.secret; } else { forwarding.privateKey = profile.secret; }
-      if (profile.passphrase) { forwarding.passphrase = profile.passphrase; }
-      const tunnel = await forward(forwarding);
-      runtime.forwardId = tunnel.id;
-      this.message = '正在绑定本地转发端口';
-      const endpoint = await runtime.proxy.start(tunnel.port, descriptor.source_domains);
+      let endpoint = '';
+      if (direct) {
+        // 裸 IP 出口：每条目标主机各开一条转发（复用），本地代理逐连接直达源站 443。
+        this.message = '正在按目标建立直连通道';
+        endpoint = await runtime.proxy.start(0, descriptor.source_domains,
+          (host: string): Promise<number> => runtime.forwardFor(host, 443));
+      } else {
+        const forwarding: SshForwardOptions = { host: profile.host, port: profile.port, user: profile.user,
+          knownHostBase64: profile.knownHostBase64, remoteHost: target.route.host, remotePort: target.route.port };
+        if (profile.authType === 'password') { forwarding.password = profile.secret; } else { forwarding.privateKey = profile.secret; }
+        if (profile.passphrase) { forwarding.passphrase = profile.passphrase; }
+        const tunnel = await forward(forwarding);
+        runtime.forwardId = tunnel.id;
+        this.message = '正在绑定本地转发端口';
+        endpoint = await runtime.proxy.start(tunnel.port, descriptor.source_domains);
+      }
       this.message = '正在应用浏览器代理';
       const config = new webview.ProxyConfig();
       config.insertProxyRule(endpoint);
@@ -743,7 +766,10 @@ struct Index {
     this.measuredOnce = false;
     this.verifiedExit = false;
     this.browser = new webview.WebviewController();
-    this.webUrl = 'https://api.ipify.org';
+    // 裸 IP 出口的节点常常访问不了 ipify（02 直接 Connection refused），改问国内回显。
+    this.exitUrl = (runtime.target && runtime.target.route && runtime.target.route.mode === 'direct')
+      ? 'https://myip.ipip.net' : 'https://api.ipify.org';
+    this.webUrl = this.exitUrl;
     this.screen = 'verify'; this.showWeb = true;
     // From here until the page is taken down the operator is watching a captcha without
     // touching the screen, which is precisely the case the system heuristic does not cover.
@@ -797,6 +823,7 @@ struct Index {
     this.retryDescriptor = descriptor;
     this.retryProfile = profile;
     this.failure = readableError(err.message || '验证未完成，请重试');
+    crashLog.append('step-fail', (err && err.message ? err.message : String(err)).slice(0, 300));
     this.message = this.failure;
     this.screen = 'retry';
   }
@@ -843,15 +870,17 @@ struct Index {
 
   private async pageEnded(url: string): Promise<void> {
     hilog.info(0x3200, 'waygate_ui', 'pageEnd %{public}s', url);
-    if (this.exitWaiter && url.indexOf('https://api.ipify.org') === 0) {
+    if (this.exitWaiter && url.indexOf(this.exitUrl) === 0) {
       const waiter = this.exitWaiter;
       this.exitWaiter = undefined;
       try {
         const output = await this.browser.runJavaScript('JSON.stringify(document.body.innerText.trim())');
-        let ip = JSON.parse(output) as string;
+        let text = JSON.parse(output) as string;
         // ArkWeb versions may JSON-encode the JS string result one extra time.
-        if (ip.startsWith('"')) { ip = JSON.parse(ip) as string; }
-        waiter(ip);
+        if (text.startsWith('"')) { text = JSON.parse(text) as string; }
+        // ipify 只回地址本身；ipip 回的是「当前 IP：x.x.x.x 来自于：…」，统一取出第一个 IPv4。
+        const found = text.match(/[0-9]{1,3}(?:\.[0-9]{1,3}){3}/);
+        waiter(found ? found[0] : '');
       } catch (_) { waiter(''); }
     }
   }
