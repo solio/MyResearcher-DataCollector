@@ -1601,6 +1601,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self._enqueue_recovery(rec, task["page"] + step)
             return {"phase": "scan", "next_page": task["page"] + step}
         unique = sorted(set(map(tuple, rec["pass_members"])), key=lambda x: (x[1], x[0]), reverse=True)
+        signature = hashlib.sha256(_dump(unique).encode()).hexdigest()
         if rec["strategy"] == "boundary_two_pass" and (rec["time_fallback"] or not set(map(tuple, rec["boundary_endpoints"])) <= set(unique)):
             # 端点没核实就退回整段双遍，在活跃列表上必然再次不一致——只会把同一段
             # 反复重扫。记下缺口，用这一遍的最新观察继续前进。
@@ -1608,7 +1609,6 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return self._complete_recovery_from_latest_pass(
                 rec, page=task["page"], rows=rows, request_id=stats["request_id"],
                 source_count=stats["source_count"], signature=signature)
-        signature = hashlib.sha256(_dump(unique).encode()).hexdigest()
         rec["passes"] += 1
         rec["completed_passes"] = rec.get("completed_passes", rec["passes"] - 1) + 1
         if signature == rec["last_signature"] and (rec["anchor_seen"] or rec["time_fallback"]):
