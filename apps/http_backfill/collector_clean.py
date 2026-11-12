@@ -71,8 +71,13 @@ def _digest(db, table):
     return hashlib.sha256(payload.encode()).hexdigest(), len(rows)
 
 
-def inspect(root):
-    """What is here right now, and is the split still exhaustive?"""
+def inspect(root, full=False):
+    """What is here right now, and is the split still exhaustive?
+
+    `full=False` answers "is there any row" with EXISTS: the console polls this through a 3 s
+    proxy timeout, and count(*) over a gigabyte does not fit in it. Only the strip path needs
+    exact numbers.
+    """
     root = Path(root)
     db_path = root / "collector.db"
     out = {"db": str(db_path), "exists": db_path.is_file(), "stage": "running"}
@@ -85,7 +90,10 @@ def inspect(root):
         out["counts"] = {}
         for name in sorted(tables & (set(CONTROL_TABLES) | set(DATA_TABLES))):
             try:
-                out["counts"][name] = db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
+                if full:
+                    out["counts"][name] = db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
+                else:
+                    out["counts"][name] = 1 if db.execute(f"SELECT 1 FROM {name} LIMIT 1").fetchone() else 0
             except sqlite3.Error:
                 out["counts"][name] = None
         try:
@@ -223,7 +231,7 @@ def strip(root, stamp, exported=None):
 
     if tmp.exists():
         return {"ok": False, "checks": [{"name": "目标目录未占用", "ok": False, "detail": str(tmp)}]}
-    before = inspect(root)
+    before = inspect(root, full=True)
     if not check("采集库存在", before["exists"], before["db"]):
         return {"ok": False, "checks": checks}
     check("控制表/数据表划分完整", not before.get("unknown_tables"), str(before.get("unknown_tables")))
@@ -336,7 +344,7 @@ def verify(root, stamp):
     if not check("剥离副本与标记存在", marker_path.is_file(), str(marker_path)):
         return {"ok": False, "checks": checks}
     marker = json.loads(marker_path.read_text())
-    after = inspect(root)
+    after = inspect(root, full=True)
     check("数据表已清空", not [t for t in DATA_TABLES if after["counts"].get(t)], str(after["counts"]))
     diffs = []
     with _connect(root / "collector.db", readonly=True) as db:
