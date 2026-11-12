@@ -1347,16 +1347,22 @@
       const requested = objectValue(item.requested_window);
       const requestedFrom = requested.from_date || config?.from_date;
       const requestedTo = requested.to_date || config?.to_date;
-      if (requestedFrom || requestedTo) row.append(el("p", "field-note", `目标窗口：${requestedFrom || "—"} 至 ${requestedTo || "—"}`));
+      const windowFacts = [];
+      if (requestedFrom || requestedTo) windowFacts.push(el("p", "field-note", `目标窗口：${requestedFrom || "—"} 至 ${requestedTo || "—"}`));
       const windowScoped = Object.hasOwn(item, "post_time_range");
       const postRange = objectValue(item.post_time_range);
-      row.append(hintLine("coverage-range compact-fact", windowScoped ? postRange.earliest || postRange.latest ? `窗口内帖子：${dateOnly(postRange.earliest)} 至 ${dateOnly(postRange.latest)}` : "窗口内帖子：尚未取得" : "旧节点：窗口统计未核实", `${hintKey}:window`, windowScoped ? "只统计发布时间符合当前目标窗口的已发现帖子；日期范围不证明其中每一页已采集。" : "旧节点没有按当前窗口核对帖子时间范围，请升级节点。其历史记录仍保留。"));
+      windowFacts.push(hintLine("coverage-range compact-fact", windowScoped ? postRange.earliest || postRange.latest ? `窗口内帖子：${dateOnly(postRange.earliest)} 至 ${dateOnly(postRange.latest)}` : "窗口内帖子：尚未取得" : "旧节点：窗口统计未核实", `${hintKey}:window`, windowScoped ? "只统计发布时间符合当前目标窗口的已发现帖子；日期范围不证明其中每一页已采集。" : "旧节点没有按当前窗口核对帖子时间范围，请升级节点。其历史记录仍保留。"));
       const navigation = objectValue(item.navigation_time_range);
       const navigationEarliest = first(navigation, ["earliest"], windowScoped ? null : first(item, ["earliest_publish_time", "earliest_published_at", "earliest", "min_published_at", "oldest"]));
       const navigationLatest = first(navigation, ["latest"], windowScoped ? null : first(item, ["latest_publish_time", "latest_published_at", "latest", "max_published_at", "newest"]));
-      if (navigationEarliest || navigationLatest) row.append(hintLine("coverage-range compact-fact", `${windowScoped ? "导航观察" : "列表观察（旧口径）"}：${dateOnly(navigationEarliest)} 至 ${dateOnly(navigationLatest)}`, `${hintKey}:navigation`, "这是定位和列表页见到的日期，可能超出目标窗口；仅用于导航和核对，不表示该范围已完整采集。"));
+      if (navigationEarliest || navigationLatest) windowFacts.push(hintLine("coverage-range compact-fact", `${windowScoped ? "导航观察" : "列表观察（旧口径）"}：${dateOnly(navigationEarliest)} 至 ${dateOnly(navigationLatest)}`, `${hintKey}:navigation`, "这是定位和列表页见到的日期，可能超出目标窗口；仅用于导航和核对，不表示该范围已完整采集。"));
       const forward = objectValue(item.forward_time_range);
-      if (forward.earliest || forward.latest) row.append(hintLine("coverage-range compact-fact", `顺序页观察：${dateOnly(forward.earliest)} 至 ${dateOnly(forward.latest)}`, `${hintKey}:forward`, "顺序列表页可能跨越目标窗口边界；窗口内帖子数量和时间仍按配置日期过滤。"));
+      if (forward.earliest || forward.latest) windowFacts.push(hintLine("coverage-range compact-fact", `顺序页观察：${dateOnly(forward.earliest)} 至 ${dateOnly(forward.latest)}`, `${hintKey}:forward`, "顺序列表页可能跨越目标窗口边界；窗口内帖子数量和时间仍按配置日期过滤。"));
+      if (windowFacts.length) {
+        const grid = el("div", "window-facts");
+        for (const fact of windowFacts) grid.append(fact);
+        row.append(grid);
+      }
       if (seek) row.append(hintLine(`stock-recovery compact-fact${seek.phase === "error" ? " coverage-gap" : ""}`, windowSeekCompact(seek, state), `${hintKey}:seek`, windowSeekDescription(seek, state)));
       const counters = el("div", "coverage-counts");
       const pages = first(item, ["list_pages", "pages", "pages_completed"]);
