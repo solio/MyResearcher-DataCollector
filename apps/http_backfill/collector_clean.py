@@ -364,7 +364,11 @@ def state(root, running=None):
     else:
         stage = "running" if running or info.get("inflight") else "paused"
     stamp = ""
-    dirs = sorted((root / "tmp").glob("clean-*"))
+    has_data = any((info.get("counts") or {}).get(name) for name in DATA_TABLES)
+    dirs = [] if has_data else sorted((root / "tmp").glob("clean-*"))
+    if has_data:
+        # A leftover marker from a rolled-back strip must not claim the data is gone.
+        stage = "running" if running else "paused"
     if dirs:
         marker = dirs[-1] / "marker.json"
         if marker.is_file():
