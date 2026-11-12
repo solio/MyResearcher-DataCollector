@@ -633,6 +633,12 @@ class FleetManager:
                     self.engine.create_job(body)
                 elif method == "POST" and path == "api/proxy/config":
                     self.engine.configure_proxy(body)
+                elif method == "POST" and path == "api/mihomo/select":
+                    import mihomo_control
+                    mihomo_control.select(body.get("name"))
+                elif method == "POST" and path == "api/mihomo/nodes/refresh":
+                    import mihomo_control
+                    mihomo_control.refresh_async()
                 elif method == "POST" and path == "api/proxy/rotate":
                     if body:
                         raise ValueError("切换出口请求不接受额外参数")
@@ -663,7 +669,9 @@ class FleetManager:
             if path == "api/mihomo/config":
                 if self._identity(payload) != node["instance_id"]:
                     raise FleetError(409, "节点私密配置 UUID 与注册身份不一致")
-            if path == "api/status" or method != "GET":
+            # mihomo 路由只回节点清单/切换结果，本来就不携带 version；拿它做身份校验会把
+            # “切换节点”误判成“节点状态不可用”。
+            if (path == "api/status" or method != "GET") and not path.startswith("api/mihomo/"):
                 if self._identity(payload) != node["instance_id"]:
                     raise FleetError(409, "节点响应 UUID 与注册身份不一致", method != "GET")
                 with self._lock:
@@ -722,6 +730,9 @@ class FleetManager:
             return self.engine.proxy_status()
         if path == "api/mihomo/config":
             return self.engine.mihomo_config()
+        if path == "api/mihomo/nodes":
+            import mihomo_control
+            return mihomo_control.nodes()
         if path == "api/jobs":
             return self.engine.jobs()
         if path in {"api/requests", "api/events"} and "paged" in values:
