@@ -27,12 +27,12 @@ STAGE_ORDER = ("running", "paused", "detached", "verified", "cleaned")
 CONTROL_TABLES = (
     "jobs", "job_revisions", "job_lifecycle", "tasks", "coverage", "frontiers",
     "stock_runtime", "recoveries", "run_segments", "meta", "events",
-    "backfill_page_anchors", "backfill_resume", "detail_enrichment_skips",
+    "backfill_page_anchors", "backfill_resume", "detail_enrichment_skips", "backfill_coverage",
 )
 # Everything that is either output or evidence. Emptied.
 DATA_TABLES = (
     "posts", "http_post_state", "compatible_posts", "observations",
-    "page_observations", "requests", "export_journal",
+    "page_observations", "requests", "export_journal", "associations",
 )
 # Watermarks describe the old file's extent; the new file must not inherit them.
 RESET_META = ("storage_sync_rowid", "clean_shutdown", "storage_sync_at")
@@ -152,7 +152,8 @@ def export_all(root, stamp=""):
     # missing instead of letting the strip silently cancel them.
     with _connect(root / "collector.db", readonly=True) as src:
         pending = src.execute(
-            "SELECT t.post_id, t.url, t.stock, p.title FROM tasks t LEFT JOIN posts p ON p.post_id=t.post_id "
+            "SELECT t.post_id, t.url, t.stock, p.title FROM tasks t "
+            "LEFT JOIN posts p ON p.source_item_id=t.post_id "
             "WHERE t.kind='detail' AND t.status='pending'").fetchall()
     with open(out / "pending_details.jsonl", "w", encoding="utf-8") as handle:
         for row in pending:
@@ -260,6 +261,13 @@ def strip(root, stamp, exported=None):
     check("数据表为空", not leftover, str(leftover))
     check("待补详情任务已取消", cancelled >= 0, f"cancelled={cancelled}")
 
+    # Verify first, swap second. Once the file is replaced the running server writes into the
+    # moved copy, so a failure here must leave the original untouched.
+    if not all(c["ok"] for c in checks):
+        new_path.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return {"ok": False, "checks": checks, "stage": "paused"}
+
     os.replace(db_path, tmp / "collector.db")
     os.replace(new_path, db_path)
     for suffix in ("-wal", "-shm"):
@@ -275,6 +283,23 @@ def strip(root, stamp, exported=None):
               "verified": False}
     (tmp / "marker.json").write_text(json.dumps(marker, ensure_ascii=False, indent=2))
     return {"ok": all(c["ok"] for c in checks), "checks": checks, "stage": "detached", "stamp": stamp}
+
+
+def rollback(root, stamp):
+    """Put the original database back. Only valid before `cleanup`."""
+    root = Path(root)
+    tmp = root / "tmp" / ("clean-" + stamp)
+    original = tmp / "collector.db"
+    if not original.is_file():
+        return {"ok": False, "checks": [{"name": "原库副本存在", "ok": False, "detail": str(original)}]}
+    (root / "collector.db").unlink(missing_ok=True)
+    for suffix in ("-wal", "-shm"):
+        (root / ("collector.db" + suffix)).unlink(missing_ok=True)
+    os.replace(original, root / "collector.db")
+    if (tmp / "raw").is_dir():
+        shutil.rmtree(root / "raw", ignore_errors=True)
+        os.replace(tmp / "raw", root / "raw")
+    return {"ok": True, "checks": [{"name": "已回滚到原库", "ok": True}]}
 
 
 def verify(root, stamp):

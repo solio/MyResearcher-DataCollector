@@ -201,7 +201,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def fleet_route(self, method, path, query=None, obj=None):
         """Only authenticated hub routes; tokens never cross the browser API."""
-        if not (path == "api/fleet" or path.startswith("api/fleet/") or path.startswith("api/nodes/")):
+        if not (path == "api/fleet" or path.startswith("api/fleet/") or path.startswith("api/nodes/")
+                or path.startswith("api/clean/")):
             return False
         fleet = self.server.fleet
         if fleet is None:
@@ -289,7 +290,14 @@ class Handler(BaseHTTPRequestHandler):
                 time.sleep(0.2)  # let short reads finish before the handle is closed
                 result = collector_clean.strip(data_dir, stamp, exported=True)
                 if result.get("ok"):
-                    self.server.engine.reopen_db()
+                    try:
+                        self.server.engine.reopen_db()
+                    except Exception as exc:  # noqa: BLE001 - a failed rebind must not strand the swap
+                        collector_clean.rollback(data_dir, stamp)
+                        self.server.engine.reopen_db()
+                        result = {"ok": False, "stage": "paused",
+                                  "checks": [{"name": "重连失败，已回滚原库", "ok": False,
+                                              "detail": f"{type(exc).__name__}: {exc}"}]}
             finally:
                 self.server.maintenance = False
             return result
