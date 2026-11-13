@@ -2302,8 +2302,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             return
         if response.transient_error in NETWORK_RETRY_KINDS:
             # 服务端根本没收到这次请求（或没收全），额度未消耗，直接短延迟重试。
+            # 节点级节流（node_next_due，请求结束时按 interval 设的）也必须一起放宽，
+            # 否则单目标 due 是 5 秒、实际仍被全局门槛卡到 30 秒以上。
             delay = NETWORK_RETRY_SECONDS
             due = self.clock() + delay
+            node_due = self._get_global("node_next_due", 0) or 0
+            if not node_due or node_due > due:
+                self._set_global("node_next_due", due)
         else:
             delay = max(config["interval_seconds"],
                         min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
