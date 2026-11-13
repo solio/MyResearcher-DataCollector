@@ -43,7 +43,9 @@ def _provider() -> str:
 
 
 def _test_url() -> str:
-    return _env("MIHOMO_TEST_URL", "https://guba.eastmoney.com/")
+    # A list page weighs a fraction of the homepage, so a slow-but-working line is not dropped
+    # for pulling one heavy page inside the timeout.
+    return _env("MIHOMO_TEST_URL", "https://guba.eastmoney.com/list,600096,f.html")
 
 
 def _cache_path() -> str:
@@ -119,7 +121,10 @@ def sweep():
     timeout_ms = max(1000, min(30000, int(_env("MIHOMO_TIMEOUT_MS", "5000"))))
     workers = max(1, min(32, int(_env("MIHOMO_WORKERS", "8"))))
     group = _group()
-    now = (_get("/proxies/" + urllib.parse.quote(group, safe="")) or {}).get("now")
+    # 选择器偶发查不到时不能把 now 写成 null，否则卡片上“有节点”会突然变成“尚未测速”。
+    previous = _read_cache() or {}
+    now = ((_get("/proxies/" + urllib.parse.quote(group, safe="")) or {}).get("now")
+           or previous.get("now"))
     proxies = (_get("/providers/proxies/" + urllib.parse.quote(provider, safe="")) or {}).get("proxies", [])
     names = [item.get("name") for item in proxies if isinstance(item, dict) and item.get("name")]
 
@@ -159,6 +164,46 @@ def nodes():
     started = refresh_async().get("started", False)
     return {"now": _current_now(), "group": _group(), "test_url": _test_url(),
             "nodes": [], "cached": False, "refreshing": started or _sweeping}
+
+
+def attach_selection(payload):
+    """给状态体补上当前出口节点。所有产出状态的地方（直连、快照、集群列表）都要调。"""
+    try:
+        proxy = payload.get("proxy") or {}
+        if (proxy.get("settings") or {}).get("mode") != "http":
+            return payload
+        proxy["selection"] = cached_selection()
+    except Exception:  # noqa: BLE001 - 缺缓存不能影响状态接口
+        return payload
+    return payload
+
+
+_SELECTION_MEMO = {"at": 0.0, "now": None}
+
+
+def cached_selection():
+    """当前出口节点：以选择器实时值为准，和代理面板（nodes()）同一口径。
+
+    测速缓存只提供延迟，不决定“是哪条线”——缓存里的 now 可能是几分钟前的，
+    auto 组随时会换线路，两边读不同来源就会出现“面板有节点、卡片说没测速”。
+    """
+    payload = _read_cache() or {}
+    nodes = payload.get("nodes") or []
+    if time.time() - _SELECTION_MEMO["at"] > 30:
+        live = _current_now(timeout=2.5)
+        # 查询失败不能把已知节点清空：那会让卡片在“有节点/没节点”之间反复跳。
+        # 成功才覆盖，失败就继续用上一次的实时值。
+        if live:
+            _SELECTION_MEMO["now"] = live
+            # 同时落到缓存文件：进程重启后内存里没有记忆，靠文件才不会再闪一次“未取得”。
+            if nodes and live != payload.get("now"):
+                _write_cache(dict(payload, now=live))
+                payload["now"] = live
+        _SELECTION_MEMO["at"] = time.time()
+    now = _SELECTION_MEMO["now"] or payload.get("now")
+    delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
+    return {"now": now, "delay": delay, "measured_at": payload.get("measured_at"),
+            "source": "selector" if _SELECTION_MEMO["now"] else "sweep"}
 
 
 def refresh_async():

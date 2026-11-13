@@ -37,6 +37,12 @@ def _error_payload(exc):
     return result
 
 
+def attach_proxy_selection(payload):
+    """缓存快照、直连、集群列表都要走这里，否则只有一部分视图有值。"""
+    import mihomo_control
+    mihomo_control.attach_selection(payload)
+
+
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -95,7 +101,7 @@ class ConsoleServer(ThreadingHTTPServer):
                 self._status_refreshing = True
                 threading.Thread(target=self._refresh_status, daemon=True).start()
         if stale is None:
-            return self._stamped(self.engine.status())
+            return self._stamped(self._status_payload())
         return self._stamped(stale)
 
     def invalidate_status(self):
@@ -115,7 +121,7 @@ class ConsoleServer(ThreadingHTTPServer):
 
     def _refresh_status(self):
         try:
-            payload = self.engine.status()
+            payload = self._status_payload()
         except Exception as exc:
             print(f"Status snapshot failed: {type(exc).__name__}", flush=True)
             payload = None
@@ -124,6 +130,11 @@ class ConsoleServer(ThreadingHTTPServer):
                 self._status_cache = payload
                 self._status_at = time.time()
             self._status_refreshing = False
+
+    def _status_payload(self):
+        payload = self.engine.status()
+        attach_proxy_selection(payload)
+        return payload
 
     def token_valid(self, value):
         return isinstance(value, str) and secrets.compare_digest(
@@ -274,11 +285,13 @@ class Handler(BaseHTTPRequestHandler):
         data_dir = self.server.engine.data_dir
         action = path[len("api/clean/"):]
         if method == "GET" and action == "state":
-            return collector_clean.state(data_dir, running=self.server.engine.status().get("state") == "running")
+            # status_snapshot() is the warmed copy the console already polls; engine.status()
+            # recomputes every metric and takes seconds on a big database.
+            return collector_clean.state(data_dir, running=self.server.status_snapshot().get("state") == "running")
         if method != "POST":
             return None
         if action == "strip":
-            status = self.server.engine.status()
+            status = self.server.status_snapshot()
             if status.get("state") == "running" or status.get("inflight"):
                 return {"ok": False, "stage": "running",
                         "checks": [{"name": "采集已暂停", "ok": False, "detail": "先暂停采集并等当前请求结束"}]}
@@ -290,7 +303,9 @@ class Handler(BaseHTTPRequestHandler):
             self.server.maintenance = True
             try:
                 time.sleep(0.2)  # let short reads finish before the handle is closed
-                result = collector_clean.strip(data_dir, stamp, exported=True)
+                result = collector_clean.strip(data_dir, stamp, exported=True,
+                                           hub_cursor=obj.get("hub_cursor"),
+                                           allow_missing_details=obj.get("allow_missing_details") is True)
                 if result.get("ok"):
                     try:
                         self.server.engine.reopen_db()
@@ -456,7 +471,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
                     if "fresh" in query:
-                        payload = self.server.engine.status()
+                        payload = self.server._status_payload()
                         self.server.remember_status(payload)
                         return self.send(200, payload)
                     return self.send(200, self.server.status_snapshot())
@@ -551,7 +566,7 @@ class Handler(BaseHTTPRequestHandler):
                 getattr(self.server.engine, action)()
             else:
                 return self.send(404, {"error": "接口不存在"})
-            payload = self.server.engine.status()
+            payload = self.server._status_payload()
             self.server.remember_status(payload)
             return self.send(200, payload)
         except ValueError as exc:
@@ -585,7 +600,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "接口不存在"})
         try:
             self.server.engine.update_job(self.read_json())
-            payload = self.server.engine.status()
+            payload = self.server._status_payload()
             self.server.remember_status(payload)
             self.send(200, payload)
         except ValueError as exc:
@@ -613,7 +628,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.engine.delete_job()
                 else:
                     self.server.engine.remove_stock(path[len("api/jobs/current/stocks/"):])
-                payload = self.server.engine.status()
+                payload = self.server._status_payload()
                 self.server.remember_status(payload)
                 return self.send(200, payload)
             except ValueError as exc:

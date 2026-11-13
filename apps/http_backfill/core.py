@@ -69,7 +69,10 @@ MAX_RECOVERY_REQUESTS, MAX_RECOVERY_PASSES = 64, 6
 NEXT_PAGE_MAX_GAP = 30 * 60
 # Consecutive transport failures (timeout/tls/connect/io) on one target before the stock is
 # paused for attention instead of retrying forever.
-MAX_NETWORK_RETRIES = 5
+MAX_NETWORK_RETRIES = 8
+# 传输层失败（超时/握手/连接）没有消耗服务端的限流额度，没必要等一个完整的请求间隔：
+# 5 秒后原目标直接重试，全局 next_due 也不参与，否则会把等待时间叠加一次。
+NETWORK_RETRY_SECONDS = 5
 
 
 class RecoveryLimitError(ValueError):
@@ -2297,15 +2300,27 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                         {"request_id": rid, "task_id": task["id"], "stock": task["stock"],
                          "attempt": attempt, **facts})
             return
-        delay = max(config["interval_seconds"], min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
-        due = max(self._get("next_due", 0), self.clock() + delay, self._retry_after(response.headers.get("retry-after")))
+        if response.transient_error in NETWORK_RETRY_KINDS:
+            # 服务端根本没收到这次请求（或没收全），额度未消耗，直接短延迟重试。
+            # 节点级节流（node_next_due，请求结束时按 interval 设的）也必须一起放宽，
+            # 否则单目标 due 是 5 秒、实际仍被全局门槛卡到 30 秒以上。
+            delay = NETWORK_RETRY_SECONDS
+            due = self.clock() + delay
+            node_due = self._get_global("node_next_due", 0) or 0
+            if not node_due or node_due > due:
+                self._set_global("node_next_due", due)
+        else:
+            delay = max(config["interval_seconds"],
+                        min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
+            due = max(self._get("next_due", 0), self.clock() + delay,
+                      self._retry_after(response.headers.get("retry-after")))
         retry = {"kind": response.transient_error, "attempt": attempt, "task_id": task["id"],
                  "request_id": rid, "retry_at": _iso(due), "error": error}
         self._set("network_retry", retry)
         self._set("next_due", due)
         self._outcome(rid, "transport_error", error, facts | {"network_retry": retry, "automatic_retry": True})
         if self._get("state") == "running":
-            self._set("reason", f"网络故障，保留原请求等待第 {attempt} 次退避重试；未观察到来源阻断")
+            self._set("reason", f"网络故障，{delay} 秒后重试第 {attempt} 次；未观察到来源阻断，也不占用限流额度")
         self._event("network_retry_scheduled", "网络故障已记录，保留原目标并按全局间隔退避", retry)
 
     def _clear_active_halt(self):
@@ -2625,7 +2640,12 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
     def _accept_detail(self, rid, task, html, probe_only=False):
         post = self.db.execute("SELECT * FROM http_posts WHERE post_id=?", (task["post_id"],)).fetchone()
         if not post:
-            raise ValueError("详情缺少已获取的列表来源")
+            # 列表来源已经不在了（例如节点刚做过数据剥离）。这条详情无从校验，作废即可；
+            # 抛错会被记成 schema_error 并触发探测重试，永远修不好。
+            self._event("detail_source_missing", f"{task['stock']} 详情源已随数据清除，任务跳过",
+                        {"post_id": task["post_id"], "task": task["id"]})
+            return {"post_id": task["post_id"], "list_post_type": "missing",
+                    "detail_post_type": "missing"}
         p = urlparse(task["url"])
         match = re.fullmatch(r"/news,[^,/]+,([0-9]+)\.html", p.path)
         if p.hostname != "guba.eastmoney.com" or not match or match[1] != task["post_id"]:
@@ -2795,11 +2815,37 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             continuous = max(0, (segment["ended"] if segment["ended"] is not None else self.clock()) - segment["started"]) if segment else 0
             effective_to = self._get("effective_to_epoch")
             lifecycle = self.db.execute("SELECT revision,archived FROM job_lifecycle WHERE job=?", (job_id,)).fetchone()
+            current_json = self._target_json(self._target())
+            # 卡片显示“已采到哪一段”：下界取前进页（最深处）的最早日期，上界取该股已采到的最新
+            # 日期。两者都来自库里的记录，不是任务配置的计划范围。
+            progress_json = None
+            stock = (current_json or {}).get("stock") or ((config or {}).get("stocks") or [None])[0]
+            frontier = self.db.execute(
+                "SELECT payload FROM frontiers WHERE job=? AND stock=?", (job_id, stock)).fetchone()
+            deepest = None
+            if frontier:
+                try:
+                    deepest = json.loads(frontier["payload"] or "{}").get("page")
+                except ValueError:
+                    deepest = None
+            window = {}
+            if deepest:
+                observed = self.db.execute(
+                    "SELECT earliest, latest FROM page_observations WHERE job=? AND stock=? AND page=? "
+                    "ORDER BY request_id DESC LIMIT 1", (job_id, stock, deepest)).fetchone()
+                if observed and observed["earliest"]:
+                    window["from"] = observed["earliest"]
+            spanned = next((row for row in coverage if row.get("stock") == stock), None)
+            if spanned and spanned.get("latest"):
+                window["to"] = spanned["latest"]
+            if window.get("from") and window.get("to"):
+                # 独立成字段：任务暂停或阻断时 current 为空，卡片仍要显示已采范围。
+                    progress_json = {"stock": stock, "page": deepest, **window}
             result = {"version": VERSION, "instance_id": self._get("instance_id"), "state": self._get("state"), "reason": self._get("reason"),
                       "job": {"id": job_id, "config": config, "created_at": _iso(job["created"]), "started_at": _iso(started),
                               "effective_to": _iso(effective_to), "effective_to_shanghai": datetime.fromtimestamp(effective_to, guba.SHANGHAI).isoformat(),
                               "revision": lifecycle["revision"] if lifecycle else 1, "archived": bool(lifecycle and lifecycle["archived"] is not None)} if job else None,
-                      "config": config, "current": self._target_json(self._target()), "aggregate": aggregate,
+                      "config": config, "current": current_json, "progress": progress_json, "aggregate": aggregate,
                       "next_request_at": _iso(self._get("next_due")) if self._get("next_due") else None,
                       "next_request_epoch": self._get("next_due", 0), "server_time": _iso(self.clock()),
                       "runtime_seconds": continuous, "continuous_run_seconds": continuous,

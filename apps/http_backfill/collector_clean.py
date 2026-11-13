@@ -71,8 +71,13 @@ def _digest(db, table):
     return hashlib.sha256(payload.encode()).hexdigest(), len(rows)
 
 
-def inspect(root):
-    """What is here right now, and is the split still exhaustive?"""
+def inspect(root, full=False):
+    """What is here right now, and is the split still exhaustive?
+
+    `full=False` answers "is there any row" with EXISTS: the console polls this through a 3 s
+    proxy timeout, and count(*) over a gigabyte does not fit in it. Only the strip path needs
+    exact numbers.
+    """
     root = Path(root)
     db_path = root / "collector.db"
     out = {"db": str(db_path), "exists": db_path.is_file(), "stage": "running"}
@@ -85,7 +90,10 @@ def inspect(root):
         out["counts"] = {}
         for name in sorted(tables & (set(CONTROL_TABLES) | set(DATA_TABLES))):
             try:
-                out["counts"][name] = db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
+                if full:
+                    out["counts"][name] = db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
+                else:
+                    out["counts"][name] = 1 if db.execute(f"SELECT 1 FROM {name} LIMIT 1").fetchone() else 0
             except sqlite3.Error:
                 out["counts"][name] = None
         try:
@@ -96,20 +104,29 @@ def inspect(root):
         out["pending_detail"] = db.execute(
             "SELECT count(*) FROM tasks WHERE status='pending' AND kind='detail'").fetchone()[0]
     out["bytes"] = db_path.stat().st_size
-    out["raw_bytes"] = sum(p.stat().st_size for p in (root / "raw").rglob("*") if p.is_file()) if (root / "raw").is_dir() else 0
+    # Walking thousands of raw files takes seconds; only the strip report needs that number.
+    if full and (root / "raw").is_dir():
+        out["raw_bytes"] = sum(p.stat().st_size for p in (root / "raw").rglob("*") if p.is_file())
     return out
 
 
 def _copy_control(old_db, new_db):
-    """Recreate the schema from the old file, then copy control tables verbatim."""
+    """Recreate the schema from the old file, then copy control tables verbatim.
+
+    Order matters: views (http_posts is a view, not a table) can only be created after the tables
+    they select from, and a silently skipped view breaks detail collection afterwards.
+    """
     copied = {}
-    for (sql,) in old_db.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
-        if sql.startswith("CREATE TRIGGER"):
-            continue
-        try:
-            new_db.execute(sql)
-        except sqlite3.Error:
-            continue
+    errors = []
+    for kind in ("table", "view", "index"):
+        for (name, sql) in old_db.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type=? AND sql IS NOT NULL ORDER BY name", (kind,)):
+            if sql.startswith("CREATE TRIGGER"):
+                continue
+            try:
+                new_db.execute(sql)
+            except sqlite3.Error as exc:
+                errors.append(f"{kind} {name}: {exc}")
     for table in CONTROL_TABLES:
         if table not in _tables(old_db):
             continue
@@ -122,7 +139,7 @@ def _copy_control(old_db, new_db):
         copied[table] = len(rows)
     for (sql,) in old_db.execute("SELECT sql FROM sqlite_master WHERE sql LIKE 'CREATE TRIGGER%'"):
         new_db.execute(sql)
-    return copied
+    return copied, errors
 
 
 def export_all(root, stamp=""):
@@ -210,7 +227,7 @@ def export_is_current(root):
                          "detail": "；".join(stale) or "posts %d / journal %d" % (posts, record["journal_max"])}
 
 
-def strip(root, stamp, exported=None):
+def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False):
     """Move the data out and leave a control-only database. Returns the check report."""
     root = Path(root)
     db_path = root / "collector.db"
@@ -223,19 +240,30 @@ def strip(root, stamp, exported=None):
 
     if tmp.exists():
         return {"ok": False, "checks": [{"name": "目标目录未占用", "ok": False, "detail": str(tmp)}]}
-    before = inspect(root)
+    before = inspect(root, full=True)
     if not check("采集库存在", before["exists"], before["db"]):
         return {"ok": False, "checks": checks}
     check("控制表/数据表划分完整", not before.get("unknown_tables"), str(before.get("unknown_tables")))
     if not check("没有执行中的请求", before["inflight"] == 0, f"inflight={before['inflight']}"):
         return {"ok": False, "checks": checks}
+    # The journal is the hub's only source. Deleting it before the hub has consumed every seq
+    # silently strands the tail: the next export page comes back empty and the merge looks done.
+    if hub_cursor is not None:
+        lag = (before.get("journal_max") or 0) - int(hub_cursor)
+        if not check("主控已追平（未同步 %d 条）" % max(lag, 0), lag <= 0,
+                     "journal_max=%s hub_cursor=%s" % (before.get("journal_max"), hub_cursor)):
+            return {"ok": False, "checks": checks}
     fresh, detail = export_is_current(root)
     if not check(detail.get("name", "导出仍是最新"), fresh, detail.get("detail", "")):
         return {"ok": False, "checks": checks}
 
-    if before.get("pending_detail"):
-        check("待补详情将不再自动补（数量 %d，已写入导出清单）" % before["pending_detail"], True,
-              "pending_details.jsonl")
+    # 待补详情在剥离后就永远补不上了：库里没有列表行，任务也会被取消。所以这是硬条件，
+    # 不是“记一笔就算”。要放弃必须由调用方显式声明。
+    pending = before.get("pending_detail") or 0
+    if not check("待补详情已补完（剩余 %d 条）" % pending,
+                 pending == 0 or allow_missing_details,
+                 "这 %d 条剥离后无法再补；如确认放弃请显式声明" % pending if pending else ""):
+        return {"ok": False, "checks": checks}
     tmp.mkdir(parents=True, mode=0o700)
     old = _connect(db_path, readonly=True)
     digests = {}
@@ -252,7 +280,11 @@ def strip(root, stamp, exported=None):
 
     new_path = tmp / "collector-new.db"
     new = _connect(new_path)
-    copied = _copy_control(old, new)
+    copied, schema_errors = _copy_control(old, new)
+    # 旧库的全部表/视图/索引都必须在新库里存在；缺一个（尤其是 http_posts 视图）后续采集会直接失败。
+    old_names = {(r[0], r[1]) for r in old_db.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
+    new_names = {(r[0], r[1]) for r in new.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
+    missing = sorted(name for name, kind in old_names - new_names)
     # Prove the copy before touching it: a silent truncation here would lose the job itself.
     copied_digests = {t: _digest(new, t) for t in CONTROL_TABLES if t in _tables(new)}
     check("控制表逐行复制一致", copied_digests == digests,
@@ -260,7 +292,25 @@ def strip(root, stamp, exported=None):
     for key in RESET_META:
         new.execute("DELETE FROM meta WHERE key=?", (key,))
     cancelled = new.execute(
-        "UPDATE tasks SET status='cancelled' WHERE status='pending' AND kind='detail'").rowcount
+        "UPDATE tasks SET status='cancelled' WHERE kind='detail' AND status IN ('pending','inflight')").rowcount
+    # 记下剥离前的最大序号：新库的 journal 从 1 开始的话，主控游标永远追不上，数据等于白采。
+    new.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('journal_seq_hint',?)",
+                (str(before.get("journal_max") or 0),))
+    # 阻断证据指向的是已经删掉的帖子，留着只会让探测反复拿它去重试并报错。
+    for key in ("block_evidence", "probe", "probe_pending"):
+        new.execute("DELETE FROM meta WHERE key=?", (key,))
+    # 保留页号、丢掉整页帖子 JSON：那些行连同 http_post_state 一起被清空了，留着只会让引擎
+    # 为一个查不到来源的帖子排详情，报“详情缺少已获取的列表来源”。
+    trimmed = 0
+    for row in new.execute("SELECT job, stock, payload FROM frontiers").fetchall():
+        try:
+            payload = json.loads(row[2] or "{}")
+        except ValueError:
+            continue
+        if payload.get("rows"):
+            new.execute("UPDATE frontiers SET payload=? WHERE job=? AND stock=?",
+                        (json.dumps({"page": payload.get("page")}), row[0], row[1]))
+            trimmed += 1
     new.commit()
     # The reference for `verify` is the state we deliberately keep, not the pre-cancel one.
     kept_digests = {t: _digest(new, t) for t in CONTROL_TABLES if t in _tables(new)}
@@ -271,10 +321,13 @@ def strip(root, stamp, exported=None):
     old.close()
 
     check("新库完整性", new_integrity == "ok", new_integrity)
+    check("表与视图齐全", not missing, ", ".join(missing) or f"{len(new_names)} 个")
+    check("schema 无创建错误", not schema_errors, "; ".join(schema_errors)[:200])
     check("控制表行数一致", copied == {t: d[1] for t, d in digests.items() if d}, str(copied))
     leftover = {t: n for t, n in new_counts.items() if n}
     check("数据表为空", not leftover, str(leftover))
-    check("待补详情任务已取消", cancelled >= 0, f"cancelled={cancelled}")
+    check("待补详情任务已取消", True, f"cancelled={cancelled}")
+    check("页缓存已清空（仅保留页码）", True, f"{trimmed} 只股票")
 
     # Verify first, swap second. Once the file is replaced the running server writes into the
     # moved copy, so a failure here must leave the original untouched.
@@ -336,7 +389,7 @@ def verify(root, stamp):
     if not check("剥离副本与标记存在", marker_path.is_file(), str(marker_path)):
         return {"ok": False, "checks": checks}
     marker = json.loads(marker_path.read_text())
-    after = inspect(root)
+    after = inspect(root, full=True)
     check("数据表已清空", not [t for t in DATA_TABLES if after["counts"].get(t)], str(after["counts"]))
     diffs = []
     with _connect(root / "collector.db", readonly=True) as db:
