@@ -1046,7 +1046,7 @@
         : cleanStage === "running" ? "采集尚未暂停：先暂停并等当前请求结束"
           : cleanStage === "detached" ? "已剥离：下一步是「剥离校验」"
             : cleanStage === "verified" ? "已校验：下一步是「清理数据」"
-              : cleanStage === "leftovers" ? "有遗留副本：先「清理数据」"
+              : cleanStage === "leftovers" ? "有遗留副本或失效记录：先「清理数据」"
                 : cleanStage === "inconsistent" ? "剥离记录与数据不一致，三个按钮已禁用"
                   : `当前状态 ${cleanStage}`;
     $("clean-note").textContent = cleanHint;

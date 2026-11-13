@@ -18,6 +18,7 @@ Both halves are pinned here:
 """
 from __future__ import annotations
 
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -209,3 +210,23 @@ def test_verify_still_catches_control_data_that_disappeared(tmp_path):
 
     assert result["ok"] is False
     assert any("丢键" in str(check["detail"]) for check in result["checks"] if not check["ok"])
+
+
+def test_a_deleted_copy_still_leaves_a_reclaimable_record(tmp_path):
+    """The copy can vanish (manual rm, disk cleanup) while `clean-current.json` stays.
+
+    Without this path the node sat at "detached" forever: verify answered with a bare path,
+    cleanup refused "存在可清理的副本", and all three buttons were dead.
+    """
+    _seed(tmp_path)
+    collector_clean.export_all(tmp_path)
+    assert collector_clean.strip(tmp_path, STAMP)["ok"] is True
+
+    shutil.rmtree(tmp_path / "tmp" / f"clean-{STAMP}")
+
+    assert collector_clean.state(tmp_path)["stage"] == "leftovers"
+    result = collector_clean.cleanup(tmp_path)
+
+    assert result["ok"] is True, result["checks"]
+    assert not (tmp_path / "clean-current.json").exists()
+    assert collector_clean.state(tmp_path)["stage"] == "paused"

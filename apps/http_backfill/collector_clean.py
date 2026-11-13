@@ -473,8 +473,12 @@ def verify(root, stamp):
         return ok
 
     marker_path = tmp / "marker.json"
-    if not check("剥离副本与标记存在", marker_path.is_file(), str(marker_path)):
-        return {"ok": False, "checks": checks}
+    if not marker_path.is_file():
+        dangling = (root / "clean-current.json").is_file()
+        detail = ("剥离副本已被删除，只剩下 clean-current.json 这条记录；"
+                  "数据在导出里，点「清理数据」清掉记录即可回到可用状态"
+                  if dangling else f"这次剥离没有副本：{tmp}")
+        return {"ok": False, "checks": [{"name": "剥离副本与标记存在", "ok": False, "detail": detail}]}
     marker = json.loads(marker_path.read_text())
     after = inspect(root, full=True)
     check("数据表已清空", not [t for t in DATA_TABLES if after["counts"].get(t)], str(after["counts"]))
@@ -518,6 +522,11 @@ def cleanup(root, stamp=""):
         # deleted; the live database must still hold the data, otherwise this is the last copy.
         dirs = leftovers(root)
         if not dirs:
+            if (root / "clean-current.json").is_file() and not has_data:
+                (root / "clean-current.json").unlink(missing_ok=True)
+                return {"ok": True, "stage": "paused",
+                        "checks": [{"name": "已清除失效的剥离记录", "ok": True,
+                                    "detail": "副本已不存在、线上库为空，控制台恢复可用"}]}
             return {"ok": False, "checks": [{"name": "存在可清理的副本", "ok": False}]}
         if not has_data:
             return {"ok": False, "checks": [{"name": "线上库有数据才允许删除副本", "ok": False,
@@ -576,8 +585,16 @@ def state(root, running=None):
         marker = root / "tmp" / ("clean-" + stamp) / "marker.json"
         verified = False
         if marker.is_file():
-            verified = json.loads(marker.read_text()).get("verified") is True
-        stage = "verified" if verified else "detached"
+            try:
+                verified = json.loads(marker.read_text()).get("verified") is True
+            except ValueError:
+                verified = False
+        if not marker.is_file() and not has_data:
+            # 副本被手工删掉或随磁盘清理消失，记录还留着：唯一的出路是回收这条记录。
+            # 停在 detached 只会让校验永远失败、三个按钮全灰（2026-11-13 发生过）。
+            stage = "leftovers"
+        else:
+            stage = "verified" if verified else "detached"
     elif has_data and leftovers(root):
         # Copies from an earlier attempt or a rollback: the button must offer to clean them.
         stage = "leftovers"
