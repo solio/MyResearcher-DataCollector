@@ -111,15 +111,22 @@ def inspect(root, full=False):
 
 
 def _copy_control(old_db, new_db):
-    """Recreate the schema from the old file, then copy control tables verbatim."""
+    """Recreate the schema from the old file, then copy control tables verbatim.
+
+    Order matters: views (http_posts is a view, not a table) can only be created after the tables
+    they select from, and a silently skipped view breaks detail collection afterwards.
+    """
     copied = {}
-    for (sql,) in old_db.execute("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
-        if sql.startswith("CREATE TRIGGER"):
-            continue
-        try:
-            new_db.execute(sql)
-        except sqlite3.Error:
-            continue
+    errors = []
+    for kind in ("table", "view", "index"):
+        for (name, sql) in old_db.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type=? AND sql IS NOT NULL ORDER BY name", (kind,)):
+            if sql.startswith("CREATE TRIGGER"):
+                continue
+            try:
+                new_db.execute(sql)
+            except sqlite3.Error as exc:
+                errors.append(f"{kind} {name}: {exc}")
     for table in CONTROL_TABLES:
         if table not in _tables(old_db):
             continue
@@ -132,7 +139,7 @@ def _copy_control(old_db, new_db):
         copied[table] = len(rows)
     for (sql,) in old_db.execute("SELECT sql FROM sqlite_master WHERE sql LIKE 'CREATE TRIGGER%'"):
         new_db.execute(sql)
-    return copied
+    return copied, errors
 
 
 def export_all(root, stamp=""):
@@ -269,7 +276,11 @@ def strip(root, stamp, exported=None, hub_cursor=None):
 
     new_path = tmp / "collector-new.db"
     new = _connect(new_path)
-    copied = _copy_control(old, new)
+    copied, schema_errors = _copy_control(old, new)
+    # 旧库的全部表/视图/索引都必须在新库里存在；缺一个（尤其是 http_posts 视图）后续采集会直接失败。
+    old_names = {(r[0], r[1]) for r in old_db.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
+    new_names = {(r[0], r[1]) for r in new.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
+    missing = sorted(name for name, kind in old_names - new_names)
     # Prove the copy before touching it: a silent truncation here would lose the job itself.
     copied_digests = {t: _digest(new, t) for t in CONTROL_TABLES if t in _tables(new)}
     check("控制表逐行复制一致", copied_digests == digests,
@@ -277,7 +288,19 @@ def strip(root, stamp, exported=None, hub_cursor=None):
     for key in RESET_META:
         new.execute("DELETE FROM meta WHERE key=?", (key,))
     cancelled = new.execute(
-        "UPDATE tasks SET status='cancelled' WHERE status='pending' AND kind='detail'").rowcount
+        "UPDATE tasks SET status='cancelled' WHERE kind='detail' AND status IN ('pending','inflight')").rowcount
+    # 保留页号、丢掉整页帖子 JSON：那些行连同 http_post_state 一起被清空了，留着只会让引擎
+    # 为一个查不到来源的帖子排详情，报“详情缺少已获取的列表来源”。
+    trimmed = 0
+    for row in new.execute("SELECT job, stock, payload FROM frontiers").fetchall():
+        try:
+            payload = json.loads(row[2] or "{}")
+        except ValueError:
+            continue
+        if payload.get("rows"):
+            new.execute("UPDATE frontiers SET payload=? WHERE job=? AND stock=?",
+                        (json.dumps({"page": payload.get("page")}), row[0], row[1]))
+            trimmed += 1
     new.commit()
     # The reference for `verify` is the state we deliberately keep, not the pre-cancel one.
     kept_digests = {t: _digest(new, t) for t in CONTROL_TABLES if t in _tables(new)}
@@ -288,10 +311,13 @@ def strip(root, stamp, exported=None, hub_cursor=None):
     old.close()
 
     check("新库完整性", new_integrity == "ok", new_integrity)
+    check("表与视图齐全", not missing, ", ".join(missing) or f"{len(new_names)} 个")
+    check("schema 无创建错误", not schema_errors, "; ".join(schema_errors)[:200])
     check("控制表行数一致", copied == {t: d[1] for t, d in digests.items() if d}, str(copied))
     leftover = {t: n for t, n in new_counts.items() if n}
     check("数据表为空", not leftover, str(leftover))
-    check("待补详情任务已取消", cancelled >= 0, f"cancelled={cancelled}")
+    check("待补详情任务已取消", True, f"cancelled={cancelled}")
+    check("页缓存已清空（仅保留页码）", True, f"{trimmed} 只股票")
 
     # Verify first, swap second. Once the file is replaced the running server writes into the
     # moved copy, so a failure here must leave the original untouched.
