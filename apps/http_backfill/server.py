@@ -304,7 +304,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 time.sleep(0.2)  # let short reads finish before the handle is closed
                 result = collector_clean.strip(data_dir, stamp, exported=True,
-                                           hub_cursor=obj.get("hub_cursor"))
+                                           hub_cursor=obj.get("hub_cursor"),
+                                           allow_missing_details=obj.get("allow_missing_details") is True)
                 if result.get("ok"):
                     try:
                         self.server.engine.reopen_db()

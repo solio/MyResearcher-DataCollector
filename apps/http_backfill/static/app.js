@@ -2069,7 +2069,7 @@
     controls();
   }
   $("clean-strip").addEventListener("click", () => {
-    if (!window.confirm("剥离前会先导出 posts 与合并日志（若无最新导出），然后换成只含控制数据的新库。继续？")) { return; }
+    if (!window.confirm("剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。\n若有待补详情未补完，会直接拒绝——请先补完再剥离。继续？")) { return; }
     void (async () => {
       const done = await fleetMutation("clean/strip", {}, "POST",
         "已剥离：数据移到 tmp/clean-<时间戳>/，控制数据逐行保留。");

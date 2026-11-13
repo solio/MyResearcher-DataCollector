@@ -227,7 +227,7 @@ def export_is_current(root):
                          "detail": "；".join(stale) or "posts %d / journal %d" % (posts, record["journal_max"])}
 
 
-def strip(root, stamp, exported=None, hub_cursor=None):
+def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False):
     """Move the data out and leave a control-only database. Returns the check report."""
     root = Path(root)
     db_path = root / "collector.db"
@@ -257,9 +257,13 @@ def strip(root, stamp, exported=None, hub_cursor=None):
     if not check(detail.get("name", "导出仍是最新"), fresh, detail.get("detail", "")):
         return {"ok": False, "checks": checks}
 
-    if before.get("pending_detail"):
-        check("待补详情将不再自动补（数量 %d，已写入导出清单）" % before["pending_detail"], True,
-              "pending_details.jsonl")
+    # 待补详情在剥离后就永远补不上了：库里没有列表行，任务也会被取消。所以这是硬条件，
+    # 不是“记一笔就算”。要放弃必须由调用方显式声明。
+    pending = before.get("pending_detail") or 0
+    if not check("待补详情已补完（剩余 %d 条）" % pending,
+                 pending == 0 or allow_missing_details,
+                 "这 %d 条剥离后无法再补；如确认放弃请显式声明" % pending if pending else ""):
+        return {"ok": False, "checks": checks}
     tmp.mkdir(parents=True, mode=0o700)
     old = _connect(db_path, readonly=True)
     digests = {}
