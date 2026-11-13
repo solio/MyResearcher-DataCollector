@@ -158,3 +158,54 @@ def test_check_mode_reports_without_changing_anything(tmp_path):
     assert not (tmp_path / "tmp" / f"clean-{STAMP}").exists()
     assert (tmp_path / "collector.db").stat().st_size == before
     assert not (tmp_path / "clean-current.json").exists()
+
+
+def _strip_clean(tmp_path, stamp=STAMP):
+    _seed(tmp_path)
+    db = sqlite3.connect(tmp_path / "collector.db")
+    try:
+        db.execute("INSERT INTO meta(key,value) VALUES('keep_me','42')")
+        db.execute("INSERT INTO tasks(job,kind,stock,status) VALUES(1,'detail','300604','pending')")
+        db.commit()
+    finally:
+        db.close()
+    collector_clean.export_all(tmp_path)
+    assert collector_clean.strip(tmp_path, stamp, allow_missing_details=True)["ok"] is True
+
+
+def test_verify_ignores_the_writes_the_live_engine_makes_after_the_swap(tmp_path):
+    """`meta` gaining runtime keys is normal operation, not data loss.
+
+    The old check compared the live database against a digest taken at strip time and refused
+    forever with "meta before=38 after=40" -- the state a healthy strip always reaches, because
+    the console keeps running after the swap.
+    """
+    _strip_clean(tmp_path)
+    db = sqlite3.connect(tmp_path / "collector.db")
+    try:
+        for key in ("storage_sync_at", "clean_shutdown"):
+            db.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (key, "1"))
+        db.execute("INSERT INTO tasks(job,kind,stock,status) VALUES(1,'list','300604','pending')")
+        db.commit()
+    finally:
+        db.close()
+
+    result = collector_clean.verify(tmp_path, STAMP)
+
+    assert result["ok"] is True, result["checks"]
+    assert result["stage"] == "verified"
+
+
+def test_verify_still_catches_control_data_that_disappeared(tmp_path):
+    _strip_clean(tmp_path)
+    db = sqlite3.connect(tmp_path / "collector.db")
+    try:
+        db.execute("DELETE FROM meta WHERE key='keep_me'")
+        db.commit()
+    finally:
+        db.close()
+
+    result = collector_clean.verify(tmp_path, STAMP)
+
+    assert result["ok"] is False
+    assert any("丢键" in str(check["detail"]) for check in result["checks"] if not check["ok"])

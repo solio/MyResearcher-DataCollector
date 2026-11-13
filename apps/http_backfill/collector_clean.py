@@ -71,6 +71,65 @@ def _digest(db, table):
     return hashlib.sha256(payload.encode()).hexdigest(), len(rows)
 
 
+# Keys the strip deletes on purpose: RESET_META watermarks, plus the evidence that points at
+# posts which no longer exist. Their absence in the new database is the intended outcome.
+_STRIP_DROPPED_KEYS = set(RESET_META) | {"block_evidence", "probe", "probe_pending"}
+
+
+def control_deltas(old_path, new_path):
+    """Control data the strip lost, ignoring everything that keeps moving afterwards.
+
+    Comparing the live database against a digest taken at strip time can never pass: the
+    console starts writing the moment the swap lands, so `meta` gains runtime keys
+    (storage_sync_at, clean_shutdown), `events` grows and `coverage`/`run_segments` advance.
+    On 2026-11-13 that made 剥离校验 fail forever with "meta before=38 after=40", which is
+    what a healthy strip looks like.
+
+    The invariant that matters is "nothing disappeared". Row counts cannot grow back on their
+    own, and the strip itself already proved the copy byte-for-byte ("控制表逐行复制一致")
+    before it swapped -- so a post-hoc check only has to catch loss:
+
+    * meta: every key still there, except the ones the strip drops on purpose;
+    * events: the trimmed tail (last EVENTS_KEEP by id) is still present;
+    * tasks: every task id survives (pending detail tasks may be "cancelled" now);
+    * everything else: no fewer rows than the original.
+
+    Values are deliberately not compared: after the strip the engine owns these rows again.
+    """
+    diffs = []
+    with _connect(old_path, readonly=True) as old, _connect(new_path, readonly=True) as new:
+        old_tables, new_tables = _tables(old), _tables(new)
+        for table in CONTROL_TABLES:
+            if table not in old_tables or table not in new_tables:
+                diffs.append(f"{table}: 新库缺这张表")
+                continue
+            if table == "meta":
+                before = {r["key"] for r in old.execute("SELECT key FROM meta")}
+                after = {r["key"] for r in new.execute("SELECT key FROM meta")}
+                lost = sorted(before - after - _STRIP_DROPPED_KEYS)
+                if lost:
+                    diffs.append(f"丢键 {lost[:5]}")
+            elif table == "events":
+                keep = {r["id"] for r in old.execute(
+                    "SELECT id FROM events ORDER BY id DESC LIMIT ?", (EVENTS_KEEP,))}
+                live = {r["id"] for r in new.execute("SELECT id FROM events")}
+                missing = sorted(keep - live)
+                if missing:
+                    diffs.append(f"丢 {len(missing)} 条（如 {missing[:5]}）")
+            elif table == "tasks":
+                before = {r["id"] for r in old.execute("SELECT id FROM tasks")}
+                after = {r["id"] for r in new.execute("SELECT id FROM tasks")}
+                lost = sorted(before - after)
+                if lost:
+                    diffs.append(f"丢 {len(lost)} 条（如 {lost[:5]}）")
+            else:
+                before = old.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                after = new.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                if after < before:
+                    diffs.append(f"{after}/{before} 行")
+    return diffs
+
+
 def inspect(root, full=False):
     """What is here right now, and is the split still exhaustive?
 
@@ -419,13 +478,21 @@ def verify(root, stamp):
     marker = json.loads(marker_path.read_text())
     after = inspect(root, full=True)
     check("数据表已清空", not [t for t in DATA_TABLES if after["counts"].get(t)], str(after["counts"]))
-    diffs = []
-    with _connect(root / "collector.db", readonly=True) as db:
-        for table, (digest, count) in marker["digests"].items():
-            now = _digest(db, table)
-            if not now or now[0] != digest:
-                diffs.append({"table": table, "before": count, "after": now[1] if now else None})
-    check("控制表逐行一致", not diffs, str(diffs) or f"{len(marker['digests'])} 张")
+    original = tmp / "collector.db"
+    if original.is_file():
+        diffs = control_deltas(original, root / "collector.db")
+        check("控制数据已保留", not diffs,
+              "；".join(diffs) if diffs else f"{len(CONTROL_TABLES)} 张表（剥离后引擎新增的写入不计）")
+    else:
+        # 旧版本的剥离点没有留下原件；只能退回“与剥离时的摘要完全一致”，而它只在
+        # 引擎还没来得及写入时才成立。
+        diffs = []
+        with _connect(root / "collector.db", readonly=True) as db:
+            for table, (digest, count) in marker["digests"].items():
+                now = _digest(db, table)
+                if not now or now[0] != digest:
+                    diffs.append({"table": table, "before": count, "after": now[1] if now else None})
+        check("控制表逐行一致", not diffs, str(diffs) or f"{len(marker['digests'])} 张")
     check("快照可用于回滚", (tmp / "collector-backup.db").is_file())
     check("旧库原件保留", (tmp / "collector.db").is_file())
     ok = all(c["ok"] for c in checks)
