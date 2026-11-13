@@ -133,3 +133,28 @@ def test_pending_details_block_the_strip_unless_the_caller_says_so(tmp_path):
 
     assert allowed["ok"] is True, allowed["checks"]
     assert allowed["stage"] == "detached"
+
+
+def test_check_mode_reports_without_changing_anything(tmp_path):
+    """`check` is the instrument: same verdict, no swap.
+
+    Without it the only way to learn why a node refuses is to click the button and
+    read the console, which is exactly how "点了没反应" went unexplained.
+    """
+    _seed(tmp_path)
+    db = sqlite3.connect(tmp_path / "collector.db")
+    try:
+        db.execute("INSERT INTO tasks(job,kind,stock,status) VALUES(1,'detail','300604','pending')")
+        db.commit()
+    finally:
+        db.close()
+    collector_clean.export_all(tmp_path)
+    before = (tmp_path / "collector.db").stat().st_size
+
+    result = collector_clean.strip(tmp_path, STAMP, dry_run=True)
+
+    assert result["ok"] is False
+    assert any("待补详情" in check["name"] for check in result["checks"] if not check["ok"])
+    assert not (tmp_path / "tmp" / f"clean-{STAMP}").exists()
+    assert (tmp_path / "collector.db").stat().st_size == before
+    assert not (tmp_path / "clean-current.json").exists()

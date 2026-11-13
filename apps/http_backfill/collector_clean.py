@@ -227,7 +227,7 @@ def export_is_current(root):
                          "detail": "；".join(stale) or "posts %d / journal %d" % (posts, record["journal_max"])}
 
 
-def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False):
+def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False, dry_run=False):
     """Move the data out and leave a control-only database.
 
     Everything between `tmp.mkdir()` and the swap is junk if it raises: by then a
@@ -241,7 +241,7 @@ def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=Fal
     """
     try:
         return _strip_impl(root, stamp, exported=exported, hub_cursor=hub_cursor,
-                           allow_missing_details=allow_missing_details)
+                           allow_missing_details=allow_missing_details, dry_run=dry_run)
     except BaseException:
         tmp = Path(root) / "tmp" / ("clean-" + stamp)
         # Past this point `tmp/collector.db` IS the only copy of the live data:
@@ -251,7 +251,7 @@ def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=Fal
         raise
 
 
-def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False):
+def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False, dry_run=False):
     """Move the data out and leave a control-only database. Returns the check report."""
     root = Path(root)
     db_path = root / "collector.db"
@@ -359,6 +359,10 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
         new_path.unlink(missing_ok=True)
         shutil.rmtree(tmp, ignore_errors=True)
         return {"ok": False, "checks": checks, "stage": "paused"}
+    if dry_run:
+        # Same checks, same work, no swap: the operator gets the verdict without the change.
+        shutil.rmtree(tmp, ignore_errors=True)
+        return {"ok": True, "checks": checks, "dry_run": True, "stage": "paused"}
 
     os.replace(db_path, tmp / "collector.db")
     os.replace(new_path, db_path)
