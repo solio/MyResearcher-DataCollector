@@ -121,7 +121,10 @@ def sweep():
     timeout_ms = max(1000, min(30000, int(_env("MIHOMO_TIMEOUT_MS", "5000"))))
     workers = max(1, min(32, int(_env("MIHOMO_WORKERS", "8"))))
     group = _group()
-    now = (_get("/proxies/" + urllib.parse.quote(group, safe="")) or {}).get("now")
+    # 选择器偶发查不到时不能把 now 写成 null，否则卡片上“有节点”会突然变成“尚未测速”。
+    previous = _read_cache() or {}
+    now = ((_get("/proxies/" + urllib.parse.quote(group, safe="")) or {}).get("now")
+           or previous.get("now"))
     proxies = (_get("/providers/proxies/" + urllib.parse.quote(provider, safe="")) or {}).get("proxies", [])
     names = [item.get("name") for item in proxies if isinstance(item, dict) and item.get("name")]
 

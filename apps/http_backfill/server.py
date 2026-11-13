@@ -37,6 +37,18 @@ def _error_payload(exc):
     return result
 
 
+def attach_proxy_selection(payload):
+    """卡片要显示当前出口节点。缓存快照和直连两条路径都要调用，否则只有部分实例有值。"""
+    try:
+        proxy = payload.get("proxy") or {}
+        if (proxy.get("settings") or {}).get("mode") != "http":
+            return
+        import mihomo_control
+        proxy["selection"] = mihomo_control.cached_selection()
+    except Exception:  # noqa: BLE001 - 缺缓存不能影响状态接口
+        return
+
+
 class ConsoleServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -95,7 +107,7 @@ class ConsoleServer(ThreadingHTTPServer):
                 self._status_refreshing = True
                 threading.Thread(target=self._refresh_status, daemon=True).start()
         if stale is None:
-            return self._stamped(self.engine.status())
+            return self._stamped(self._status_payload())
         return self._stamped(stale)
 
     def invalidate_status(self):
@@ -115,7 +127,7 @@ class ConsoleServer(ThreadingHTTPServer):
 
     def _refresh_status(self):
         try:
-            payload = self.engine.status()
+            payload = self._status_payload()
         except Exception as exc:
             print(f"Status snapshot failed: {type(exc).__name__}", flush=True)
             payload = None
@@ -124,6 +136,11 @@ class ConsoleServer(ThreadingHTTPServer):
                 self._status_cache = payload
                 self._status_at = time.time()
             self._status_refreshing = False
+
+    def _status_payload(self):
+        payload = self.engine.status()
+        attach_proxy_selection(payload)
+        return payload
 
     def token_valid(self, value):
         return isinstance(value, str) and secrets.compare_digest(
@@ -268,17 +285,6 @@ class Handler(BaseHTTPRequestHandler):
         except RuntimeError as exc:
             self.send(409, _error_payload(exc))
         return True
-
-    def _attach_proxy_selection(self, payload):
-        """A card should say which exit it uses; the sweep cache is free to read."""
-        try:
-            proxy = payload.get("proxy") or {}
-            if (proxy.get("settings") or {}).get("mode") != "http":
-                return
-            import mihomo_control
-            proxy["selection"] = mihomo_control.cached_selection()
-        except Exception:  # noqa: BLE001 - a missing cache must not break the status call
-            return
 
     def clean_route(self, method, path, obj):
         """paused -> detached -> verified -> cleaned, mirroring the merge-ledger strip."""
@@ -471,8 +477,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("limit 应在 1–1000 之间，offset 不能小于 0")
                 if path == "api/status":
                     if "fresh" in query:
-                        payload = self.server.engine.status()
-                        self._attach_proxy_selection(payload)
+                        payload = self.server._status_payload()
                         self.server.remember_status(payload)
                         return self.send(200, payload)
                     return self.send(200, self.server.status_snapshot())
