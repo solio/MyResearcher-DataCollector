@@ -110,8 +110,12 @@ def journal_projection(engine, store, post_id, fingerprint, list_request, detail
                "request_links": {"initial_list": (initial_request or list_request)["id"],
                                  "list": list_request["id"], "detail": detail_request["id"] if detail_request else None},
                "coverage_complete": False, "model_database_eligible": False}
-    engine.db.execute("INSERT INTO export_journal(post_id,fingerprint,payload,payload_sha256) VALUES(?,?,?,?)",
-                      (post_id, fingerprint, _json(payload), _hash(payload)))
+    # 序号必须单调递增：主控按 seq > cursor 拉取，一旦剥离后从 1 重新计数，新数据就再也进不去。
+    # journal_seq_hint 记录剥离前的最大序号，插入时与表内最大值取较大者。
+    hint = engine._get_global("journal_seq_hint") or 0
+    current = engine.db.execute("SELECT COALESCE(MAX(seq),0) FROM export_journal").fetchone()[0]
+    engine.db.execute("INSERT INTO export_journal(seq,post_id,fingerprint,payload,payload_sha256) VALUES(?,?,?,?,?)",
+                      (max(int(hint), int(current)) + 1, post_id, fingerprint, _json(payload), _hash(payload)))
 
 
 def export_page(engine, after=0, limit=100, snapshot=None):

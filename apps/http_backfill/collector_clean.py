@@ -293,6 +293,9 @@ def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=Fal
         new.execute("DELETE FROM meta WHERE key=?", (key,))
     cancelled = new.execute(
         "UPDATE tasks SET status='cancelled' WHERE kind='detail' AND status IN ('pending','inflight')").rowcount
+    # 记下剥离前的最大序号：新库的 journal 从 1 开始的话，主控游标永远追不上，数据等于白采。
+    new.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('journal_seq_hint',?)",
+                (str(before.get("journal_max") or 0),))
     # 阻断证据指向的是已经删掉的帖子，留着只会让探测反复拿它去重试并报错。
     for key in ("block_evidence", "probe", "probe_pending"):
         new.execute("DELETE FROM meta WHERE key=?", (key,))
