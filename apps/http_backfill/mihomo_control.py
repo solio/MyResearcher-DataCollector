@@ -183,6 +183,10 @@ def cached_selection():
         # 成功才覆盖，失败就继续用上一次的实时值。
         if live:
             _SELECTION_MEMO["now"] = live
+            # 同时落到缓存文件：进程重启后内存里没有记忆，靠文件才不会再闪一次“未取得”。
+            if nodes and live != payload.get("now"):
+                _write_cache(dict(payload, now=live))
+                payload["now"] = live
         _SELECTION_MEMO["at"] = time.time()
     now = _SELECTION_MEMO["now"] or payload.get("now")
     delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
