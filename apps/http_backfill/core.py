@@ -69,7 +69,10 @@ MAX_RECOVERY_REQUESTS, MAX_RECOVERY_PASSES = 64, 6
 NEXT_PAGE_MAX_GAP = 30 * 60
 # Consecutive transport failures (timeout/tls/connect/io) on one target before the stock is
 # paused for attention instead of retrying forever.
-MAX_NETWORK_RETRIES = 5
+MAX_NETWORK_RETRIES = 8
+# 传输层失败（超时/握手/连接）没有消耗服务端的限流额度，没必要等一个完整的请求间隔：
+# 5 秒后原目标直接重试，全局 next_due 也不参与，否则会把等待时间叠加一次。
+NETWORK_RETRY_SECONDS = 5
 
 
 class RecoveryLimitError(ValueError):
@@ -2297,15 +2300,22 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                         {"request_id": rid, "task_id": task["id"], "stock": task["stock"],
                          "attempt": attempt, **facts})
             return
-        delay = max(config["interval_seconds"], min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
-        due = max(self._get("next_due", 0), self.clock() + delay, self._retry_after(response.headers.get("retry-after")))
+        if response.transient_error in NETWORK_RETRY_KINDS:
+            # 服务端根本没收到这次请求（或没收全），额度未消耗，直接短延迟重试。
+            delay = NETWORK_RETRY_SECONDS
+            due = self.clock() + delay
+        else:
+            delay = max(config["interval_seconds"],
+                        min(900, config["interval_seconds"] * 2 ** min(attempt - 1, 10)))
+            due = max(self._get("next_due", 0), self.clock() + delay,
+                      self._retry_after(response.headers.get("retry-after")))
         retry = {"kind": response.transient_error, "attempt": attempt, "task_id": task["id"],
                  "request_id": rid, "retry_at": _iso(due), "error": error}
         self._set("network_retry", retry)
         self._set("next_due", due)
         self._outcome(rid, "transport_error", error, facts | {"network_retry": retry, "automatic_retry": True})
         if self._get("state") == "running":
-            self._set("reason", f"网络故障，保留原请求等待第 {attempt} 次退避重试；未观察到来源阻断")
+            self._set("reason", f"网络故障，{delay} 秒后重试第 {attempt} 次；未观察到来源阻断，也不占用限流额度")
         self._event("network_retry_scheduled", "网络故障已记录，保留原目标并按全局间隔退避", retry)
 
     def _clear_active_halt(self):

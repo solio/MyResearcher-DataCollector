@@ -163,13 +163,24 @@ def nodes():
             "nodes": [], "cached": False, "refreshing": started or _sweeping}
 
 
+_SELECTION_MEMO = {"at": 0.0, "now": None}
+
+
 def cached_selection():
-    """Current node and its last measured delay, from the sweep cache only (no network)."""
+    """当前出口节点：优先用测速缓存，没有缓存就问一次选择器（60 秒内复用）。
+
+    卡片必须显示“用哪条线”，测速缓存缺失不等于没有选中节点——auto 组任何时候都有 now。
+    """
     payload = _read_cache() or {}
     nodes = payload.get("nodes") or []
     now = payload.get("now")
     delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
-    return {"now": now, "delay": delay, "measured_at": payload.get("measured_at")}
+    if now:
+        return {"now": now, "delay": delay, "measured_at": payload.get("measured_at"), "source": "sweep"}
+    if time.time() - _SELECTION_MEMO["at"] > 60:
+        _SELECTION_MEMO["now"] = _current_now(timeout=2.0)
+        _SELECTION_MEMO["at"] = time.time()
+    return {"now": _SELECTION_MEMO["now"], "delay": None, "measured_at": None, "source": "selector"}
 
 
 def refresh_async():

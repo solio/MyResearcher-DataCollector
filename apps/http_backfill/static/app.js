@@ -344,7 +344,7 @@
       const proxyMode = proxySettings.mode ? textValue(proxySettings.mode) : "未启用";
       const route = selection.now
         ? `${textValue(selection.now)}${selection.delay ? " · " + number(selection.delay) + "ms" : ""}`
-        : "mihomo 节点尚未测速";
+        : "未取得当前节点";
       card.append(el("p", "node-sync", `代理 ${proxyMode}${proxyMode === "http" ? " · " + route : ""}`));
       const config = state.job?.config || state.config;
       if (config) {
@@ -627,7 +627,18 @@
     button.type = "button";
     button.title = "复制该 URL";
     button.setAttribute("aria-label", "复制该 URL");
-    button.addEventListener("click", () => copyText(url));
+    button.addEventListener("click", () => {
+      copyText(url);
+      const original = button.textContent;
+      button.textContent = "✓";
+      button.title = "已复制";
+      button.disabled = true;
+      window.setTimeout(() => {
+        button.textContent = original;
+        button.title = "复制该 URL";
+        button.disabled = false;
+      }, 1200);
+    });
     row.append(button);
     return row;
   }
