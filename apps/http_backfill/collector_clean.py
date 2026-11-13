@@ -289,6 +289,9 @@ def strip(root, stamp, exported=None, hub_cursor=None):
         new.execute("DELETE FROM meta WHERE key=?", (key,))
     cancelled = new.execute(
         "UPDATE tasks SET status='cancelled' WHERE kind='detail' AND status IN ('pending','inflight')").rowcount
+    # 阻断证据指向的是已经删掉的帖子，留着只会让探测反复拿它去重试并报错。
+    for key in ("block_evidence", "probe", "probe_pending"):
+        new.execute("DELETE FROM meta WHERE key=?", (key,))
     # 保留页号、丢掉整页帖子 JSON：那些行连同 http_post_state 一起被清空了，留着只会让引擎
     # 为一个查不到来源的帖子排详情，报“详情缺少已获取的列表来源”。
     trimmed = 0
