@@ -2625,7 +2625,12 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
     def _accept_detail(self, rid, task, html, probe_only=False):
         post = self.db.execute("SELECT * FROM http_posts WHERE post_id=?", (task["post_id"],)).fetchone()
         if not post:
-            raise ValueError("详情缺少已获取的列表来源")
+            # 列表来源已经不在了（例如节点刚做过数据剥离）。这条详情无从校验，作废即可；
+            # 抛错会被记成 schema_error 并触发探测重试，永远修不好。
+            self._event("detail_source_missing", f"{task['stock']} 详情源已随数据清除，任务跳过",
+                        {"post_id": task["post_id"], "task": task["id"]})
+            return {"post_id": task["post_id"], "list_post_type": "missing",
+                    "detail_post_type": "missing"}
         p = urlparse(task["url"])
         match = re.fullmatch(r"/news,[^,/]+,([0-9]+)\.html", p.path)
         if p.hostname != "guba.eastmoney.com" or not match or match[1] != task["post_id"]:
