@@ -543,6 +543,13 @@ def cleanup(root, stamp=""):
     marker_path = tmp / "marker.json"
     checks = []
     if not marker_path.is_file():
+        # 控制台永远带着 state() 解析出来的 stamp 调这里，所以“副本被删掉”只会走到这条分支，
+        # 而不是上面那个没有 stamp 的。线上库为空、记录还在、目录也没了，就回收这条记录。
+        if (root / "clean-current.json").is_file() and not has_data and not tmp.exists():
+            (root / "clean-current.json").unlink(missing_ok=True)
+            return {"ok": True, "stage": "paused",
+                    "checks": [{"name": "已清除失效的剥离记录", "ok": True,
+                                "detail": "副本已不存在、线上库为空，控制台恢复可用"}]}
         return {"ok": False, "checks": [{"name": "标记存在", "ok": False, "detail": str(marker_path)}]}
     marker = json.loads(marker_path.read_text())
     if not marker.get("verified"):

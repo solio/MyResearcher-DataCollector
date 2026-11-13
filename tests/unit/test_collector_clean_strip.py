@@ -225,7 +225,8 @@ def test_a_deleted_copy_still_leaves_a_reclaimable_record(tmp_path):
     shutil.rmtree(tmp_path / "tmp" / f"clean-{STAMP}")
 
     assert collector_clean.state(tmp_path)["stage"] == "leftovers"
-    result = collector_clean.cleanup(tmp_path)
+    # 走控制台真实的那条路：它总是把 state() 解析出的 stamp 一起发过来。
+    result = collector_clean.cleanup(tmp_path, collector_clean.state(tmp_path)["stamp"])
 
     assert result["ok"] is True, result["checks"]
     assert not (tmp_path / "clean-current.json").exists()
