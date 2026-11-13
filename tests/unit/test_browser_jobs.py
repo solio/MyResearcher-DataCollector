@@ -1,6 +1,6 @@
 """Native batch boundaries, using temporary databases and offline transports."""
 from contextlib import closing, nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -26,12 +26,21 @@ def arguments(command, data_dir, *extra):
 
 
 def seed(data_dir, rows):
+    """Seed posts that the daily plan would actually consider.
+
+    `published_at` is relative to now on purpose: since 2026-11-11 the plan only
+    looks at a rolling 30-day window, so a hardcoded date silently turns every
+    seeded post into "没有待补详情" and the assertions below stop exercising the
+    code they name. The window itself is covered by test_enrich_age_window.py;
+    these tests are about batch boundaries, the skip ledger and the database path.
+    """
+    published = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     store = SimplePostStore(data_dir / "collector.db")
     try:
         for post, stock, title, content in rows:
             store.upsert_post(source="eastmoney_guba", source_item_id=post, stock_code=stock,
                               title=title, content=content, author_id="a", author_name="作者",
-                              published_at="2026-08-10T02:00:00Z",
+                              published_at=published,
                               url=f"https://guba.eastmoney.com/news,{stock},{post}.html",
                               read_count=0, reply_count=0, like_count=0, forward_count=0)
     finally:
@@ -70,8 +79,15 @@ def test_planning_uses_selected_database_and_skip_ledger_with_uri_characters(tmp
                 ("5", "600002", "长" * 40, None)])
     ledger = data / "collector.detail_enrichment_skips.db"
     with closing(sqlite3.connect(ledger)) as db:
-        db.execute("CREATE TABLE detail_enrichment_skips (source TEXT, source_item_id TEXT)")
-        db.execute("INSERT INTO detail_enrichment_skips VALUES ('eastmoney_guba', '2')")
+        # The real ledger schema, not a two-column stand-in: enrich_plan reads
+        # `reason` and `attempts` to decide whether a recorded id is retired yet.
+        db.execute("""CREATE TABLE detail_enrichment_skips (source TEXT NOT NULL,
+                      source_item_id TEXT NOT NULL, stock_code TEXT NOT NULL, reason TEXT NOT NULL,
+                      first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+                      attempts INTEGER NOT NULL, PRIMARY KEY(source, source_item_id))""")
+        db.execute("INSERT INTO detail_enrichment_skips VALUES "
+                   "('eastmoney_guba', '2', '600001', 'detail_not_found', "
+                   "'2026-11-13T00:00:00Z', '2026-11-13T00:00:00Z', 1)")
         db.commit()
     before = {path: path.read_bytes() for path in (data / "collector.db", ledger)}
     assert jobs.enrich_plan.pending_for(["600001"], data / "collector.db") == [("600001", 1)]
