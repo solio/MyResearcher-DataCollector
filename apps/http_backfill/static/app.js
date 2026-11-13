@@ -279,6 +279,7 @@
       err.status = response.status;
       err.ambiguous = ambiguous;
       err.identity_conflicts = conflictFacts(data);
+      err.checks = Array.isArray(data?.checks) ? data.checks : [];
       throw err;
     }
     if (data === null) throw new Error("本地接口返回了非 JSON 响应，请检查服务或反向代理配置。");
@@ -2099,11 +2100,28 @@
     controls();
   }
   $("clean-strip").addEventListener("click", () => {
-    if (!window.confirm("剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。\n若有待补详情未补完，会直接拒绝——请先补完再剥离。继续？")) { return; }
+    if (!window.confirm("剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。继续？")) { return; }
     void (async () => {
-      const done = await fleetMutation("clean/strip", {}, "POST",
-        "已剥离：数据移到 tmp/clean-<时间戳>/，控制数据逐行保留。");
-      if (done) { await refreshCleanState(); }
+      if (busy || !authenticated) { return; }
+      busy = true; controls();
+      try {
+        await api("clean/strip", "POST", {});
+        notice("已剥离：数据移到 tmp/clean-<时间戳>/，控制数据逐行保留。");
+      } catch (error) {
+        const pending = (error.checks || []).find((check) => !check.ok && /待补详情/.test(check.name));
+        if (error.status !== 409 || !pending) { notice(error.message, true); return; }
+        // 剥离会取消待补详情任务，而库里连列表行都不剩，那批帖子就永远补不上了。
+        // 后端要求"显式声明"才放行；这里把声明做成第二次确认，而不是一句"请先补完"的死路。
+        if (!window.confirm(`${pending.name}。\n剥离后这些帖子永久无法补全，且不可撤销。\n确认放弃剩余详情并继续剥离？`)) { return; }
+        try {
+          await api("clean/strip", "POST", { allow_missing_details: true });
+          notice("已剥离（已放弃剩余待补详情）：控制数据逐行保留。");
+        } catch (second) { notice(second.message, true); }
+      } finally {
+        busy = false; controls();
+        await refreshCleanState();
+        if (authenticated) { await refreshFleet(); }
+      }
     })();
   });
   $("clean-verify").addEventListener("click", () => {

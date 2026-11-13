@@ -102,3 +102,34 @@ def test_guard_keeps_the_original_when_the_swap_itself_fails(tmp_path, monkeypat
         collector_clean.strip(tmp_path, STAMP)
 
     assert (tmp_path / "tmp" / f"clean-{STAMP}" / "collector.db").is_file()
+
+
+def test_pending_details_block_the_strip_unless_the_caller_says_so(tmp_path):
+    """The console's second confirmation is what sends `allow_missing_details`.
+
+    bd29208 turned "待补详情" from a note into a hard refusal, and nothing in the UI
+    ever sent the override, so a node with an un-fetchable backlog could never be
+    stripped at all -- the button just answered 409. The API contract pinned here is
+    the one the two-step dialog relies on: refuse first, proceed only on an explicit
+    `allow_missing_details: true`.
+    """
+    _seed(tmp_path)
+    db = sqlite3.connect(tmp_path / "collector.db")
+    try:
+        db.execute("INSERT INTO tasks(job,kind,stock,status) VALUES(1,'detail','300604','pending')")
+        db.commit()
+    finally:
+        db.close()
+    collector_clean.export_all(tmp_path)
+
+    refused = collector_clean.strip(tmp_path, STAMP)
+
+    assert refused["ok"] is False
+    names = [check["name"] for check in refused["checks"] if not check["ok"]]
+    assert any("待补详情" in name for name in names), names
+    assert not (tmp_path / "tmp" / f"clean-{STAMP}").exists()
+
+    allowed = collector_clean.strip(tmp_path, STAMP, allow_missing_details=True)
+
+    assert allowed["ok"] is True, allowed["checks"]
+    assert allowed["stage"] == "detached"
