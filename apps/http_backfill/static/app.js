@@ -268,7 +268,13 @@
     if (!response.ok) {
       if (response.status === 401 && authenticated) showAuth("中央控制台会话已过期，请重新输入访问密钥。各实例的采集状态不受页面退出影响。");
       const ambiguous = data?.ambiguous === true;
-      const message = data && data.error ? textValue(data.error) : `本地接口返回 HTTP ${response.status}`;
+      // Strip/verify answer a refusal with `checks`, not `error`. Showing only
+      // "本地接口返回 HTTP 409" throws the reason away: on 2026-11-13 a strip refused
+      // because details were still pending and the console looked like it had done nothing.
+      const failed = Array.isArray(data?.checks) ? data.checks.filter((check) => check && check.ok === false) : [];
+      const message = data && data.error ? textValue(data.error)
+        : failed.length ? failed.map((check) => textValue(check.name) + (check.detail ? `（${textValue(check.detail)}）` : "")).join("；")
+        : `本地接口返回 HTTP ${response.status}`;
       const err = new Error(message + (ambiguous ? "。该实例可能已执行操作，结果尚未确认；请先刷新状态再决定，系统不会自动重发。" : ""));
       err.status = response.status;
       err.ambiguous = ambiguous;
@@ -1031,6 +1037,19 @@
     if (cleanStage === "inconsistent") {
       display("metric-note", "剥离记录与当前数据不一致（可能被回滚过），三个清理按钮已禁用");
     }
+    // A disabled button swallows the click, so it has to say why on its own: the console
+    // otherwise answers "点了没反应" with silence (2026-11-13).
+    const cleanHint = cleanStage == null
+      ? "读不到剥离状态（接口调用失败），三个按钮暂不可用"
+      : cleanStage === "paused" ? ""
+        : cleanStage === "running" ? "采集尚未暂停：先暂停并等当前请求结束"
+          : cleanStage === "detached" ? "已剥离：下一步是「剥离校验」"
+            : cleanStage === "verified" ? "已校验：下一步是「清理数据」"
+              : cleanStage === "leftovers" ? "有遗留副本：先「清理数据」"
+                : cleanStage === "inconsistent" ? "剥离记录与数据不一致，三个按钮已禁用"
+                  : `当前状态 ${cleanStage}`;
+    $("clean-note").textContent = cleanHint;
+    for (const id of ["clean-strip", "clean-verify", "clean-cleanup"]) $(id).title = cleanHint;
     $("strip-verify").disabled = busy || !authenticated || stage !== "detached";
     $("strip-clean").disabled = busy || !authenticated || stage !== "verified";
     display("strip-export", "剥离数据");
