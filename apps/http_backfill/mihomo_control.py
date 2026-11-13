@@ -178,7 +178,11 @@ def cached_selection():
     payload = _read_cache() or {}
     nodes = payload.get("nodes") or []
     if time.time() - _SELECTION_MEMO["at"] > 30:
-        _SELECTION_MEMO["now"] = _current_now(timeout=2.0)
+        live = _current_now(timeout=2.5)
+        # 查询失败不能把已知节点清空：那会让卡片在“有节点/没节点”之间反复跳。
+        # 成功才覆盖，失败就继续用上一次的实时值。
+        if live:
+            _SELECTION_MEMO["now"] = live
         _SELECTION_MEMO["at"] = time.time()
     now = _SELECTION_MEMO["now"] or payload.get("now")
     delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
