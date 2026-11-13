@@ -170,20 +170,20 @@ _SELECTION_MEMO = {"at": 0.0, "now": None}
 
 
 def cached_selection():
-    """当前出口节点：优先用测速缓存，没有缓存就问一次选择器（60 秒内复用）。
+    """当前出口节点：以选择器实时值为准，和代理面板（nodes()）同一口径。
 
-    卡片必须显示“用哪条线”，测速缓存缺失不等于没有选中节点——auto 组任何时候都有 now。
+    测速缓存只提供延迟，不决定“是哪条线”——缓存里的 now 可能是几分钟前的，
+    auto 组随时会换线路，两边读不同来源就会出现“面板有节点、卡片说没测速”。
     """
     payload = _read_cache() or {}
     nodes = payload.get("nodes") or []
-    now = payload.get("now")
-    delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
-    if now:
-        return {"now": now, "delay": delay, "measured_at": payload.get("measured_at"), "source": "sweep"}
-    if time.time() - _SELECTION_MEMO["at"] > 60:
+    if time.time() - _SELECTION_MEMO["at"] > 30:
         _SELECTION_MEMO["now"] = _current_now(timeout=2.0)
         _SELECTION_MEMO["at"] = time.time()
-    return {"now": _SELECTION_MEMO["now"], "delay": None, "measured_at": None, "source": "selector"}
+    now = _SELECTION_MEMO["now"] or payload.get("now")
+    delay = next((item.get("delay") for item in nodes if item.get("name") == now), None)
+    return {"now": now, "delay": delay, "measured_at": payload.get("measured_at"),
+            "source": "selector" if _SELECTION_MEMO["now"] else "sweep"}
 
 
 def refresh_async():
