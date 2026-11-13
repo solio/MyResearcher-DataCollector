@@ -359,7 +359,7 @@ class FleetManager:
         self._closed, self._cache, self._futures, self._poll_due, self._sync_due = False, {}, {}, {}, {}
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="collector-fleet")
         self._nodes, self._requested, self._generation = self._load()
-        status = self.engine.status()
+        status = self._local_status()
         self.local_id = self._identity(status)
         if any(n["instance_id"] == self.local_id for n in self._nodes.values()):
             raise ValueError("远程注册的实例身份与本地 UUID 重复；请修复私有注册表")
@@ -594,7 +594,7 @@ class FleetManager:
         return path
 
     def _check_status(self, node):
-        status = self.engine.status() if node["id"] == "local" else self._remote(node, "GET", "api/status")
+        status = self._local_status() if node["id"] == "local" else self._remote(node, "GET", "api/status")
         if self._identity(status) != node["instance_id"]:
             raise FleetError(409, "节点 UUID 已改变；拒绝控制或同步，请检查重建/克隆目录")
         with self._lock:
@@ -675,7 +675,7 @@ class FleetManager:
                     self.engine.delete_job()
                 else:
                     self.engine.remove_stock(path.rsplit("/", 1)[1])
-                payload = self.engine.status()
+                payload = self._local_status()
             if path == "api/mihomo/config":
                 if self._identity(payload) != node["instance_id"]:
                     raise FleetError(409, "节点私密配置 UUID 与注册身份不一致")
@@ -735,7 +735,7 @@ class FleetManager:
     def _local_get(self, path, query):
         values = {k: v if isinstance(v, list) else [str(v)] for k, v in query.items()}
         if path == "api/status":
-            return self.engine.status()
+            return self._local_status()
         if path == "api/proxy":
             return self.engine.proxy_status()
         if path == "api/mihomo/config":
@@ -758,6 +758,16 @@ class FleetManager:
             return self.engine.raw_posts(limit, offset)
         return getattr(self.engine, path.rsplit("/", 1)[1])(limit)
 
+    def _local_status(self):
+        """本机状态：与 /api/status 完全一致，包含当前出口节点。"""
+        payload = self.engine.status()
+        try:
+            import mihomo_control
+            mihomo_control.attach_selection(payload)
+        except Exception:  # noqa: BLE001 - 代理信息缺失不该影响节点列表
+            pass
+        return payload
+
     def _offline(self, node, error):
         with self._lock:
             if node["id"] == "local" or self._nodes.get(node["id"]) == node:
@@ -774,7 +784,7 @@ class FleetManager:
                 for key in ["local", *self._nodes]:
                     self._poll_due[key] = 0
             self.tick()
-        local_status = self.engine.status()
+        local_status = self._local_status()
         with self._lock:
             self._cache["local"].update(status=local_status, connection="online", last_seen_at=_iso(self.clock()))
             result = []

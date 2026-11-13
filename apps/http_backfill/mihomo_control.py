@@ -166,6 +166,18 @@ def nodes():
             "nodes": [], "cached": False, "refreshing": started or _sweeping}
 
 
+def attach_selection(payload):
+    """给状态体补上当前出口节点。所有产出状态的地方（直连、快照、集群列表）都要调。"""
+    try:
+        proxy = payload.get("proxy") or {}
+        if (proxy.get("settings") or {}).get("mode") != "http":
+            return payload
+        proxy["selection"] = cached_selection()
+    except Exception:  # noqa: BLE001 - 缺缓存不能影响状态接口
+        return payload
+    return payload
+
+
 _SELECTION_MEMO = {"at": 0.0, "now": None}
 
 

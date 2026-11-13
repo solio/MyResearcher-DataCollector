@@ -38,15 +38,9 @@ def _error_payload(exc):
 
 
 def attach_proxy_selection(payload):
-    """卡片要显示当前出口节点。缓存快照和直连两条路径都要调用，否则只有部分实例有值。"""
-    try:
-        proxy = payload.get("proxy") or {}
-        if (proxy.get("settings") or {}).get("mode") != "http":
-            return
-        import mihomo_control
-        proxy["selection"] = mihomo_control.cached_selection()
-    except Exception:  # noqa: BLE001 - 缺缓存不能影响状态接口
-        return
+    """缓存快照、直连、集群列表都要走这里，否则只有一部分视图有值。"""
+    import mihomo_control
+    mihomo_control.attach_selection(payload)
 
 
 class ConsoleServer(ThreadingHTTPServer):
