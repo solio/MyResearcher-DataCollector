@@ -572,7 +572,7 @@ class Handler(BaseHTTPRequestHandler):
                 getattr(self.server.engine, action)()
             else:
                 return self.send(404, {"error": "接口不存在"})
-            payload = self.server.engine.status()
+            payload = self.server._status_payload()
             self.server.remember_status(payload)
             return self.send(200, payload)
         except ValueError as exc:
@@ -606,7 +606,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "接口不存在"})
         try:
             self.server.engine.update_job(self.read_json())
-            payload = self.server.engine.status()
+            payload = self.server._status_payload()
             self.server.remember_status(payload)
             self.send(200, payload)
         except ValueError as exc:
@@ -634,7 +634,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.engine.delete_job()
                 else:
                     self.server.engine.remove_stock(path[len("api/jobs/current/stocks/"):])
-                payload = self.server.engine.status()
+                payload = self.server._status_payload()
                 self.server.remember_status(payload)
                 return self.send(200, payload)
             except ValueError as exc:
