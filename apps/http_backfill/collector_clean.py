@@ -228,6 +228,30 @@ def export_is_current(root):
 
 
 def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False):
+    """Move the data out and leave a control-only database.
+
+    Everything between `tmp.mkdir()` and the swap is junk if it raises: by then a
+    VACUUM copy of the whole database is already on disk, and `leftovers()` only
+    counts directories that carry `marker.json`, so that half-built copy is
+    invisible to the console and to `cleanup` forever. On 2026-11-13 a NameError
+    in `_strip_impl` (43bf726) made the strip fail on every click and each retry
+    left another full-size copy behind -- on the 600 MB instance that is 600 MB
+    per click. The guard below deletes the directory, unless the original
+    database has already been moved into it.
+    """
+    try:
+        return _strip_impl(root, stamp, exported=exported, hub_cursor=hub_cursor,
+                           allow_missing_details=allow_missing_details)
+    except BaseException:
+        tmp = Path(root) / "tmp" / ("clean-" + stamp)
+        # Past this point `tmp/collector.db` IS the only copy of the live data:
+        # deleting the directory would be the one unrecoverable act in the flow.
+        if tmp.is_dir() and not (tmp / "collector.db").exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_details=False):
     """Move the data out and leave a control-only database. Returns the check report."""
     root = Path(root)
     db_path = root / "collector.db"
@@ -282,7 +306,7 @@ def strip(root, stamp, exported=None, hub_cursor=None, allow_missing_details=Fal
     new = _connect(new_path)
     copied, schema_errors = _copy_control(old, new)
     # 旧库的全部表/视图/索引都必须在新库里存在；缺一个（尤其是 http_posts 视图）后续采集会直接失败。
-    old_names = {(r[0], r[1]) for r in old_db.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
+    old_names = {(r[0], r[1]) for r in old.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
     new_names = {(r[0], r[1]) for r in new.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table','view')")}
     missing = sorted(name for name, kind in old_names - new_names)
     # Prove the copy before touching it: a silent truncation here would lose the job itself.
