@@ -386,6 +386,47 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(stored[0], a["post_title"])
                 self.assertIsNone(stored[1])
 
+    def test_detail_page_without_payload_is_skipped_and_the_run_continues(self):
+        """一个帖子的内容问题不该停整台机器。
+
+        2026-11-14：hk 节点上一条详情页没有 post_article，整条采集停了整整一天。
+        内容问题只属于这一条帖：记下来、跳过，下一条照常采。
+        """
+        a, b = row(), row("1002")
+        bare = ('<html><head><title>601012股吧_东方财富网</title></head><body>'
+                '<script>var article_list={"rc":1,"re":[]};</script></body></html>').encode()
+        wire = Wire(ok(list_html([a, b])), ok(bare), ok(detail_html(b)))
+        e = self.started(wire)
+        e.tick()
+        self.tick_due(e)
+
+        status = e.status()
+        self.assertEqual(status["stock_runtimes"][0]["state"], "running")
+        self.assertIsNone(status["stock_runtimes"][0]["active_halt"])
+        first = next(r for r in e.requests() if r.get("post_id") == a["post_id"])
+        self.assertEqual(first["outcome"], "detail_content_error")
+        self.assertIsNone(e.db.execute(
+            "SELECT content FROM posts WHERE source_item_id=?", (a["post_id"],)).fetchone()[0])
+
+        self.tick_due(e)
+        self.assertIn(b["post_id"], wire.calls[-1][0])
+        self.assertEqual(e.status()["aggregate"]["body_complete"], 1)
+        self.assertIsNone(e.status()["stock_runtimes"][0]["active_halt"])
+
+    def test_a_streak_of_empty_detail_pages_still_stops_the_run(self):
+        """连续读不出内容就不是"一条坏帖"，而是站点换了形状：这时必须停。"""
+        rows = [row(str(1000 + i)) for i in range(1, 6)]
+        bare = ('<html><head><title>601012股吧_东方财富网</title></head><body>'
+                '<script>var article_list={"rc":1,"re":[]};</script></body></html>').encode()
+        wire = Wire(ok(list_html(rows)), *[ok(bare) for _ in rows])
+        e = self.started(wire)
+        e.tick()
+        for _ in rows:
+            self.tick_due(e)
+
+        runtime = e.status()["stock_runtimes"][0]
+        self.assertEqual(runtime["active_halt"], "detail_content_streak")
+
     def test_detail_scope_missing_type_or_wrong_id_still_halts(self):
         for fields in ({"post_type": None}, {"post_type": True}, {"post_type": "garbage"},
                        {"post_type": 42, "post_id": "999"}):

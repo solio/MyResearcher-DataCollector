@@ -56,6 +56,10 @@ REQUEST_PROFILE = "chrome-referer.v1"
 GOOGLE_REFERER = "https://www.google.com/"
 BAIDU_REFERER = "https://www.baidu.com/"
 REDIRECTS = {301, 302, 303, 307, 308}
+# A detail page that arrives without its payload is a CONTENT problem: it belongs to that one
+# post. Skipping it must not stop collection (2026-11-14: one such page halted a node for a day).
+# Only a streak this long looks like the site changed shape rather than one bad post.
+DETAIL_CONTENT_ERROR_LIMIT = 5
 SAFE_HEADERS = {"content-type", "content-length", "content-encoding", "location", "retry-after", "date", "server"}
 NETWORK_RETRY_KINDS = {"network_timeout", "tls_error", "network_connect", "network_io"}
 # A change in the source's global post count says nothing about whether the page
@@ -2225,9 +2229,27 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                     return
                 if getattr(exc, "conflicts", None):
                     evidence["identity_conflicts"] = exc.conflicts
+                # 内容问题 ≠ 阻塞条件：这一页没有 post_article（帖子被删后跳列表页、旧版壳等）
+                # 只属于这一条帖。记下来、跳过它，继续跑。身份不符（GubaDetailMismatch）与
+                # 列表页结构变化仍然停：那说明来源本身不可信，继续跑只会批量制造错数据。
+                if (task["kind"] == "detail" and isinstance(exc, guba.GubaSchemaMismatch)
+                        and not isinstance(exc, guba.GubaDetailMismatch)):
+                    streak = int(self._get("detail_content_errors") or 0) + 1
+                    self._set("detail_content_errors", streak)
+                    self._outcome(rid, "detail_content_error", str(exc), evidence)
+                    self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+                    self._event("detail_content_error",
+                                f"{task['stock']} 详情内容不可用，已跳过该帖（连续 {streak} 条）",
+                                {"request_id": rid, "post_id": task["post_id"], "error": str(exc)})
+                    if streak >= DETAIL_CONTENT_ERROR_LIMIT:
+                        self._halt("error", "detail_content_streak",
+                                   f"连续 {streak} 条详情都读不出内容，疑似站点结构变化，已暂停", rid)
+                    return
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
                 return
+            if task["kind"] == "detail":
+                self._set("detail_content_errors", 0)
             self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
             self._outcome(rid, "real_data", None, evidence)
             self._after_success(rid, probe)
