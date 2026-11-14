@@ -19,6 +19,7 @@ import os
 import shutil
 import sqlite3
 import time
+from datetime import datetime
 from pathlib import Path
 
 STAGE_ORDER = ("running", "paused", "detached", "verified", "cleaned")
@@ -74,6 +75,30 @@ def _digest(db, table):
 # Keys the strip deletes on purpose: RESET_META watermarks, plus the evidence that points at
 # posts which no longer exist. Their absence in the new database is the intended outcome.
 _STRIP_DROPPED_KEYS = set(RESET_META) | {"block_evidence", "probe", "probe_pending"}
+
+
+def _data_precedes_strip(root, marker_at):
+    """Live rows older than the strip mean the OLD data came back, not new collection.
+
+    `inconsistent` used to fire as soon as any row existed, which made every strip a
+    dead end: the node resumes collecting within minutes, `posts` gets its first new
+    row, and from then on the console offers no action at all -- the copy under
+    tmp/clean-<stamp>/ (600 MB on the real instance) could never be reclaimed.
+    """
+    if not isinstance(marker_at, (int, float)):
+        return True  # 没有时间戳就无法排除，按最坏情况处理
+    try:
+        with _connect(Path(root) / "collector.db", readonly=True) as db:
+            oldest = db.execute("SELECT MIN(created_at) FROM posts").fetchone()[0]
+    except sqlite3.Error:
+        return True
+    if not oldest:
+        return False
+    try:
+        created = datetime.fromisoformat(str(oldest).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return True
+    return created < float(marker_at)
 
 
 def control_deltas(old_path, new_path):
@@ -438,6 +463,7 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
         {"stamp": stamp, "at": time.time(), "before_counts": before.get("counts", {})},
         ensure_ascii=False, indent=2))
     marker = {"stamp": stamp, "at": time.time(), "before": before, "copied": copied,
+              "stripped_counts": new_counts,
               "events_kept": copied.get("events", 0), "events_dropped": max(dropped_events, 0),
               "cancelled_detail_tasks": cancelled, "digests": {k: v for k, v in kept_digests.items() if v},
               "verified": False}
@@ -480,8 +506,14 @@ def verify(root, stamp):
                   if dangling else f"这次剥离没有副本：{tmp}")
         return {"ok": False, "checks": [{"name": "剥离副本与标记存在", "ok": False, "detail": detail}]}
     marker = json.loads(marker_path.read_text())
-    after = inspect(root, full=True)
-    check("数据表已清空", not [t for t in DATA_TABLES if after["counts"].get(t)], str(after["counts"]))
+    # 剥离之后引擎会继续采集，`posts` 很快就不是空的 —— 判“剥离时清空了没有”，
+    # 只能看剥离当时记下的计数，不能看现在的库。
+    stripped = marker.get("stripped_counts")
+    if isinstance(stripped, dict):
+        still = {t: n for t, n in stripped.items() if n}
+        check("剥离时数据表为空", not still, str(still) or "0 行")
+    else:
+        check("剥离时数据表为空", True, "旧记录没有剥离时的计数，跳过这一项")
     original = tmp / "collector.db"
     if original.is_file():
         diffs = control_deltas(original, root / "collector.db")
@@ -578,25 +610,29 @@ def state(root, running=None):
     # One file decides: a strip exists or it does not. Leftover directories and markers from an
     # earlier or rolled-back attempt must never change what the buttons do.
     current = root / "clean-current.json"
-    stamp = ""
+    stamp, marker_at, verified = "", None, False
+    marker = None
     if current.is_file():
         try:
-            stamp = json.loads(current.read_text()).get("stamp", "")
+            record = json.loads(current.read_text())
         except ValueError:
-            stamp = ""
+            record = {}
+        stamp = record.get("stamp", "")
+        marker_at = record.get("at")
+        if stamp:
+            marker = root / "tmp" / ("clean-" + stamp) / "marker.json"
+            if marker.is_file():
+                try:
+                    verified = json.loads(marker.read_text()).get("verified") is True
+                except ValueError:
+                    verified = False
     has_data = any((info.get("counts") or {}).get(name) for name in DATA_TABLES)
-    if current.is_file() and has_data:
-        # The ledger says stripped but rows are back: stopped half way, nothing may be deleted.
+    if current.is_file() and has_data and _data_precedes_strip(root, marker_at):
+        # Rows older than the strip: the old database is back (rollback or a half-finished
+        # restore). Nothing may be deleted -- least of all the last copy.
         stage = "inconsistent"
     elif current.is_file():
-        marker = root / "tmp" / ("clean-" + stamp) / "marker.json"
-        verified = False
-        if marker.is_file():
-            try:
-                verified = json.loads(marker.read_text()).get("verified") is True
-            except ValueError:
-                verified = False
-        if not marker.is_file() and not has_data:
+        if marker is not None and not marker.is_file() and not has_data:
             # 副本被手工删掉或随磁盘清理消失，记录还留着：唯一的出路是回收这条记录。
             # 停在 detached 只会让校验永远失败、三个按钮全灰（2026-11-13 发生过）。
             stage = "leftovers"

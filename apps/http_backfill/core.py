@@ -2140,6 +2140,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             try:
                 html = response.body.decode("utf-8-sig", errors="strict")
             except UnicodeDecodeError:
+                if task["kind"] == "detail":
+                    self._detail_content_failed(rid, task, "响应不是完整有效 UTF-8")
+                    return
                 self._outcome(rid, "schema_error", "响应不是完整有效 UTF-8")
                 self._halt("error", "schema_error", "响应不是有效 UTF-8，已暂停", rid)
                 return
@@ -2153,6 +2156,9 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             try:
                 self._validate_framing(response.body, headers)
             except ValueError as exc:
+                if task["kind"] == "detail":
+                    self._detail_content_failed(rid, task, "响应不完整/编码不支持: " + str(exc), evidence)
+                    return
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应不完整/编码不支持: " + str(exc), rid)
                 return
@@ -2234,16 +2240,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 # 列表页结构变化仍然停：那说明来源本身不可信，继续跑只会批量制造错数据。
                 if (task["kind"] == "detail" and isinstance(exc, guba.GubaSchemaMismatch)
                         and not isinstance(exc, guba.GubaDetailMismatch)):
-                    streak = int(self._get("detail_content_errors") or 0) + 1
-                    self._set("detail_content_errors", streak)
-                    self._outcome(rid, "detail_content_error", str(exc), evidence)
-                    self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
-                    self._event("detail_content_error",
-                                f"{task['stock']} 详情内容不可用，已跳过该帖（连续 {streak} 条）",
-                                {"request_id": rid, "post_id": task["post_id"], "error": str(exc)})
-                    if streak >= DETAIL_CONTENT_ERROR_LIMIT:
-                        self._halt("error", "detail_content_streak",
-                                   f"连续 {streak} 条详情都读不出内容，疑似站点结构变化，已暂停", rid)
+                    self._detail_content_failed(rid, task, exc, evidence)
                     return
                 self._outcome(rid, "schema_error", str(exc), evidence)
                 self._halt("error", "schema_error", "响应结构/身份不匹配: " + str(exc), rid)
@@ -2349,6 +2346,21 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         for key in ("active_halt", "halted_task_id", "halt_task_id", "halted_config", "halt_config"):
             self._set(key, None)
         self._set("halted_probe_only", False)
+
+    def _detail_content_failed(self, rid, task, message, evidence=None):
+        """一条详情读不出来：记下来、关掉这条任务，继续采下一条。
+
+        内容问题只属于这一条帖；只有连续多条才说明站点变了形（DETAIL_CONTENT_ERROR_LIMIT）。
+        """
+        streak = int(self._get("detail_content_errors") or 0) + 1
+        self._set("detail_content_errors", streak)
+        self._outcome(rid, "detail_content_error", str(message), evidence or {})
+        self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+        self._event("detail_content_error", f"{task['stock']} 详情内容不可用，已跳过该帖（连续 {streak} 条）",
+                    {"request_id": rid, "post_id": task["post_id"], "error": str(message)})
+        if streak >= DETAIL_CONTENT_ERROR_LIMIT:
+            self._halt("error", "detail_content_streak",
+                       f"连续 {streak} 条详情都读不出内容，疑似站点结构变化，已暂停", rid)
 
     def _halt(self, state, kind, reason, rid):
         self._set("network_retry", None)

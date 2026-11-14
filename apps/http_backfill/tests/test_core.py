@@ -508,12 +508,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(e.raw_posts()[0]["status"], "removed")
         self.assertFalse(e.status()["coverage"][0]["details_complete"])
 
-    def test_truncated_not_found_shell_is_error_not_terminal_missing(self):
+    def test_truncated_not_found_shell_is_content_error_not_terminal_missing(self):
+        """截断的 404 壳：不能当成"帖子已删除"（那会永久跳过），也不再停机。
+
+        2026-11-14 起，详情内容问题只跳过该帖；停机只留给网络与验证码。
+        """
         a = row()
         e = self.started(Wire(ok(list_html([a])), Response(200, b'<div class="error404_page">', {"content-length": "1000"})))
         e.tick()
         self.tick_due(e)
-        self.assertEqual(e.status()["state"], "error")
+        runtime = e.status()["stock_runtimes"][0]
+        self.assertEqual(runtime["state"], "running")
+        self.assertIsNone(runtime["active_halt"])
         self.assertEqual(e.status()["aggregate"]["removed"], 0)
         self.assertEqual(e.status()["aggregate"]["pending"], 1)
 

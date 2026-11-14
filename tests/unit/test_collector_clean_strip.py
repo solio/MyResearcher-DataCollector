@@ -21,6 +21,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -231,3 +232,47 @@ def test_a_deleted_copy_still_leaves_a_reclaimable_record(tmp_path):
     assert result["ok"] is True, result["checks"]
     assert not (tmp_path / "clean-current.json").exists()
     assert collector_clean.state(tmp_path)["stage"] == "paused"
+
+
+def _add_post(root: Path, post_id: str, created_at: str) -> None:
+    db = sqlite3.connect(root / "collector.db")
+    try:
+        db.execute("INSERT INTO posts(source,source_item_id,stock_code,title,content,published_at,url,"
+                   "created_at,updated_at) VALUES('eastmoney_guba',?,?,'新帖',NULL,"
+                   "'2026-11-14T20:00:00+08:00','https://example.invalid/x',?,?)",
+                   (post_id, "300604", created_at, created_at))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _now_iso(minus_days: float = 0) -> str:
+    moment = datetime.now(timezone.utc) - timedelta(days=minus_days)
+    return moment.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def test_collecting_again_after_a_strip_does_not_lock_the_console(tmp_path):
+    """剥离后引擎继续采集是正常的，不该被判成“数据回来了”。
+
+    旧判定只要 `posts` 有一行就进 inconsistent，于是每次剥离在节点恢复采集的几分钟后
+    就变成死局：校验永远失败、清理永远拒绝、tmp 下那份整库副本再也删不掉。
+    """
+    _seed(tmp_path)
+    collector_clean.export_all(tmp_path)
+    assert collector_clean.strip(tmp_path, STAMP)["ok"] is True
+
+    _add_post(tmp_path, "9990001", _now_iso())
+
+    assert collector_clean.state(tmp_path)["stage"] == "detached"
+    assert collector_clean.verify(tmp_path, STAMP)["ok"] is True
+    assert collector_clean.cleanup(tmp_path, STAMP)["ok"] is True
+
+
+def test_rows_older_than_the_strip_still_mean_the_old_data_is_back(tmp_path):
+    _seed(tmp_path)
+    collector_clean.export_all(tmp_path)
+    assert collector_clean.strip(tmp_path, STAMP)["ok"] is True
+
+    _add_post(tmp_path, "9990002", _now_iso(minus_days=1))
+
+    assert collector_clean.state(tmp_path)["stage"] == "inconsistent"
