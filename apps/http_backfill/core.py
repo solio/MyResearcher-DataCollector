@@ -2685,6 +2685,16 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         if p.hostname != "guba.eastmoney.com" or not match or match[1] != task["post_id"]:
             raise ValueError("详情响应 URL 的源 ID 不匹配")
         item = _item_load(post["item"])
+        # 基金吧/财富号的帖子（详情地址形如 /news,of012323,…）用的是另一套模板，页面里没有
+        # post_article。它不是这条帖的内容问题，是它根本不属于股票吧：按越界跳过，
+        # 保留列表记录，不再反复当“内容读不出来”重试（2026-11-14 hk 的 1414750416 就是这种）。
+        bar = p.path.split(",")[1] if p.path.count(",") >= 2 else ""
+        if not re.fullmatch(r"[0-9]{6}", bar):
+            self._event("detail_foreign_bar",
+                        f"{task['stock']} 的详情地址属于 {bar or '未知'} 吧（非股票吧），已跳过正文",
+                        {"request_id": rid, "post_id": task["post_id"], "bar": bar})
+            return {"post_id": task["post_id"], "list_post_type": item.post_type,
+                    "detail_post_type": "foreign_bar"}
         old_request = self.db.execute("SELECT * FROM requests WHERE id=?", (post["list_request"],)).fetchone()
         new_request = self.db.execute("SELECT * FROM requests WHERE id=?", (rid,)).fetchone()
         payload = guba._embedded_json(html, "post_article")

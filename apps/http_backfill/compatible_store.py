@@ -115,6 +115,9 @@ def detail_scope_fact(item, payload, *, old_request=None, new_request=None):
 
 
 def detail_scope_message(fact):
+    if fact.get("detail_post_type") == "foreign_bar":
+        return (f"帖子 {fact['post_id']}：详情地址属于非股票吧（基金/财富号模板，没有 post_article）；"
+                "已跳过正文，保留列表记录")
     return (f"帖子 {fact['post_id']}：列表类型 {fact['list_post_type']}，详情类型 {fact['detail_post_type']}；"
             "已跳过非普通帖正文，保留列表记录")
 

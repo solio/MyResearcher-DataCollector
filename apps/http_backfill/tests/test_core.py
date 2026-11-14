@@ -386,6 +386,29 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(stored[0], a["post_title"])
                 self.assertIsNone(stored[1])
 
+    def test_a_fund_bar_detail_is_out_of_scope_not_a_content_error(self):
+        """列表行挂在股票吧，链接却指向基金吧：详情是另一套模板，没有 post_article。
+
+        2026-11-14：300896 的队列里出现 /news,of012323,1414750416.html，被当成
+        "内容读不出来"反复重试。它不属于股票吧，应当按越界跳过。
+        """
+        a = row()
+        page = ('<html><head><title>股吧</title></head><body>'
+                f'<a href="/news,of012323,{a["post_id"]}.html">帖子</a>'
+                '<script>var article_list='
+                + json.dumps({"rc": 1, "re": [a]}, ensure_ascii=False)
+                + ';</script></body></html>').encode()
+        e = self.started(Wire(ok(page), ok(b'<html><body>fund template</body></html>')))
+        e.tick()
+        self.tick_due(e)
+
+        runtime = e.status()["stock_runtimes"][0]
+        self.assertEqual(runtime["state"], "running")
+        self.assertIsNone(runtime["active_halt"])
+        detail = next(r for r in e.requests() if r.get("post_id") == a["post_id"])
+        self.assertEqual(detail["outcome"], "detail_out_of_scope")
+        self.assertIn("非股票吧", detail["error"] or "")
+
     def test_detail_page_without_payload_is_skipped_and_the_run_continues(self):
         """一个帖子的内容问题不该停整台机器。
 
