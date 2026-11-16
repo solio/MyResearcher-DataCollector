@@ -1034,6 +1034,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 continue
             frontier = self._frontier(job, stock)
             if frontier:
+                if not frontier.get("rows") and not frontier.get("anchor_rows"):
+                    # 剥离后的台账只留页码：缓存的整页行随数据一起被清空了，没有锚点就
+                    # 没有可校准的对象。跳过重启校准，直接从该页继续（否则启动即崩）。
+                    self._event("recovery_skipped_after_strip",
+                                "台账只有页码（剥离后），跳过重启校准，从该页继续",
+                                {"stock": stock, "page": frontier.get("page")})
+                    continue
                 old = self._recovery(job, stock)
                 try:
                     if reason in ORDINARY_RECHECKS and self._resume_recovery_checkpoint(old, reason):
@@ -1121,9 +1128,12 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         if original:
             rec = dict(original)
         else:
-            anchor_source = frontier.get("anchor_rows", frontier["rows"])
+            rows = frontier.get("rows")
+            if not rows:
+                raise ValueError("台账没有缓存的整页行，无法建立校准锚点")
+            anchor_source = frontier.get("anchor_rows") or rows
             anchors = self._navigation_rows(anchor_source)
-            end_rows = self._navigation_rows(frontier["rows"])
+            end_rows = self._navigation_rows(rows)
             if not anchors or not end_rows:
                 raise ValueError("无法建立非置顶来源行锚点，不能猜测下一历史页")
             rec = {"job": job, "stock": stock, "anchor_page": frontier.get("anchor_page", frontier["page"]),
