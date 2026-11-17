@@ -364,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         "a tight loop).",
     )
     enrich.add_argument(
-        "--read-every", type=int, default=20,
+        "--read-every", type=int, default=0,
         help="with --pace-model=longtail: hold for read-min..read-max seconds "
         "after every N posts (0 disables the scheduled pause).",
     )

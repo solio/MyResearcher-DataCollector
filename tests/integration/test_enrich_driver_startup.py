@@ -75,15 +75,16 @@ def test_the_dry_run_walks_past_the_run_start_preamble():
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RUN_START" in result.stdout, result.stdout
     assert "pace_model=longtail" in result.stdout
-    assert "read_every=20" in result.stdout
+    assert "read_every=0" in result.stdout   # 2026-11-17: 默认无阅读停顿
 
 
 def test_the_pacing_knobs_are_overridable():
-    result = _dry_run(PACE_MODEL="uniform", READ_EVERY="0")
+    # 默认无停顿（READ_EVERY=0），想模拟阅读就显式打开。
+    result = _dry_run(PACE_MODEL="uniform", READ_EVERY="20")
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "pace_model=uniform" in result.stdout
-    assert "read_every=0" in result.stdout
+    assert "read_every=20" in result.stdout
 
 
 def test_the_browser_identity_is_reused_by_default():

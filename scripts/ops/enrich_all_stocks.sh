@@ -76,6 +76,9 @@ SPLIT=${SPLIT:-0}
 # scripts/ops/README.md.
 MIN_DELAY=${MIN_DELAY:-4.0}
 MAX_DELAY=${MAX_DELAY:-8.0}
+# 2026-11-17: READ_EVERY 默认改为 0（无阅读停顿）——量大了以后每 20 条停 30-90 秒
+# 在盘前时间窗里成本过高。需要模拟阅读就显式传 READ_EVERY=20（或 --read-every）。
+#
 # Pacing shape (2026-09-28). `longtail` replaces the tightly-bounded
 # `random.uniform(MIN_DELAY, MAX_DELAY)` loop with an Exponential tail plus a
 # scheduled "stop and read" pause every READ_EVERY posts; `uniform` reproduces
@@ -108,7 +111,7 @@ CHALLENGE_RETRIES=${CHALLENGE_RETRIES:-1}
 ENRICH_ORDER=${ENRICH_ORDER:-asc}
 ACQ_MODE=${ACQ_MODE:-managed-chromium}
 PACE_MODEL=${PACE_MODEL:-longtail}
-READ_EVERY=${READ_EVERY:-20}
+READ_EVERY=${READ_EVERY:-0}
 READ_MIN=${READ_MIN:-30}
 READ_MAX=${READ_MAX:-90}
 # BROWSER IDENTITY, NOT PACING (2026-09-28).
