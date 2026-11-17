@@ -74,8 +74,8 @@ SPLIT=${SPLIT:-0}
 # Why you would slow down: on 2026-09-18 the source capped us after ~70 detail
 # fetches in 11 minutes at the default rate. See "Sustained rate limiting" in
 # scripts/ops/README.md.
-MIN_DELAY=${MIN_DELAY:-3.0}
-MAX_DELAY=${MAX_DELAY:-10.0}
+MIN_DELAY=${MIN_DELAY:-4.0}
+MAX_DELAY=${MAX_DELAY:-8.0}
 # Pacing shape (2026-09-28). `longtail` replaces the tightly-bounded
 # `random.uniform(MIN_DELAY, MAX_DELAY)` loop with an Exponential tail plus a
 # scheduled "stop and read" pause every READ_EVERY posts; `uniform` reproduces
