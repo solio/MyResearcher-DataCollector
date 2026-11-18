@@ -416,8 +416,18 @@ class CompatibleDataStore:
                     or not re.fullmatch(r"/news,[A-Za-z0-9]+," + re.escape(post["post_id"]) + r"\.html",
                                         urlparse(detail_request["url"]).path)):
                 raise CompatibleStorageError("跳过正文的原请求身份/类型不一致")
-            scope = detail_scope_fact(observed_item, guba._embedded_json(scope_html, "post_article"),
-                                     old_request=observed_request, new_request=detail_request)
+            # 跨吧跳过是"按 URL 判定"的（/news,of012323,… 这类基金吧/财富号模板），
+            # 页内 post_article 往往还是 post_type=0，用 payload 反推必然对不上。
+            # core 那边已经按 URL 判过并落了 detail_foreign_bar 事件，这里沿用同一条规则。
+            bar = (urlparse(detail_request["url"]).path.split(",") + ["", ""])[1]
+            if bar and not re.fullmatch(r"[0-9]{6}", bar):
+                scope = {"post_id": post["post_id"], "list_post_type": observed_item.post_type,
+                         "detail_post_type": "foreign_bar", "stock": observed_request["stock"],
+                         "list_request_id": observed_request.get("id"),
+                         "detail_request_id": detail_request.get("id")}
+            else:
+                scope = detail_scope_fact(observed_item, guba._embedded_json(scope_html, "post_article"),
+                                          old_request=observed_request, new_request=detail_request)
             if not scope:
                 raise CompatibleStorageError("跳过正文缺少非普通帖类型证据")
             engine.db.execute("INSERT OR IGNORE INTO detail_enrichment_skips(source,source_item_id,stock_code,reason,first_seen_at,last_seen_at,attempts) VALUES(?,?,?,?,?,?,1)",
