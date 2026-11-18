@@ -445,8 +445,18 @@ class MergeStore:
             raise FederationError(str(exc), conflicts=exc.conflicts)
         if isinstance(detailed, dict) and "out_of_scope_payload" in detailed:
             from compatible_store import detail_scope_fact
-            scope = detail_scope_fact(listed, detailed["out_of_scope_payload"],
-                                      old_request=requests[links["list"]], new_request=requests[links["detail"]])
+            # 跨吧跳过按 URL 判：/news,of012323,… 这类基金吧/财富号模板页里 post_type 还是 0，
+            # 用页面字段反推只会得出"普通帖"，和节点写入的 foreign_bar 事实对不上。
+            place = urlparse(requests[links["detail"]]["url"]).path.split(",")
+            bar = place[1] if len(place) > 1 else ""
+            if bar and not re.fullmatch(r"[0-9]{6}", bar):
+                scope = {"post_id": post["source_item_id"], "list_post_type": listed.post_type,
+                         "detail_post_type": "foreign_bar", "stock": requests[links["detail"]].get("stock"),
+                         "list_request_id": requests[links["list"]].get("id"),
+                         "detail_request_id": requests[links["detail"]].get("id")}
+            else:
+                scope = detail_scope_fact(listed, detailed["out_of_scope_payload"],
+                                          old_request=requests[links["list"]], new_request=requests[links["detail"]])
             if (not scope or post["content"] is not None or provenance.get("source_status") != "out_of_scope"
                     or provenance.get("detail_required") is not False or provenance.get("detail_skip") != scope):
                 raise FederationError("跳过正文的类型/状态/证据不一致")
