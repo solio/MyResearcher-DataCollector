@@ -401,6 +401,16 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
         new.execute("DELETE FROM meta WHERE key=?", (key,))
     cancelled = new.execute(
         "UPDATE tasks SET status='cancelled' WHERE kind='detail' AND status IN ('pending','inflight')").rowcount
+    # 自增 id 也不能回退：主控把 (实例, 请求ID) 当作不可变键，剥离后 requests.id 从 1 重来，
+    # 同一 id 会带上不同证据，主控判"既有节点原请求证据发生变化"并卡住同步。
+    # 把旧库的 sqlite_sequence 原样搬过去，下一个 id 从旧的最大值继续。
+    try:
+        seq_rows = old.execute("SELECT name, seq FROM sqlite_sequence").fetchall()
+    except sqlite3.Error:
+        seq_rows = []
+    if seq_rows:
+        new.execute("DELETE FROM sqlite_sequence")
+        new.executemany("INSERT INTO sqlite_sequence(name, seq) VALUES(?,?)", seq_rows)
     # 记下剥离前的最大序号：新库的 journal 从 1 开始的话，主控游标永远追不上，数据等于白采。
     new.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('journal_seq_hint',?)",
                 (str(before.get("journal_max") or 0),))
