@@ -2132,13 +2132,36 @@
     try { cleanState = await api("clean/state"); } catch (_) { cleanState = null; }
     controls();
   }
+  // 剥离在后台跑（导出+VACUUM 可能几分钟），这里只负责等它并回报进度，
+  // 否则同步接口会撞上 25 秒代理超时，看起来就是"点了没反应"。
+  async function stripAndWait(payload) {
+    const started = await api("clean/strip", "POST", payload);
+    if (!started || started.started === false) { return started; }
+    const deadline = Date.now() + 20 * 60 * 1000;
+    notice(`剥离已开始（${started.stamp}），正在导出…`);
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      let state = null;
+      try { state = await api("clean/state"); } catch (_) { continue; }
+      const run = (state && state.run) || {};
+      if (run.stage) { notice(`剥离进行中：${run.stage}`); }
+      if (run.state === "done") { return run.result || { ok: true }; }
+      if (run.state === "failed") {
+        const failure = new Error(run.error || "剥离失败");
+        failure.checks = (run.result && run.result.checks) || [];
+        throw failure;
+      }
+    }
+    throw new Error("剥离仍在后台进行，请稍后刷新查看结果");
+  }
+
   $("clean-strip").addEventListener("click", () => {
-    if (!window.confirm("剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。继续？")) { return; }
+    if (!window.confirm("剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。\n若有待补详情未补完，会直接拒绝——请先补完再剥离。继续？")) { return; }
     void (async () => {
       if (busy || !authenticated) { return; }
       busy = true; controls();
       try {
-        await api("clean/strip", "POST", {});
+        await stripAndWait({});
         notice("已剥离：数据移到 tmp/clean-<时间戳>/，控制数据逐行保留。");
       } catch (error) {
         const checks = error.checks || [];
@@ -2148,7 +2171,7 @@
         // 后端要求"显式声明"才放行；这里把声明做成第二次确认，而不是一句"请先补完"的死路。
         if (!window.confirm(`${pending.name}${pending.detail ? "（" + pending.detail + "）" : ""}。\n剥离后这些帖子永久无法补全，且不可撤销。\n确认放弃剩余详情并继续剥离？`)) { return; }
         try {
-          await api("clean/strip", "POST", { allow_missing_details: true });
+          await stripAndWait({ allow_missing_details: true });
           notice("已剥离（已放弃剩余待补详情）：控制数据逐行保留。");
         } catch (second) { notice(second.message, true, second.identity_conflicts || [], second.checks || []); }
       } finally {

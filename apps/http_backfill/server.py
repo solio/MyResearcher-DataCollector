@@ -67,6 +67,9 @@ class ConsoleServer(ThreadingHTTPServer):
         # Set while the database file is being replaced: handlers answer 503 instead of touching
         # a connection that is about to be closed.
         self.maintenance = False
+        # 剥离改为后台执行：导出+VACUUM 动辄几十秒，接口同步等待必然撞上控制台 25 秒代理超时。
+        self.strip_run = None
+        self.strip_lock = threading.Lock()
         self.status_ttl = max(1.0, float(os.environ.get("BACKFILL_STATUS_TTL") or 30))
         # Warm the snapshot in the background so even the first caller after a restart does not
         # pay for the aggregation.
@@ -291,7 +294,12 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and action == "state":
             # status_snapshot() is the warmed copy the console already polls; engine.status()
             # recomputes every metric and takes seconds on a big database.
-            return collector_clean.state(data_dir, running=self.server.status_snapshot().get("state") == "running")
+            payload = collector_clean.state(data_dir, running=self.server.status_snapshot().get("state") == "running")
+            run = self.server.strip_run
+            if run:
+                payload["run"] = {k: run.get(k) for k in ("state", "stage", "stamp", "started_at", "finished_at", "error")}
+                payload["run"]["result"] = run.get("result")
+            return payload
         if method != "POST":
             return None
         if action == "strip":
@@ -299,29 +307,18 @@ class Handler(BaseHTTPRequestHandler):
             if status.get("state") == "running" or status.get("inflight"):
                 return {"ok": False, "stage": "running",
                         "checks": [{"name": "采集已暂停", "ok": False, "detail": "先暂停采集并等当前请求结束"}]}
-            # Export first when needed; the strip itself then verifies the record, not a promise.
-            fresh, _ = collector_clean.export_is_current(data_dir)
-            if not fresh:
-                collector_clean.export_all(data_dir)
-            stamp = obj.get("stamp") or time.strftime("%Y%m%d-%H%M%S")
-            self.server.maintenance = True
-            try:
-                time.sleep(0.2)  # let short reads finish before the handle is closed
-                result = collector_clean.strip(data_dir, stamp, exported=True,
-                                           hub_cursor=obj.get("hub_cursor"),
-                                           allow_missing_details=obj.get("allow_missing_details") is True)
-                if result.get("ok"):
-                    try:
-                        self.server.engine.reopen_db()
-                    except Exception as exc:  # noqa: BLE001 - a failed rebind must not strand the swap
-                        collector_clean.rollback(data_dir, stamp)
-                        self.server.engine.reopen_db()
-                        result = {"ok": False, "stage": "paused",
-                                  "checks": [{"name": "重连失败，已回滚原库", "ok": False,
-                                              "detail": f"{type(exc).__name__}: {exc}"}]}
-            finally:
-                self.server.maintenance = False
-            return result
+            with self.server.strip_lock:
+                running = self.server.strip_run or {}
+                if running.get("state") == "running":
+                    return {"ok": True, "started": False, "stage": running.get("stage"),
+                            "stamp": running.get("stamp"), "detail": "已有剥离在跑，继续等待即可"}
+                stamp = obj.get("stamp") or time.strftime("%Y%m%d-%H%M%S")
+                run = {"state": "running", "stage": "queued", "stamp": stamp,
+                       "started_at": time.time(), "finished_at": None, "result": None, "error": None}
+                self.server.strip_run = run
+            threading.Thread(target=self._run_strip, args=(run, data_dir, stamp, obj),
+                             name="strip-worker", daemon=True).start()
+            return {"ok": True, "started": True, "stage": "queued", "stamp": stamp}
         if action == "verify":
             stamp = obj.get("stamp") or collector_clean.state(data_dir).get("stamp", "")
             return collector_clean.verify(data_dir, stamp)
@@ -329,6 +326,41 @@ class Handler(BaseHTTPRequestHandler):
             stamp = obj.get("stamp") or collector_clean.state(data_dir).get("stamp", "")
             return collector_clean.cleanup(data_dir, stamp)
         return None
+
+    def _run_strip(self, run, data_dir, stamp, obj):
+        """导出 → 剥离 → 换库，全程在后台；前端轮询 /api/clean/state 看 stage。"""
+        server = self.server
+        try:
+            fresh, _ = collector_clean.export_is_current(data_dir)
+            if not fresh:
+                run["stage"] = "export"
+                collector_clean.export_all(data_dir)
+            run["stage"] = "strip"
+            server.maintenance = True
+            try:
+                time.sleep(0.2)  # let short reads finish before the handle is closed
+                result = collector_clean.strip(data_dir, stamp, exported=True,
+                                               hub_cursor=obj.get("hub_cursor"),
+                                               allow_missing_details=obj.get("allow_missing_details") is True)
+            finally:
+                server.maintenance = False
+            if result.get("ok"):
+                try:
+                    server.engine.reopen_db()
+                except Exception as exc:  # noqa: BLE001 - a failed rebind must not strand the swap
+                    collector_clean.rollback(data_dir, stamp)
+                    server.engine.reopen_db()
+                    result = {"ok": False, "stage": "paused",
+                              "checks": [{"name": "重连失败，已回滚原库", "ok": False,
+                                          "detail": f"{type(exc).__name__}: {exc}"}]}
+            run.update(state="done" if result.get("ok") else "failed",
+                       stage="done" if result.get("ok") else "failed",
+                       result=result, finished_at=time.time())
+        except Exception as exc:  # noqa: BLE001 - 后台线程不能把异常吞掉不报
+            traceback.print_exc()
+            server.maintenance = False
+            run.update(state="failed", stage="failed", finished_at=time.time(),
+                       error=f"{type(exc).__name__}: {exc}")
 
     def download_node_posts(self, alias, query):
         """Selected-node downloads remain on the hub's authenticated origin."""
@@ -452,7 +484,8 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path).lstrip("/")
         if path == "healthz":
             return self.send(200, {"ok": True})
-        if self.server.maintenance:
+        if self.server.maintenance and path != "api/clean/state":
+            # 进度要能读：否则剥离一开始，轮询自己先被 503 掐断。
             return self.send(503, {"error": "正在切换数据库，请稍后重试"})
         if self.server.api_only and (path == "api/session" or not path.startswith("api/")):
             return self.send(404, {"error": "此节点仅开放 Bearer 鉴权 API"})

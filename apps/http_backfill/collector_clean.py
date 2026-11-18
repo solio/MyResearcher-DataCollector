@@ -401,25 +401,27 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
         new.execute("DELETE FROM meta WHERE key=?", (key,))
     cancelled = new.execute(
         "UPDATE tasks SET status='cancelled' WHERE kind='detail' AND status IN ('pending','inflight')").rowcount
-    # 自增 id 也不能回退：主控把 (实例, 请求ID) 当作不可变键，剥离后 requests.id 从 1 重来，
-    # 同一 id 会带上不同证据，主控判"既有节点原请求证据发生变化"并卡住同步。
-    # 把旧库的 sqlite_sequence 原样搬过去，下一个 id 从旧的最大值继续。
-    try:
-        seq_rows = old.execute("SELECT name, seq FROM sqlite_sequence").fetchall()
-    except sqlite3.Error:
-        seq_rows = []
-    if seq_rows:
-        new.execute("DELETE FROM sqlite_sequence")
-        new.executemany("INSERT INTO sqlite_sequence(name, seq) VALUES(?,?)", seq_rows)
+    # 请求 id 也不能回退：主控把 (实例, 请求ID) 当作不可变键。这些表没有 AUTOINCREMENT，
+    # 清空后 id 必然从 1 重来，所以记下当前最大值，由写入路径取 max(floor, max(id))+1。
+    request_floor = old.execute("SELECT COALESCE(MAX(id),0) FROM requests").fetchone()[0] if "requests" in _tables(old) else 0
+    new.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('requests_id_floor',?)", (str(request_floor),))
     # 记下剥离前的最大序号：新库的 journal 从 1 开始的话，主控游标永远追不上，数据等于白采。
     new.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('journal_seq_hint',?)",
                 (str(before.get("journal_max") or 0),))
     # 阻断证据指向的是已经删掉的帖子，留着只会让探测反复拿它去重试并报错。
     for key in ("block_evidence", "probe", "probe_pending"):
         new.execute("DELETE FROM meta WHERE key=?", (key,))
-    # 台账直接删掉：剥离后数据表是空的，整页行既不能做锚点也会让校验路径 KeyError；
-    # 待执行的任务里已经有页码（tasks.page），由任务队列驱动续采即可。
-    trimmed = new.execute("DELETE FROM frontiers").rowcount
+    # 台账保留行、只丢整页 JSON：整页行随数据表一起被清空，留着会让引擎拿它做锚点时报错；
+    # 但整行删掉会让"控制数据已保留"的校验对不上（0/1 行），所以保留记录、rows 置空。
+    trimmed = 0
+    for row in new.execute("SELECT job, stock, payload FROM frontiers").fetchall():
+        try:
+            payload = json.loads(row[2] or "{}")
+        except ValueError:
+            continue
+        new.execute("UPDATE frontiers SET payload=? WHERE job=? AND stock=?",
+                    (json.dumps({"page": payload.get("page"), "rows": []}), row[0], row[1]))
+        trimmed += 1
     new.commit()
     # The reference for `verify` is the state we deliberately keep, not the pre-cancel one.
     kept_digests = {t: _digest(new, t) for t in CONTROL_TABLES if t in _tables(new)}
@@ -436,7 +438,7 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
     leftover = {t: n for t, n in new_counts.items() if n}
     check("数据表为空", not leftover, str(leftover))
     check("待补详情任务已取消", True, f"cancelled={cancelled}")
-    check("页台账已清空（由任务队列续采）", True, f"{trimmed} 只股票")
+    check("页台账只保留页码", True, f"{trimmed} 只股票")
 
     # Verify first, swap second. Once the file is replaced the running server writes into the
     # moved copy, so a failure here must leave the original untouched.

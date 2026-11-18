@@ -943,7 +943,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
 
     def _frontier(self, job, stock):
         row = self.db.execute("SELECT payload FROM frontiers WHERE job=? AND stock=?", (job, stock)).fetchone()
-        return json.loads(row[0]) if row else None
+        if not row:
+            return None
+        payload = json.loads(row[0])
+        # 剥离后的台账只剩页码；调用方一律按"空列表"处理，免得再出 KeyError/IndexError。
+        payload.setdefault("rows", [])
+        payload.setdefault("anchor_rows", [])
+        return payload
 
     def _save_frontier(self, job, stock, value):
         self.db.execute("INSERT INTO frontiers VALUES(?,?,?) ON CONFLICT(job,stock) DO UPDATE SET payload=excluded.payload", (job, stock, _dump(value)))
@@ -1959,8 +1965,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self._set("next_due", max(now, self._get("next_due", 0)) + config["interval_seconds"])
             interval = max(config["interval_seconds"], (self._config() or config)["interval_seconds"])
             self._set_global("node_next_due", max(now, self._get_global("node_next_due", 0)) + interval)
-            rid = self.db.execute("INSERT INTO requests(job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only,analysis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                                  (task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only), _dump(profile))).lastrowid
+            # 剥离会把数据表清空，requests.id 于是从 1 重来，而主控以 (实例, 请求ID) 为不可变键。
+            # 这里显式指定 id：取 max(表内最大, requests_id_floor) + 1。
+            floor = int(self._get_global("requests_id_floor") or 0)
+            current = self.db.execute("SELECT COALESCE(MAX(id),0) FROM requests").fetchone()[0]
+            rid = max(floor, current) + 1
+            self.db.execute("INSERT INTO requests(id,job,task,kind,stock,page,post_id,url,started,probe,purpose,probe_only,analysis) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (rid, task["job"], task["id"], task["kind"], task["stock"], task["page"], task["post_id"], task["url"], now, int(probe), task["purpose"], int(probe_only), _dump(profile)))
             if barrier:
                 barrier["manual_probe"].update(state="dispatched", request_id=rid, dispatched=now)
                 self._set_global("node_source_auth_barrier", barrier)
