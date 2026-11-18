@@ -544,6 +544,31 @@ def leftovers(root):
     return [p for p in sorted((Path(root) / "tmp").glob("clean-*")) if (p / "marker.json").is_file()]
 
 
+
+# 事件里 2/3 是流水（每抓一页/一帖记一条），留着的价值只有事后回溯几分钟；
+# 真正要长期留的是阻断、校准、剥离这类低频证据。清理时按这个界限裁剪。
+ROUTINE_EVENT_KINDS = ("detail_acquired", "list_acquired", "next_page_check_started",
+                       "next_page_joined", "next_page_rollback", "page_progress")
+EVENT_KEEP_DAYS = 7
+
+
+def prune_events(root, keep_days=EVENT_KEEP_DAYS):
+    """Delete only the routine events older than the window; everything else stays."""
+    db_path = Path(root) / "collector.db"
+    if not db_path.is_file():
+        return {"deleted": 0, "kept": 0}
+    cutoff = time.time() - keep_days * 86400
+    marks = ",".join("?" * len(ROUTINE_EVENT_KINDS))
+    with _connect(db_path) as db:
+        total = db.execute("SELECT count(*) FROM events").fetchone()[0]
+        deleted = db.execute(
+            f"DELETE FROM events WHERE created < ? AND kind IN ({marks})",
+            (cutoff, *ROUTINE_EVENT_KINDS)).rowcount
+        kept = db.execute("SELECT count(*) FROM events").fetchone()[0]
+        db.commit()
+    return {"deleted": max(0, deleted), "kept": kept, "before": total, "keep_days": keep_days}
+
+
 def cleanup(root, stamp=""):
     """Delete this run's copy, or every leftover copy when no run is active."""
     root = Path(root)
@@ -568,8 +593,12 @@ def cleanup(root, stamp=""):
             shutil.rmtree(path)
             removed.append(path.name)
         (root / "clean-current.json").unlink(missing_ok=True)
-        return {"ok": True, "checks": [{"name": "已清理遗留副本", "ok": not leftovers(root),
-                                        "detail": ", ".join(removed)}], "stage": "paused"}
+        pruned = prune_events(root)
+        return {"ok": True, "checks": [
+            {"name": "已清理遗留副本", "ok": not leftovers(root), "detail": ", ".join(removed)},
+            {"name": "常规事件已裁剪（保留最近 %d 天）" % pruned.get("keep_days", EVENT_KEEP_DAYS), "ok": True,
+             "detail": "删除 %d 条流水，保留 %d 条（阻断/校准/剥离记录不受影响）" % (pruned["deleted"], pruned["kept"])},
+        ], "stage": "paused"}
     root = Path(root)
     tmp = root / "tmp" / ("clean-" + stamp)
     marker_path = tmp / "marker.json"
@@ -592,6 +621,10 @@ def cleanup(root, stamp=""):
     shutil.rmtree(tmp)
     (root / "clean-current.json").unlink(missing_ok=True)
     checks.append({"name": "已删除", "ok": not tmp.exists(), "detail": str(tmp)})
+    pruned = prune_events(root)
+    checks.append({"name": "常规事件已裁剪（保留最近 %d 天）" % pruned.get("keep_days", EVENT_KEEP_DAYS),
+                   "ok": True,
+                   "detail": "删除 %d 条流水，保留 %d 条（阻断/校准/剥离记录不受影响）" % (pruned["deleted"], pruned["kept"])})
     return {"ok": True, "checks": checks, "stage": "cleaned"}
 
 
