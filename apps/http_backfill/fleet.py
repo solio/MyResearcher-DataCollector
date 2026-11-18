@@ -38,10 +38,13 @@ MAX_DOWNLOAD_FIELD = 64 * 1024 * 1024
 
 
 class FleetError(RuntimeError):
-    def __init__(self, status_code, error, ambiguous=False, conflicts=None):
+    def __init__(self, status_code, error, ambiguous=False, conflicts=None, checks=None):
         super().__init__(error)
         self.status_code, self.error, self.ambiguous = status_code, error, bool(ambiguous)
         self.conflicts = conflicts if isinstance(conflicts, list) else []
+        # 节点拒绝剥离时把 check 明细放在 body 里；不转发就只剩一句「HTTP 409」，
+        # 控制台上看起来像点了没反应。
+        self.checks = checks if isinstance(checks, list) else []
 
 
 @dataclass
@@ -181,7 +184,8 @@ class NodeClient:
                     # here could publish a credential prefix at the cut point.
                     raise FleetError(status, str(message or f"节点返回 HTTP {response.status}"),
                                      method != "GET" and response.status >= 500,
-                                     payload.get("identity_conflicts") if isinstance(payload, dict) else None)
+                                     payload.get("identity_conflicts") if isinstance(payload, dict) else None,
+                                     payload.get("checks") if isinstance(payload, dict) else None)
                 return payload
         except FleetError:
             raise
@@ -494,7 +498,8 @@ class FleetManager:
             if exc.status_code in {502, 504}:
                 error += "；" + self._connection_hint(node)
             raise FleetError(exc.status_code, self._redact(error, (node["token"],))[:2000], exc.ambiguous,
-                             self._redact(exc.conflicts, (node["token"],))) from None
+                             self._redact(exc.conflicts, (node["token"],)),
+                             self._redact(exc.checks, (node["token"],))) from None
         except Exception:
             raise FleetError(502, self._redact("节点请求失败；" + self._connection_hint(node), (node["token"],)), method != "GET") from None
 

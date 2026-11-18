@@ -273,7 +273,10 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             self.send(200, result)
         except FleetError as exc:
-            self.send(exc.status_code, {**_error_payload(exc), "error": exc.error, "ambiguous": exc.ambiguous})
+            body = {**_error_payload(exc), "error": exc.error, "ambiguous": exc.ambiguous}
+            if getattr(exc, "checks", None):
+                body["checks"] = exc.checks
+            self.send(exc.status_code, body)
         except ValueError as exc:
             self.send(400, _error_payload(exc))
         except RuntimeError as exc:
