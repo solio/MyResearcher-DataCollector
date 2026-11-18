@@ -569,6 +569,30 @@ def prune_events(root, keep_days=EVENT_KEEP_DAYS):
     return {"deleted": max(0, deleted), "kept": kept, "before": total, "keep_days": keep_days}
 
 
+
+def reconcile_detail_state(root, dry_run=True):
+    """Fix posts stuck at pending although nothing will ever fetch them.
+
+    老版本的关闭路径只改任务、不改帖子状态，于是“任务 done、帖子 pending”永远存在，
+    界面和剥离校验都被这个假数字骗。只在清理时跑，不在请求路径上。
+    """
+    db_path = Path(root) / "collector.db"
+    if not db_path.is_file():
+        return {"changed": 0, "complete": 0, "out_of_scope": 0, "dry_run": dry_run}
+    with _connect(db_path) as db:
+        rows = db.execute(
+            "SELECT s.post_id, "
+            "CASE WHEN length(coalesce(json_extract(s.item,'$.content'),''))>0 THEN 'complete' ELSE 'out_of_scope' END "
+            "FROM http_post_state s WHERE s.status='pending' AND NOT EXISTS ("
+            "  SELECT 1 FROM tasks t WHERE t.post_id=s.post_id AND t.kind='detail' AND t.status IN ('pending','inflight'))"
+        ).fetchall()
+        done = sum(1 for _, fixed in rows if fixed == "complete")
+        if rows and not dry_run:
+            db.executemany("UPDATE http_post_state SET status=? WHERE post_id=?", [(f, p) for p, f in rows])
+            db.commit()
+    return {"changed": len(rows), "complete": done, "out_of_scope": len(rows) - done, "dry_run": dry_run}
+
+
 def cleanup(root, stamp=""):
     """Delete this run's copy, or every leftover copy when no run is active."""
     root = Path(root)
@@ -594,8 +618,11 @@ def cleanup(root, stamp=""):
             removed.append(path.name)
         (root / "clean-current.json").unlink(missing_ok=True)
         pruned = prune_events(root)
+        fixed = reconcile_detail_state(root, dry_run=False)
         return {"ok": True, "checks": [
             {"name": "已清理遗留副本", "ok": not leftovers(root), "detail": ", ".join(removed)},
+            {"name": "待补状态已对账", "ok": True,
+             "detail": "修正 %d 条（已有正文 %d / 判定不适用 %d）" % (fixed["changed"], fixed["complete"], fixed["out_of_scope"])},
             {"name": "常规事件已裁剪（保留最近 %d 天）" % pruned.get("keep_days", EVENT_KEEP_DAYS), "ok": True,
              "detail": "删除 %d 条流水，保留 %d 条（阻断/校准/剥离记录不受影响）" % (pruned["deleted"], pruned["kept"])},
         ], "stage": "paused"}

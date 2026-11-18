@@ -2223,7 +2223,13 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 else:
                     scope = self._accept_detail(rid, task, html, probe_only=probe_only)
                     if scope:
-                        self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+                        # 判定“不该采”和关闭任务必须同时发生：只关任务、不改帖子状态，
+                        # 帖子会永远停在 pending，界面和剥离校验都以为它还没补完。
+                        with self.db:
+                            self.db.execute(
+                                "UPDATE http_post_state SET status='out_of_scope',detail_request=? WHERE post_id=?",
+                                (rid, task["post_id"]))
+                            self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
                         self._outcome(rid, "detail_out_of_scope", detail_scope_message(scope),
                                       evidence | {"detail_skip": scope})
                         self._after_success(rid, probe)
@@ -2365,7 +2371,11 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         streak = int(self._get("detail_content_errors") or 0) + 1
         self._set("detail_content_errors", streak)
         self._outcome(rid, "detail_content_error", str(message), evidence or {})
-        self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
+        # 同理：这条详情不会再重试，帖子状态必须一起落，否则永远是“待补”。
+        with self.db:
+            self.db.execute("UPDATE http_post_state SET status='out_of_scope',detail_request=? WHERE post_id=?",
+                            (rid, task["post_id"]))
+            self.db.execute("UPDATE tasks SET status='done' WHERE id=?", (task["id"],))
         self._event("detail_content_error", f"{task['stock']} 详情内容不可用，已跳过该帖（连续 {streak} 条）",
                     {"request_id": rid, "post_id": task["post_id"], "error": str(message)})
         if streak >= DETAIL_CONTENT_ERROR_LIMIT:
