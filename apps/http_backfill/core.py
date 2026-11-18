@@ -2051,6 +2051,11 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
         frontier = self._frontier(task["job"], task["stock"])
         if not frontier:
             return task
+        if not frontier.get("rows"):
+            # 剥离后的台账只保留页码（行数据随数据表一起清掉了）。校准要靠整页行做锚点，
+            # 这里没有锚点可用，就从该页直接续采，不要启动校准——否则 worker 会抛
+            # ValueError 然后被 pause，看起来像"采集无法继续"。
+            return task
         previous_request = self.db.execute("SELECT finished FROM requests WHERE id=?", (frontier.get("request_id"),)).fetchone()
         finished = (previous_request[0] or 0) if previous_request else 0
         checked = max(frontier.get("checked_at", 0), finished)
