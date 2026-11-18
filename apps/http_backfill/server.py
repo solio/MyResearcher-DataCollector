@@ -18,6 +18,7 @@ import signal
 import sqlite3
 import sys
 import threading
+import traceback
 import time
 import tempfile
 from datetime import datetime, timezone
@@ -690,8 +691,15 @@ def main():
             try:
                 engine.tick()
             except Exception as exc:
+                # 只打类型名等于没说：线上看到的就是一句 "unexpected ValueError"，
+                # 而 pause() 又把原因写成"人工暂停"，把代码错误伪装成人工操作。
+                traceback.print_exc()
+                print(f"Worker paused after unexpected {type(exc).__name__}: {exc}", flush=True)
                 engine.pause()
-                print(f"Worker paused after unexpected {type(exc).__name__}", flush=True)
+                try:
+                    engine._set("reason", f"内部错误已暂停：{type(exc).__name__}: {exc}"[:200])
+                except Exception:  # noqa: BLE001 - 诊断写失败不能再掩盖原始错误
+                    pass
             stopped.wait(engine.worker_wait_seconds())
 
     thread = threading.Thread(target=worker, name="http-backfill-worker", daemon=True)
