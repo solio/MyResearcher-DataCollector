@@ -407,18 +407,9 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
     # 阻断证据指向的是已经删掉的帖子，留着只会让探测反复拿它去重试并报错。
     for key in ("block_evidence", "probe", "probe_pending"):
         new.execute("DELETE FROM meta WHERE key=?", (key,))
-    # 保留页号、丢掉整页帖子 JSON：那些行连同 http_post_state 一起被清空了，留着只会让引擎
-    # 为一个查不到来源的帖子排详情，报“详情缺少已获取的列表来源”。
-    trimmed = 0
-    for row in new.execute("SELECT job, stock, payload FROM frontiers").fetchall():
-        try:
-            payload = json.loads(row[2] or "{}")
-        except ValueError:
-            continue
-        if payload.get("rows"):
-            new.execute("UPDATE frontiers SET payload=? WHERE job=? AND stock=?",
-                        (json.dumps({"page": payload.get("page")}), row[0], row[1]))
-            trimmed += 1
+    # 台账直接删掉：剥离后数据表是空的，整页行既不能做锚点也会让校验路径 KeyError；
+    # 待执行的任务里已经有页码（tasks.page），由任务队列驱动续采即可。
+    trimmed = new.execute("DELETE FROM frontiers").rowcount
     new.commit()
     # The reference for `verify` is the state we deliberately keep, not the pre-cancel one.
     kept_digests = {t: _digest(new, t) for t in CONTROL_TABLES if t in _tables(new)}
@@ -435,7 +426,7 @@ def _strip_impl(root, stamp, exported=None, hub_cursor=None, allow_missing_detai
     leftover = {t: n for t, n in new_counts.items() if n}
     check("数据表为空", not leftover, str(leftover))
     check("待补详情任务已取消", True, f"cancelled={cancelled}")
-    check("页缓存已清空（仅保留页码）", True, f"{trimmed} 只股票")
+    check("页台账已清空（由任务队列续采）", True, f"{trimmed} 只股票")
 
     # Verify first, swap second. Once the file is replaced the running server writes into the
     # moved copy, so a failure here must leave the original untouched.
