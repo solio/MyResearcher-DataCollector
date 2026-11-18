@@ -226,11 +226,44 @@
     const runtime = runtimeFor(data, request.stock, request.job);
     return runtimeConflictRetry(runtime) && runtime.block_evidence?.id != null && String(runtime.block_evidence.id) === String(request.id) ? runtime : null;
   }
-  function notice(message, error = false, conflicts = []) {
-    $("notice").hidden = !message;
-    $("notice").classList.toggle("error", error);
-    $("notice").textContent = message || "";
-    if (conflicts.length) appendConflictFacts($("notice"), conflicts);
+  // 统一反馈：任何按钮的失败原因都走这里，能列 check 就列 check，不再只给一行话。
+  function notice(message, error = false, conflicts = [], checks = []) {
+    const box = $("notice");
+    box.hidden = !message && !checks.length;
+    box.classList.toggle("error", error);
+    box.textContent = message || "";
+    if (checks.length) {
+      const list = document.createElement("ul");
+      list.className = "check-report";
+      for (const check of checks) {
+        const item = document.createElement("li");
+        item.className = check.ok ? "ok" : "bad";
+        item.textContent = `${check.ok ? "✓" : "✗"} ${textValue(check.name)}${check.detail ? `：${textValue(check.detail)}` : ""}`;
+        list.append(item);
+      }
+      box.append(list);
+    }
+    if (conflicts.length) appendConflictFacts(box, conflicts);
+  }
+
+  // 所有会改状态的按钮都走这一个入口：统一 busy、统一展示原因、统一刷新。
+  async function runAction(path, payload, message, options = {}) {
+    if (busy || !authenticated) { return false; }
+    busy = true; controls();
+    try {
+      const result = await api(path, options.method || "POST", payload);
+      if (authenticated) { notice(message); }
+      return result !== false;
+    } catch (error) {
+      if (authenticated) { notice(error.message, true, error.identity_conflicts || [], error.checks || []); }
+      return false;
+    } finally {
+      busy = false; controls();
+      if (authenticated) {
+        if (options.refreshClean) { await refreshCleanState(); }
+        await refreshFleet();
+      }
+    }
   }
   function authMessage(message, error = false) {
     display("auth-message", message);
@@ -524,7 +557,7 @@
       if (authenticated) { notice(message); return true; }
     } catch (error) {
       const safeError = submittedToken ? error.message.split(submittedToken).join("[已隐藏密钥]") : error.message;
-      if (authenticated) { notice(safeError, true); if ($("node-dialog").open) { $("node-form-error").hidden = false; display("node-form-error", safeError); } }
+      if (authenticated) { notice(safeError, true, error.identity_conflicts || [], error.checks || []); if ($("node-dialog").open) { $("node-form-error").hidden = false; display("node-form-error", safeError); } }
     } finally { $("node-token").value = ""; busy = false; controls(); if (authenticated) await refreshFleet(); }
     return false;
   }
@@ -2108,15 +2141,16 @@
         await api("clean/strip", "POST", {});
         notice("已剥离：数据移到 tmp/clean-<时间戳>/，控制数据逐行保留。");
       } catch (error) {
-        const pending = (error.checks || []).find((check) => !check.ok && /待补详情/.test(check.name));
-        if (error.status !== 409 || !pending) { notice(error.message, true); return; }
+        const checks = error.checks || [];
+        const pending = checks.find((check) => !check.ok && /待补详情/.test(check.name));
+        if (error.status !== 409 || !pending) { notice(error.message, true, error.identity_conflicts || [], checks); return; }
         // 剥离会取消待补详情任务，而库里连列表行都不剩，那批帖子就永远补不上了。
         // 后端要求"显式声明"才放行；这里把声明做成第二次确认，而不是一句"请先补完"的死路。
-        if (!window.confirm(`${pending.name}。\n剥离后这些帖子永久无法补全，且不可撤销。\n确认放弃剩余详情并继续剥离？`)) { return; }
+        if (!window.confirm(`${pending.name}${pending.detail ? "（" + pending.detail + "）" : ""}。\n剥离后这些帖子永久无法补全，且不可撤销。\n确认放弃剩余详情并继续剥离？`)) { return; }
         try {
           await api("clean/strip", "POST", { allow_missing_details: true });
           notice("已剥离（已放弃剩余待补详情）：控制数据逐行保留。");
-        } catch (second) { notice(second.message, true); }
+        } catch (second) { notice(second.message, true, second.identity_conflicts || [], second.checks || []); }
       } finally {
         busy = false; controls();
         await refreshCleanState();
@@ -2125,17 +2159,11 @@
     })();
   });
   $("clean-verify").addEventListener("click", () => {
-    void (async () => {
-      const done = await fleetMutation("clean/verify", {}, "POST", "校验通过：控制表逐行一致、数据表为空。");
-      if (done) { await refreshCleanState(); }
-    })();
+    void runAction("clean/verify", {}, "校验通过：控制表逐行一致、数据表为空。", { refreshClean: true });
   });
   $("clean-cleanup").addEventListener("click", () => {
     if (!window.confirm("清理会删除剥离副本与一致性快照，且不可恢复。确认继续？")) { return; }
-    void (async () => {
-      const done = await fleetMutation("clean/cleanup", {}, "POST", "已删除清理副本。");
-      if (done) { await refreshCleanState(); }
-    })();
+    void runAction("clean/cleanup", {}, "已删除清理副本。", { refreshClean: true });
   });
   async function refreshStripState() {
     if (!authenticated) { stripState = null; return; }

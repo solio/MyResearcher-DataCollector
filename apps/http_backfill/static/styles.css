@@ -53,3 +53,12 @@
 .window-facts{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:2px 16px;margin:6px 0 2px}
 .window-facts .field-note,.window-facts .coverage-range{margin-top:0;font-size:10px;line-height:1.7;color:var(--muted)}
 @media(max-width:720px){.window-facts{grid-template-columns:1fr;gap:2px}}
+
+.check-report {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.check-report li.ok { color: #2e7d32; }
+.check-report li.bad { color: #c62828; }
