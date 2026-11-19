@@ -307,6 +307,13 @@ class Handler(BaseHTTPRequestHandler):
             if status.get("state") == "running" or status.get("inflight"):
                 return {"ok": False, "stage": "running",
                         "checks": [{"name": "采集已暂停", "ok": False, "detail": "先暂停采集并等当前请求结束"}]}
+            # 先把"任务已结束、帖子还挂着待补"的历史遗留清掉，否则门槛永远过不去。
+            try:
+                fixed = collector_clean.reconcile_detail_state(data_dir, dry_run=False)
+                if fixed.get("changed"):
+                    print(f"strip preflight: 对账修正 {fixed['changed']} 条待补状态", flush=True)
+            except Exception as exc:  # noqa: BLE001 - 对账失败不该阻止剥离本身
+                print(f"strip preflight 对账失败: {exc}", flush=True)
             with self.server.strip_lock:
                 running = self.server.strip_run or {}
                 if running.get("state") == "running":
@@ -735,6 +742,19 @@ def main():
                     pass
             stopped.wait(engine.worker_wait_seconds())
 
+    def reconcile_once():
+        # 一次性的状态对账：老版本有"任务 done、帖子仍 pending"的写入漏项，
+        # 不清掉会让界面和剥离门槛一直显示还有待补。
+        try:
+            import collector_clean
+            fixed = collector_clean.reconcile_detail_state(args.data_dir, dry_run=False)
+            if fixed.get("changed"):
+                print(f"启动对账：修正 {fixed['changed']} 条待补状态"
+                      f"（已有正文 {fixed['complete']} / 判定不适用 {fixed['out_of_scope']}）", flush=True)
+        except Exception as exc:  # noqa: BLE001 - 启动对账失败不能拦住服务
+            print(f"启动对账失败: {exc}", flush=True)
+
+    threading.Thread(target=reconcile_once, name="detail-reconcile", daemon=True).start()
     thread = threading.Thread(target=worker, name="http-backfill-worker", daemon=True)
     thread.start()
 
