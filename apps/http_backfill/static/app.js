@@ -1062,6 +1062,7 @@
     const cleanStage = cleanState && cleanState.stage;
     $("clean-strip").disabled = busy || !authenticated || cleanStage !== "paused";
     $("clean-verify").disabled = busy || !authenticated || cleanStage !== "detached";
+    $("clean-reproject").disabled = busy || !authenticated;
     $("clean-cleanup").disabled = busy || !authenticated
       || (cleanStage !== "verified" && cleanStage !== "leftovers");
     display("clean-strip", "数据剥离");
@@ -2180,6 +2181,9 @@
         if (authenticated) { await refreshFleet(); }
       }
     })();
+  });
+  $("clean-reproject").addEventListener("click", () => {
+    void runAction("storage/reproject", {}, "重投影完成。", { refreshClean: true });
   });
   $("clean-verify").addEventListener("click", () => {
     void runAction("clean/verify", {}, "校验通过：控制表逐行一致、数据表为空。", { refreshClean: true });

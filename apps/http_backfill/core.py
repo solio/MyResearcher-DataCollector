@@ -701,6 +701,17 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 summary = self.compatible_store.sync(self, request_id)
             except Exception as exc:
                 message = f"{type(exc).__name__}: {exc}"
+                if "来源响应" in message:
+                    # 典型成因：库里 posts 还在、requests 被清空（部分剥离或导入过），
+                    # 投影找不到来源响应。把数量报出来，操作者才知道该重导入还是重投影。
+                    try:
+                        no_req = self.db.execute("SELECT count(*) FROM requests").fetchone()[0]
+                        orphan = self.db.execute(
+                            "SELECT count(*) FROM posts p WHERE NOT EXISTS "
+                            "(SELECT 1 FROM associations a WHERE a.post_id=p.source_item_id)").fetchone()[0]
+                        message += f"（requests {no_req} 条；无归属帖子 {orphan} 条）"
+                    except Exception:  # noqa: BLE001 - 诊断信息取不到不能覆盖原始错误
+                        pass
                 with self.db:
                     self._suspend_proxy_recovery()
                     halt = previous or {"previous_state": self._get("state"), "previous_reason": self._get("reason")}

@@ -384,7 +384,9 @@ def run(root, action, stamp="", confirmed=False):
     current = state(root)
     # "strip" accepts both entry points: a fresh pause, or an export the operator already ran
     # by hand. Refusing the second one left the UI with a grey button and no way forward.
-    expected = {"export": "paused", "detach": "exported", "strip": "paused",
+    # detach 与 strip 等价：都从 paused 出发；"exported" 这个阶段 state() 从不产出，
+    # 原来写成 "exported" 等于把 detach 变成永远走不通的分支。
+    expected = {"export": "paused", "detach": "paused", "strip": "paused",
                 "verify": "detached", "cleanup": "verified"}
     if action not in expected:
         return {"ok": False, "stage": current["stage"], "error": "未知动作"}
@@ -392,7 +394,7 @@ def run(root, action, stamp="", confirmed=False):
     if current["stage"] not in allowed:
         return {"ok": False, "stage": current["stage"],
                 "error": "当前阶段是 %s，%s 需要先完成 %s" % (current["stage"], action, " 或 ".join(allowed))}
-    if action == "strip":
+    if action in ("strip", "detach"):
         # "剥离数据" only moves what is already exported; exporting is the operator's own step.
         args = argparse.Namespace(data=str(root), stamp=stamp, export="", offline_path="",
                                   confirmed=bool(confirmed))

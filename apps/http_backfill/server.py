@@ -608,6 +608,19 @@ class Handler(BaseHTTPRequestHandler):
                 if set(obj) - {"page", "job_id"}:
                     raise ValueError("设置起始页只接受 page 和可选 job_id")
                 return self.send(200, self.server.engine.set_start_page(path.split("/")[2], obj.get("page"), job=obj.get("job_id")))
+            elif path == "api/storage/reproject":
+                # do_POST 里只有 POST，无需再判方法。
+                # 唯一的手工修复入口：把已提交的行重新投影到兼容库，成功即清掉 storage_halt。
+                done = self.server.engine._sync_storage()
+                storage = (self.server.status_snapshot().get("data_storage") or {})
+                payload = {"ok": bool(done), "status": storage.get("status"),
+                           "processed": storage.get("processed"), "projected": storage.get("projected"),
+                           "last_error": storage.get("last_error")}
+                if not done:
+                    payload["checks"] = [{"name": "重投影", "ok": False,
+                                          "detail": storage.get("last_error") or "投影失败"}]
+                self.send(200 if done else 409, payload)
+                return True
             elif path == "api/control":
                 if set(obj) - {"action"}:
                     raise ValueError("节点批量控制只接受 action；逐股控制请使用股票接口")
