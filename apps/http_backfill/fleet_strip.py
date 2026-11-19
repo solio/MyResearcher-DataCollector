@@ -139,9 +139,20 @@ def cmd_export(args):
 
 
 def _latest_export(root):
+    """Newest *fleet* export record.
+
+    采集侧剥离也把记录写在 tmp/export-<stamp>/export.json，字段完全不同（没有 ledger_counts）。
+    以前直接取最新的一个，于是点合并剥离时拿到的是采集侧的记录，校验"导出本身"必然不过。
+    """
     base = root / "tmp"
-    candidates = sorted(base.glob("export-*/export.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
+    for path in sorted(base.glob("export-*/export.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and "ledger_counts" in record:
+            return path
+    return None
 
 
 def cmd_detach(args):
