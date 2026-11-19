@@ -256,6 +256,13 @@ class Handler(BaseHTTPRequestHandler):
                     if not result.get("ok"):
                         self.send(409, result)
                         return True
+                    # 摘要是启动时缓存的一份，剥离/清理把台账和汇总库都搬走了，不刷新就会一直显示旧数字。
+                    try:
+                        manager = getattr(self.server, "fleet", None)
+                        if manager is not None:
+                            manager._merge_summary = manager.merge_store.status()
+                    except Exception as exc:  # noqa: BLE001 - 刷新失败不该把已完成的剥离判成失败
+                        print(f"刷新合并摘要失败: {exc}", flush=True)
                 else:
                     self.send(404, {"error": "接口不存在"})
                     return True
