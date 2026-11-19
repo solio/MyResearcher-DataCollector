@@ -608,6 +608,16 @@ class Handler(BaseHTTPRequestHandler):
                 if set(obj) - {"page", "job_id"}:
                     raise ValueError("设置起始页只接受 page 和可选 job_id")
                 return self.send(200, self.server.engine.set_start_page(path.split("/")[2], obj.get("page"), job=obj.get("job_id")))
+            elif path == "api/jobs/finish":
+                # 结束当前任务：只允许在没有在途请求时收尾，避免把半条数据判成已完成。
+                if self.server.engine._inflight:
+                    self.send(409, {"error": "当前有请求在途，等它落库后再结束任务",
+                                    "checks": [{"name": "没有在途请求", "ok": False}]})
+                    return True
+                self.server.engine._finish_job()
+                st = self.server.status_snapshot()
+                self.send(200, {"ok": True, "state": st.get("state"), "reason": st.get("reason")})
+                return True
             elif path == "api/storage/reproject":
                 # do_POST 里只有 POST，无需再判方法。
                 # 唯一的手工修复入口：把已提交的行重新投影到兼容库，成功即清掉 storage_halt。
