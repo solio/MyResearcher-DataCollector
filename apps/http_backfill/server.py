@@ -765,12 +765,23 @@ def main():
                 # 而 pause() 又把原因写成"人工暂停"，把代码错误伪装成人工操作。
                 traceback.print_exc()
                 print(f"Worker paused after unexpected {type(exc).__name__}: {exc}", flush=True)
-                engine.pause()
+                # 2026-11-22: pause() and _set() write to the same database that just failed.
+                # Under a long writer (strip) they raised "database is locked" *inside* the
+                # handler, which killed the thread -- state stayed "running" while nothing
+                # issued requests. A failed recovery must never be able to kill the loop.
                 try:
+                    engine.pause()
                     engine._set("reason", f"内部错误已暂停：{type(exc).__name__}: {exc}"[:200])
-                except Exception:  # noqa: BLE001 - 诊断写失败不能再掩盖原始错误
-                    pass
-            stopped.wait(engine.worker_wait_seconds())
+                except Exception as pause_exc:  # noqa: BLE001 - 补救失败只记录
+                    print(f"Worker could not pause cleanly: {type(pause_exc).__name__}: {pause_exc}",
+                          flush=True)
+            try:
+                wait = engine.worker_wait_seconds()
+            except Exception as wait_exc:  # noqa: BLE001 - 这行在 try 之外，抛了就没人发请求了
+                traceback.print_exc()
+                print(f"Worker wait failed: {type(wait_exc).__name__}: {wait_exc}", flush=True)
+                wait = 0.5
+            stopped.wait(wait)
 
     def reconcile_once():
         # 一次性的状态对账：老版本有"任务 done、帖子仍 pending"的写入漏项，

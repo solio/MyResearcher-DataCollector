@@ -407,6 +407,10 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
             self._transport_with_referer = True
         self.db = sqlite3.connect(db_path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        # 2026-11-22: a strip copies the whole database for ~1-2 minutes. Without this the
+        # engine's next write fails instantly with "database is locked" (the worker then died
+        # inside its own error handler, see server.worker).
+        self.db.execute("PRAGMA busy_timeout=10000")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         with self.db:
@@ -3301,6 +3305,7 @@ class Engine(StockRuntimeMixin, LifecycleMixin, WindowSeekMixin):
                 pass
             self.db = sqlite3.connect(self.db_path, check_same_thread=False)
             self.db.row_factory = sqlite3.Row
+            self.db.execute("PRAGMA busy_timeout=10000")
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             with self.db:

@@ -592,14 +592,22 @@ class StockRuntimeMixin:
 
     def _publish_stock_summary(self):
         summary = self._stock_summary()
-        def write():
-            for key in ("state", "reason", "active_halt", "block_evidence"):
-                self._set_global(key, summary[key])
-            self._set_global("probe", summary["probe_pending"])
-            self._set_global("next_due", summary["next_request_epoch"])
-        if self.db.in_transaction:
-            write()
-        else:
-            with self.db:
+        # 2026-11-22: tick() calls this on every pass -- including an idle node whose job is
+        # already completed (no due scope -> publish, return). Writing all six keys every time
+        # meant a finished node still issued ~12 meta writes/s; when a strip held the database
+        # for its 7.8 GB copy, the next write died with "database is locked" and took the worker
+        # thread with it. Only write what actually changed: reads never take the write lock.
+        values = {"state": summary["state"], "reason": summary["reason"],
+                  "active_halt": summary["active_halt"], "block_evidence": summary["block_evidence"],
+                  "probe": summary["probe_pending"], "next_due": summary["next_request_epoch"]}
+        changed = {key: value for key, value in values.items() if self._get_global(key) != value}
+        if changed:
+            def write():
+                for key, value in changed.items():
+                    self._set_global(key, value)
+            if self.db.in_transaction:
                 write()
+            else:
+                with self.db:
+                    write()
         return summary
