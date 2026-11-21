@@ -57,7 +57,14 @@ def init_export_schema(engine):
       """CREATE TRIGGER IF NOT EXISTS export_journal_no_update BEFORE UPDATE ON export_journal
         BEGIN SELECT RAISE(ABORT,'immutable export journal'); END""",
       """CREATE TRIGGER IF NOT EXISTS export_journal_no_delete BEFORE DELETE ON export_journal
-        BEGIN SELECT RAISE(ABORT,'immutable export journal'); END"""):
+        BEGIN SELECT RAISE(ABORT,'immutable export journal'); END""",
+      # 2026-11-21: export_all picks the latest version per post with
+      #   WHERE seq = (SELECT MAX(seq) FROM export_journal WHERE post_id = e.post_id)
+      # Without this index that is one full scan per row -- 550k rows on the sg node
+      # turned into an O(n^2) loop that never returned (100% CPU, zero IO, the strip
+      # request hung and the console looked dead). With (post_id, seq) the same query
+      # runs in 0.4 s.
+      """CREATE INDEX IF NOT EXISTS export_journal_post_seq ON export_journal(post_id, seq)"""):
         engine.db.execute(statement)
 
 
