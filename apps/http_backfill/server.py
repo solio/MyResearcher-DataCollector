@@ -330,9 +330,17 @@ class Handler(BaseHTTPRequestHandler):
                 run = {"state": "running", "stage": "queued", "stamp": stamp,
                        "started_at": time.time(), "finished_at": None, "result": None, "error": None}
                 self.server.strip_run = run
-            threading.Thread(target=self._run_strip, args=(run, data_dir, stamp, obj),
-                             name="strip-worker", daemon=True).start()
-            return {"ok": True, "started": True, "stage": "queued", "stamp": stamp}
+            worker = threading.Thread(target=self._run_strip, args=(run, data_dir, stamp, obj),
+                                      name="strip-worker", daemon=True)
+            worker.start()
+            # 拒绝路径（待补未清、采集在跑等）都在前 1 秒内定论；同步等一小段，
+            # 让"不允许剥离"直接以 409+checks 返回，前端才有东西可显示。
+            worker.join(timeout=5)
+            if run.get("state") in ("failed", "done"):
+                result = dict(run.get("result") or {})
+                result.update({"started": run.get("state") == "done", "stamp": stamp})
+                return result
+            return {"ok": True, "started": True, "stage": run.get("stage") or "queued", "stamp": stamp}
         if action == "verify":
             stamp = obj.get("stamp") or collector_clean.state(data_dir).get("stamp", "")
             return collector_clean.verify(data_dir, stamp)
