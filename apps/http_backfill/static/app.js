@@ -229,6 +229,9 @@
   // 统一反馈：任何按钮的失败原因都走这里，能列 check 就列 check，不再只给一行话。
   function notice(message, error = false, conflicts = [], checks = []) {
     const box = $("notice");
+    // 空白消息不清除上一次的错误：失败原因必须留在界面上，直到下一次操作。
+    if (!message && !checks.length && box.dataset.sticky === "true") { return; }
+    box.dataset.sticky = error || checks.length ? "true" : "false";
     box.hidden = !message && !checks.length;
     box.classList.toggle("error", error);
     box.textContent = message || "";
@@ -2136,14 +2139,16 @@
   // 剥离在后台跑（导出+VACUUM 可能几分钟），这里只负责等它并回报进度，
   // 否则同步接口会撞上 25 秒代理超时，看起来就是"点了没反应"。
   async function stripAndWait(payload) {
-    const started = await api("clean/strip", "POST", payload);
+    // 固定住点击时的节点：轮询不能跟着 selectedNode 变，否则会去读另一台的状态。
+    const node = selectedNode;
+    const started = await api("clean/strip", "POST", payload, node);
     if (!started || started.started === false) { return started; }
     const deadline = Date.now() + 20 * 60 * 1000;
     notice(`剥离已开始（${started.stamp}），正在导出…`);
     while (Date.now() < deadline) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       let state = null;
-      try { state = await api("clean/state"); } catch (_) { continue; }
+      try { state = await api("clean/state", "GET", undefined, node); } catch (_) { continue; }
       const run = (state && state.run) || {};
       if (run.stage) { notice(`剥离进行中：${run.stage}`); }
       if (run.state === "done") { return run.result || { ok: true }; }
