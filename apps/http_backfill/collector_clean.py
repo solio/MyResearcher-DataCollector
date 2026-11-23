@@ -552,24 +552,42 @@ def leftovers(root):
 # 真正要长期留的是阻断、校准、剥离这类低频证据。清理时按这个界限裁剪。
 ROUTINE_EVENT_KINDS = ("detail_acquired", "list_acquired", "next_page_check_started",
                        "next_page_joined", "next_page_rollback", "page_progress")
-EVENT_KEEP_DAYS = 7
+EVENT_KEEP_DAYS = 3
+#: 删除超过保留窗口的事件后，条数超过这个量就 VACUUM 一次把磁盘真正还回去。
+EVENT_VACUUM_MIN = 5000
 
 
-def prune_events(root, keep_days=EVENT_KEEP_DAYS):
-    """Delete only the routine events older than the window; everything else stays."""
+def prune_events(root, keep_days=EVENT_KEEP_DAYS, keep_kinds=()):
+    """只保留最近 keep_days 天的事件。
+
+    控制事件是操作日志，不参与任何判定；超过窗口的一律删除并回收空间。
+    需要留档的类别可以传 keep_kinds（例如只留 local_storage_error）。
+    """
     db_path = Path(root) / "collector.db"
     if not db_path.is_file():
         return {"deleted": 0, "kept": 0}
     cutoff = time.time() - keep_days * 86400
-    marks = ",".join("?" * len(ROUTINE_EVENT_KINDS))
     with _connect(db_path) as db:
+        # 没有索引时 DELETE 和界面的"最近事件"查询都要全表扫。
+        db.execute("CREATE INDEX IF NOT EXISTS idx_events_created ON events(created)")
         total = db.execute("SELECT count(*) FROM events").fetchone()[0]
-        deleted = db.execute(
-            f"DELETE FROM events WHERE created < ? AND kind IN ({marks})",
-            (cutoff, *ROUTINE_EVENT_KINDS)).rowcount
+        if keep_kinds:
+            marks = ",".join("?" * len(keep_kinds))
+            deleted = db.execute(
+                f"DELETE FROM events WHERE created < ? AND kind NOT IN ({marks})",
+                (cutoff, *keep_kinds)).rowcount
+        else:
+            deleted = db.execute("DELETE FROM events WHERE created < ?", (cutoff,)).rowcount
         kept = db.execute("SELECT count(*) FROM events").fetchone()[0]
         db.commit()
-    return {"deleted": max(0, deleted), "kept": kept, "before": total, "keep_days": keep_days}
+        vacuumed = False
+        if deleted >= EVENT_VACUUM_MIN:
+            db.isolation_level = None
+            db.execute("VACUUM")
+            vacuumed = True
+    return {"deleted": max(0, deleted), "kept": kept, "before": total,
+            "keep_days": keep_days, "vacuumed": vacuumed,
+            "bytes": db_path.stat().st_size}
 
 
 

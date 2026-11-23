@@ -792,6 +792,11 @@ def main():
             if fixed.get("changed"):
                 print(f"启动对账：修正 {fixed['changed']} 条待补状态"
                       f"（已有正文 {fixed['complete']} / 判定不适用 {fixed['out_of_scope']}）", flush=True)
+            # 控制事件只留最近 3 天：不参与判定，删掉能省磁盘也让"最近事件"查询不再全表扫。
+            pruned = collector_clean.prune_events(args.data_dir, keep_days=3)
+            if pruned.get("deleted"):
+                print(f"启动裁剪：删除 {pruned['deleted']} 条旧事件，保留 {pruned['kept']} 条"
+                      f"（库 {pruned['bytes']//1024} KB）", flush=True)
         except Exception as exc:  # noqa: BLE001 - 启动对账失败不能拦住服务
             print(f"启动对账失败: {exc}", flush=True)
 
