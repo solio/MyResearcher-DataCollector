@@ -2161,10 +2161,38 @@
     throw new Error("剥离仍在后台进行，请稍后刷新查看结果");
   }
 
+  // 统一的确认对话框：所有不可逆操作都走这里，按风险分级着色，失败项可逐条列出。
+  function askStripConfirm(title, body, checks = [], confirmLabel = "确认", level = "normal") {
+    return new Promise((resolve) => {
+      const dialog = $("strip-confirm");
+      // 风险分级：high=红色（不可逆），medium=琥珀，normal=默认
+      dialog.dataset.level = level;
+      $("strip-confirm-title").textContent = title;
+      $("strip-confirm-body").textContent = body || "";
+      const okButton = $("strip-confirm-ok");
+      okButton.textContent = confirmLabel;
+      const list = $("strip-confirm-checks");
+      list.textContent = "";
+      list.hidden = !checks.length;
+      for (const check of checks) {
+        const item = document.createElement("li");
+        item.className = check.ok ? "ok" : "bad";
+        item.textContent = `${check.ok ? "✓" : "✗"} ${textValue(check.name)}${check.detail ? `：${textValue(check.detail)}` : ""}`;
+        list.append(item);
+      }
+      dialog.returnValue = "";
+      dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true });
+      dialog.showModal();
+    });
+  }
+
   $("clean-strip").addEventListener("click", () => {
-    if (!window.confirm("剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。\n若有待补详情未补完，会直接拒绝——请先补完再剥离。继续？")) { return; }
     void (async () => {
       if (busy || !authenticated) { return; }
+      const proceed = await askStripConfirm("剥离数据？",
+        "剥离前会先导出 posts 与合并日志，然后换成只含控制数据的新库。若有待补详情未补完，会被拒绝并列出原因。",
+        [], "开始剥离", "high");
+      if (!proceed) { return; }
       busy = true; controls();
       try {
         await stripAndWait({});
@@ -2175,7 +2203,10 @@
         if (error.status !== 409 || !pending) { notice(error.message, true, error.identity_conflicts || [], checks); return; }
         // 剥离会取消待补详情任务，而库里连列表行都不剩，那批帖子就永远补不上了。
         // 后端要求"显式声明"才放行；这里把声明做成第二次确认，而不是一句"请先补完"的死路。
-        if (!window.confirm(`${pending.name}${pending.detail ? "（" + pending.detail + "）" : ""}。\n剥离后这些帖子永久无法补全，且不可撤销。\n确认放弃剩余详情并继续剥离？`)) { return; }
+        const abandon = await askStripConfirm("仍有未补完的详情",
+          `${pending.name}${pending.detail ? "（" + pending.detail + "）" : ""}。剥离后这些帖子永久无法补全，且不可撤销。`,
+          checks, "放弃并剥离", "high");
+        if (!abandon) { return; }
         try {
           await stripAndWait({ allow_missing_details: true });
           notice("已剥离（已放弃剩余待补详情）：控制数据逐行保留。");
@@ -2194,8 +2225,13 @@
     void runAction("clean/verify", {}, "校验通过：控制表逐行一致、数据表为空。", { refreshClean: true });
   });
   $("clean-cleanup").addEventListener("click", () => {
-    if (!window.confirm("清理会删除剥离副本与一致性快照，且不可恢复。确认继续？")) { return; }
-    void runAction("clean/cleanup", {}, "已删除清理副本。", { refreshClean: true });
+    void (async () => {
+      const ok = await askStripConfirm("删除剥离副本？",
+        "清理会删除剥离副本与一致性快照，且不可恢复。请先确认导出文件已经下载并核对。",
+        [], "删除副本", "high");
+      if (!ok) { return; }
+      await runAction("clean/cleanup", {}, "已删除清理副本。", { refreshClean: true });
+    })();
   });
   async function refreshStripState() {
     if (!authenticated) { stripState = null; return; }
@@ -2203,8 +2239,11 @@
     controls();
   }
   $("strip-export").addEventListener("click", () => {
-    if (!window.confirm("确认已经用下载按钮导出并核对过？剥离只会搬移台账文件，不会再导出。")) { return; }
     void (async () => {
+      const ok = await askStripConfirm("剥离合并台账？",
+        "剥离只会搬移台账文件，不会再导出。请先确认已用下载按钮导出并核对过。",
+        [], "剥离台账", "high");
+      if (!ok) { return; }
       const done = await fleetMutation("fleet/strip", { action: "strip", confirmed: true }, "POST",
         "已搬到 tmp 并建好空台账；游标已保留，可用“剥离校验”核对。");
       if (done) { await refreshStripState(); }
@@ -2218,8 +2257,11 @@
     })();
   });
   $("strip-clean").addEventListener("click", () => {
-    if (!window.confirm("清理会删除 tmp 下的剥离副本，且不可恢复。确认已核对导出文件？")) { return; }
     void (async () => {
+      const ok = await askStripConfirm("删除剥离副本？",
+        "清理会删除 tmp 下的剥离副本，且不可恢复。请确认导出文件已经核对。",
+        [], "删除副本", "high");
+      if (!ok) { return; }
       const done = await fleetMutation("fleet/strip", { action: "cleanup" }, "POST", "已删除剥离副本。");
       if (done) { await refreshStripState(); }
     })();

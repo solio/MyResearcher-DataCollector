@@ -62,3 +62,12 @@
 }
 .check-report li.ok { color: #2e7d32; }
 .check-report li.bad { color: #c62828; }
+
+/* 确认框按风险分级：high 用红，medium 用琥珀，普通保持默认绿。 */
+.confirm-dialog[data-level="high"]{border-color:#e6c5c0;box-shadow:0 16px 70px #7a231934}
+.confirm-dialog[data-level="high"] .eyebrow,.confirm-dialog[data-level="high"] h2{color:var(--red)}
+.confirm-dialog[data-level="high"] .button.primary{background:var(--red);color:#fff}
+.confirm-dialog[data-level="high"] .button.primary:hover:enabled{background:#8f2f22}
+.confirm-dialog[data-level="medium"]{border-color:#ead3b0}
+.confirm-dialog[data-level="medium"] .eyebrow,.confirm-dialog[data-level="medium"] h2{color:var(--amber)}
+.confirm-dialog[data-level="medium"] .button.primary{background:var(--amber);color:#fff}

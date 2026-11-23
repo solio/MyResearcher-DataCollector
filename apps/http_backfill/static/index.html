@@ -172,6 +172,9 @@
   </dialog>
   <div id="coverage-tooltip" class="coverage-tooltip" role="tooltip" hidden><div id="coverage-tooltip-content"></div></div>
 
+  <dialog id="strip-confirm" class="confirm-dialog" aria-labelledby="strip-confirm-title">
+    <form method="dialog"><div class="eyebrow">需要确认</div><h2 id="strip-confirm-title">剥离数据？</h2><p id="strip-confirm-body"></p><ul id="strip-confirm-checks" class="check-report" hidden></ul><div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="confirm" id="strip-confirm-ok" class="button primary">确认</button></div></form>
+  </dialog>
   <dialog id="retry-dialog" class="confirm-dialog" aria-labelledby="retry-title">
     <form method="dialog"><div class="eyebrow">明确的单次操作</div><h2 id="retry-title">安排一次探测？</h2><p>服务端会在全局请求间隔和冷却期满足后，向当前源目标发送 <strong>一次真实请求</strong>。该操作不会处理验证码，不会清除已有阻断记录。</p><p>探测成功后仍保持暂停；由你决定是否继续采集。</p><p id="retry-due" class="field-note"></p><div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="confirm" id="confirm-retry" class="button primary">确认单次探测</button></div></form>
   </dialog>
